@@ -1,116 +1,151 @@
-# simple_tensor
+# Candela
 
-A Rust-first tensor runtime that emphasizes **memory-layout-aware execution**, **lazy computation graphs**, and **practical performance paths on CPU** via Intel MKL/VML.
+Candela is a Rust tensor execution-engine project focused on **explicit memory behavior**, **lazy graph execution**, and **performance-oriented CPU compute paths**.
 
-This repository is an experimental systems project: it is not a full deep learning framework yet, but it already contains a non-trivial execution model with node fusion, reusable buffers, explicit caching controls, and low-level stride/slice semantics.
-
----
-
-## Project Overview
-
-`simple_tensor` provides a tensor abstraction with two distinct modes:
-
-- **`Tensor<T>`**: concrete data (allocated buffer + layout metadata).
-- **`TensorPromise<T>` / `CachedTensorPromise<T>`**: deferred computation nodes in a DAG that can be materialized on demand.
-
-The current implementation focuses on `f64` CPU compute and uses Intel MKL/VML-backed kernels for core elementwise operations. The architecture is intentionally designed for future extension into broader BLAS coverage, better fusion, and potentially GPU backends.
-
-## Why this project exists
-
-Most educational tensor libraries stop at shape math or eager elementwise kernels. This codebase goes further by exploring real runtime concerns:
-
-- avoiding unnecessary allocations,
-- preserving and exploiting layout/stride information,
-- doing topological materialization over a DAG,
-- enabling selective cache persistence for repeated subgraphs,
-- integrating vendor-tuned numeric kernels.
-
-In short: this is a **learning-driven but performance-conscious tensor engine prototype**.
+It is primarily a learning-driven systems project—but not a throwaway toy. The codebase explores the hard parts of tensor runtime design from first principles: shape/stride layout semantics, DAG materialization, buffer reuse, operation fusion, and controlled caching.
 
 ---
 
-## Core Goals
+## Overview
 
-1. Build a minimal but serious tensor runtime in Rust.
-2. Support lazy graph composition with explicit materialization.
-3. Encode shape/stride/offset semantics cleanly, including views/slices/transposes.
-4. Reuse memory aggressively where safe.
-5. Fuse compatible scalar operations to reduce graph and runtime overhead.
-6. Keep the architecture open for future matmul/BLAS/GPU expansion.
+Candela currently provides:
 
----
+- **`Tensor<T>`** for materialized tensor data,
+- **`TensorPromise<T>`** for deferred computation nodes,
+- **`CachedTensorPromise<T>`** for explicit cache persistence,
+- a CPU compute path currently specialized for **`f64`**,
+- Intel MKL/VML-backed elementwise kernels,
+- layout-aware transforms (view/slice/transpose) and iterator machinery for contiguous and non-contiguous tensors.
 
-## Key Features
-
-- **Lazy DAG execution** with `TensorPromise` graph nodes.
-- **Topological graph materialization** with reference counting for eager intermediate reclamation.
-- **Optional persisted node caching** through `CachedTensorPromise::cache()`.
-- **Operation fusion** for scalar chains (`+/-/*//`) and selected layout-transform combinations.
-- **Layout-aware tensor model**:
-  - shape / stride / adjusted stride / offset / logical length,
-  - contiguous and non-contiguous iteration paths,
-  - views, slicing, transpose, and transpose-by-axes.
-- **CPU kernels for `f64`**:
-  - scalar ops,
-  - tensor-tensor elementwise ops via Intel VML (`vdAdd`, `vdSub`, `vdMul`, `vdDiv`).
-- **Macro conveniences** (`arange!`, `srange!`, `zeros!`, `ones!`, `s!`).
+This repository is best understood as an execution-runtime core under active development.
 
 ---
 
-## Architecture
+## Why Candela Exists
 
-### 1) Data and Layout Layer
+Candela exists to answer a practical engineering question:
 
-- `Storage<T>` wraps `Arc<RwLock<Vec<T>>>` for shared backing buffers.
-- `TensorData<T>` combines storage + `Layout` + `reusable` marker.
-- `Layout` stores:
-  - `shape`,
-  - `stride`,
-  - `adj_stride` (precomputed stepping deltas for iterators),
-  - `offset`,
-  - `len`.
+> How do you build a tensor runtime in Rust that is both ergonomic enough to use and explicit enough to preserve real control over allocations, copies, and execution?
 
-This enables non-contiguous tensor representations without copying.
+The project’s position is that many tensor ecosystems over-optimize for convenience and hide too much memory behavior. Candela intentionally moves in the opposite direction where possible:
 
-### 2) API Surface Layer
+- keep allocations explicit,
+- keep copies explicit,
+- avoid retaining intermediates unless the user explicitly requests it,
+- make caching a user-level choice.
 
-- `Tensor<T>` = concrete graph edge (material data).
-- `TensorPromise<T>` = lazy node (`TensorGraphNode`) with op + inputs + inferred layout.
-- `CachedTensorPromise<T>` = lazy node with internal `OnceCell` cache.
+The design notes in `project_decision.txt` reinforce this direction, including explicit discussion of eager intermediate discard during materialization and user-driven caching policy.
 
-Operator overloading (`Add/Sub/Mul/Div`) is implemented across all combinations of `Tensor`, `TensorPromise`, and cached promises, allowing natural expression-building syntax.
+---
 
-### 3) Graph Runtime Layer
+## Design Philosophy
 
-Nodes are represented as:
+Candela is aligned with core Rust instincts:
 
-- `Edge` (material tensor),
-- `Node` (deferred op),
-- `Cache` (deferred op with persisted output).
+1. **Explicit copies over silent duplication**
+2. **Explicit allocations over hidden ownership transitions**
+3. **Explicit memory control over opaque runtime retention**
+4. **User-directed caching over automatic graph hoarding**
 
-Materialization performs:
+This philosophy is reflected directly in the node model:
 
-1. DFS topological sort,
-2. reference counting of node usages,
-3. compute in dependency order,
-4. eager release of intermediates when refcount reaches zero,
-5. cache reuse/population for cached nodes.
+- **Edge nodes**: materialized tensor data,
+- **Node nodes**: deferred operation nodes,
+- **Cache nodes**: deferred nodes with persisted output (`OnceCell`) for reuse across materializations.
 
-### 4) Compute Layer
+There are ergonomic compromises (e.g., overloaded operators for expression building), but they are deliberately constrained.
 
-Compute dispatch goes through `cpu_compute(op, output_layout, inputs)` with type-specific implementations (`ComputeWrapperSpec`).
+---
 
-Current concrete backend: `f64`.
+## Inspiration / Related Projects
 
-Implemented operation families:
+Candela is inspired by Rust tensor and ML systems work, especially:
 
-- scalar op kernels,
-- fused scalar chains,
-- layout-only transforms (`view`, `slice`, `transpose`, `transpose_axes`, `as_contiguous`),
-- elementwise tensor-tensor ops via MKL VML,
-- no-op passthrough.
+- [tensorkraken](https://github.com/kurtschelfthout/tensorken) *(as referenced by the project author’s notes)*
+- [candle](https://github.com/huggingface/candle)
+- [burn](https://github.com/tracel-ai/burn)
 
-`Matmul` layout inference exists, and partial matmul kernel scaffolding is present, but full matmul execution is not complete.
+The project name and direction are strongly influenced by this ecosystem.
+
+---
+
+## Key Features (Current)
+
+- **Lazy DAG execution** via `TensorPromise`.
+- **Topological materialization** with dependency-aware execution.
+- **Reference-count-guided intermediate release** to avoid retaining temporary tensors longer than necessary.
+- **Explicit cache nodes** (`CachedTensorPromise`) for reusable subgraphs.
+- **Scalar-op fusion** for compatible scalar chains.
+- **Layout-first tensor semantics**:
+  - shape / stride / adjusted-stride / offset / len,
+  - view, slice, transpose, transpose-by-axes,
+  - contiguous and non-contiguous iterator paths.
+- **CPU elementwise kernels for `f64`** using Intel VML (`vdAdd`, `vdSub`, `vdMul`, `vdDiv`).
+- **Macro conveniences** for construction and slicing (`arange!`, `srange!`, `zeros!`, `ones!`, `s!`).
+
+---
+
+## Architecture / Execution Model
+
+### 1) Tensor Data Layer
+
+- `Storage<T>` wraps `Arc<RwLock<Vec<T>>>`.
+- `TensorData<T>` pairs storage with `Layout` and a `reusable` marker.
+- `Layout` tracks shape/stride/adj_stride/offset/len and provides transformation methods.
+
+This separation allows layout rewrites without mandatory data movement.
+
+### 2) Graph Representation
+
+Graph nodes are represented by `NodeKind`:
+
+- `Edge(Arc<TensorGraphEdge<T>>)`
+- `Node(Arc<TensorGraphNode<T>>)`
+- `Cache(Arc<TensorGraphCacheNode<T>>)`
+
+Each node receives a stable runtime id via an atomic counter.
+
+### 3) Materialization Pipeline
+
+When `.materialize()` is called on a promise:
+
+1. the graph is traversed with DFS topological sort,
+2. usage counts are collected,
+3. nodes are computed in dependency order,
+4. inputs are removed from cache as soon as their refcount reaches zero,
+5. cached nodes reuse or populate their internal `OnceCell`.
+
+The intent is to minimize live intermediate memory while preserving deterministic execution.
+
+### 4) Compute Dispatch
+
+`cpu_compute(op, output_layout, inputs)` dispatches by scalar type (`ComputeWrapperSpec`).
+
+Current concrete implementation: **`f64`**.
+
+Implemented operation groups include:
+
+- scalar ops,
+- fused scalar op chains,
+- layout transforms (`View`, `Slice`, `Transpose`, `TransposeAxes`, `AsContiguous`),
+- tensor-tensor elementwise ops (`Add`, `Sub`, `Mul`, `Div`),
+- no-op forwarding.
+
+`Matmul` layout inference exists, and matmul compute scaffolding is present, but full matmul execution is not complete.
+
+---
+
+## Memory Model and Allocation Philosophy
+
+Candela’s memory behavior is intentionally visible:
+
+- **Reusable outputs**: operations can mark outputs reusable.
+- **Reuse-first strategy**: execution attempts to reuse uniquely owned buffers (`Arc::try_unwrap`) before allocating fresh vectors.
+- **Contiguity-aware execution**: kernels branch between contiguous fast paths and generic strided iteration paths.
+- **Eager discard of intermediates**: during graph execution, temporaries are dropped as soon as their dependency role ends.
+- **User-directed persistence**: `.cache()` is explicit and opt-in.
+
+This is a central identity of Candela: retain only what the user asks to retain.
 
 ---
 
@@ -125,52 +160,45 @@ Implemented operation families:
 │   ├── main.rs
 │   └── tensor
 │       ├── mod.rs
-│       ├── tensor.rs             # Tensor wrapper over graph edge
-│       ├── promise.rs            # Lazy promise types + materialization
-│       ├── graph.rs              # DAG nodes, topological sort, execution
-│       ├── storage.rs            # Buffer ownership, TensorData, reuse markers
-│       ├── mem_formats
-│       │   ├── layout.rs         # shape/stride/offset metadata + transforms
-│       │   └── slice.rs          # slice range parsing + slice layout derivation
-│       ├── iter.rs               # contiguous/non-contiguous/chunked iterators
-│       ├── ops
-│       │   ├── impl_op.rs        # API ops + operator overloading
-│       │   ├── impl_layout.rs    # output layout inference + validation
-│       │   ├── impl_compute_op.rs# kernel dispatch + MKL/VML integration
-│       │   ├── reusable.rs       # allocation reuse strategy
-│       │   └── fusion.rs         # scalar operation fusion
-│       ├── convenience.rs        # macros (arange/zeros/ones/s)
+│       ├── tensor.rs
+│       ├── promise.rs
+│       ├── graph.rs
+│       ├── storage.rs
 │       ├── traits.rs
-│       ├── errors.rs
+│       ├── iter.rs
 │       ├── internals.rs
-│       ├── impl_generics.rs      # Display impl macro
-│       └── mkl_extension.rs      # low-level FFI declarations
+│       ├── errors.rs
+│       ├── convenience.rs
+│       ├── macros.rs
+│       ├── impl_generics.rs
+│       ├── mkl_extension.rs
+│       ├── mem_formats
+│       │   ├── layout.rs
+│       │   └── slice.rs
+│       └── ops
+│           ├── impl_op.rs
+│           ├── impl_layout.rs
+│           ├── impl_compute_op.rs
+│           ├── fusion.rs
+│           └── reusable.rs
 ```
-
----
-
-## Technologies Used
-
-- **Language**: Rust (Edition 2024)
-- **Numerics / BLAS ecosystem**:
-  - `intel-mkl-src`
-  - `intel-mkl-sys`
-  - `cblas`
-  - `cblas-sys`
-  - `lapacke`
-- **Synchronization primitives**: `parking_lot`
 
 ---
 
 ## Build Instructions
 
-> Prerequisite: a Rust toolchain (`cargo`, `rustc`).
+### Prerequisites
+
+- Rust toolchain (`rustc`, `cargo`)
+- Toolchain/runtime support for dependencies in `Cargo.toml` (MKL-related crates are included)
+
+### Build
 
 ```bash
 cargo build
 ```
 
-For debug checks controlled by feature flags:
+### Optional debug-check feature
 
 ```bash
 cargo build --features debug_only_check
@@ -178,9 +206,26 @@ cargo build --features debug_only_check
 
 ---
 
-## Run Instructions
+## Usage Example
 
-The current `main.rs` demonstrates chained lazy scalar ops over an `arange!` tensor and materialization:
+Current `src/main.rs` demonstrates lazy scalar graph construction and materialization:
+
+```rust
+use crate::tensor::{Dimension, Tensor, arange};
+
+fn main() {
+    let t1 = arange![12];
+    let mut p = t1.as_promise();
+
+    for i in 0..20 {
+        p = p + i as f64;
+    }
+
+    println!("{}", (p * 2.0).materialize());
+}
+```
+
+Run:
 
 ```bash
 cargo run
@@ -188,101 +233,62 @@ cargo run
 
 ---
 
-## Example Usage
+## Performance Considerations
 
-```rust
-use simple_tensor::tensor::{arange, Dimension};
+Candela’s current performance strategy combines several systems-level choices:
 
-let t = arange![12];
-let mut p = t.as_promise();
+- **Operation fusion (currently limited):** scalar chain fusion reduces repeated passes and temporary graph depth.
+- **Buffer reuse:** contiguous reusable outputs are recycled where ownership allows.
+- **Layout-aware iteration:** contiguous tensors use fast linear iterators; non-contiguous tensors use stride-aware iterators with precomputed `adj_stride` stepping.
+- **DAG-level memory pressure reduction:** topological execution + reference counting releases intermediates aggressively.
+- **Vendor kernels where beneficial:** Intel VML is used for core elementwise vector operations in the `f64` path.
 
-for i in 0..20 {
-    p = p + i as f64;   // lazy graph growth, potentially fuseable
-}
-
-let out = (p * 2.0).materialize();
-println!("{}", out);
-```
-
-Other supported patterns include:
-
-- `view(...)` for shape reinterpretation (contiguous-only check in debug mode),
-- `slice(s![...])`,
-- `transpose()` / `transpose_axes(...)`,
-- tensor-tensor elementwise arithmetic,
-- `.cache()` for explicit reuse across materializations.
+No formal benchmark suite is currently included in the repository.
 
 ---
 
-## Performance-Oriented Design Decisions
+## Current Limitations
 
-### Lazy graph + explicit materialization
-Computation is deferred until `.materialize()`, allowing fusion and global scheduling opportunities.
-
-### Topological execution with refcount-driven reclamation
-Intermediate tensors are not kept longer than needed; ownership and reference counting drive eager discard.
-
-### Reuse-aware buffer strategy
-`TensorData` can be marked reusable, and execution attempts to strip/reuse buffers (`Arc::try_unwrap`) before allocating new contiguous storage.
-
-### Layout-preserving transforms
-View/slice/transpose operations are layout rewrites whenever possible, reducing copies and keeping memory traffic lower.
-
-### Specialized contiguous vs non-contiguous iterator paths
-The engine branches between fast contiguous iteration and stride-aware traversal for general layouts.
-
-### Scalar fusion
-Compatible scalar chains are collapsed (e.g., repeated adds/muls), reducing node count and compute passes.
+- Backend specialization is effectively **`f64`-first** today.
+- Full matmul compute is still incomplete.
+- Fusion logic is intentionally conservative and order-dependent.
+- Broadcasting support is incomplete / evolving.
+- There are currently no repository-integrated unit test or benchmark suites.
+- Some files contain WIP paths, TODOs, or compiler warnings indicative of active development.
 
 ---
 
-## Implementation Details Worth Highlighting
+## TODO / Roadmap
 
-- `adj_stride` precomputation is used to implement efficient multidimensional stepping without recomputing index math each step.
-- `CachedTensorPromise` uses `OnceCell` to persist computed outputs and skip recomputation for stable subgraphs.
-- Operation ergonomics follow a deliberate policy:
-  - inline operator misuse panics for clearly-invalid programmer errors,
-  - method-style operations are designed to return `Result` where appropriate.
-- `project_decision.txt` documents design intent around panic-vs-result behavior, caching philosophy, and current fusion limits.
+The following are **future directions**, not currently implemented end-to-end features:
 
----
-
-## Limitations / Current Assumptions
-
-- Compute backend specialization is currently centered on `f64`.
-- Matmul execution is incomplete (layout path exists; full compute path is not finished).
-- Fusion is intentionally simple and order-dependent; complex multi-input fusion cases are not broadly handled.
-- There are no formal benchmark artifacts or automated tests in the current repository.
-- Some modules include WIP/legacy code and compiler warnings; this is an actively evolving prototype.
-
----
-
-## Suggested Future Improvements
-
-1. Complete and validate BLAS-backed matmul kernels (including batched paths).
-2. Expand compute specialization to additional numeric types.
-3. Add correctness/property tests for layout transforms and graph execution.
-4. Add reproducible benchmarks (micro + end-to-end) and profiling scripts.
-5. Extend fusion beyond scalar chains to richer algebraic/graph patterns.
-6. Improve diagnostics, logging controls, and panic/error consistency.
-7. Evaluate lock-free or reduced-lock storage strategies for high-concurrency workloads.
+- [ ] Add CUDA backend support, including async execution support.
+- [ ] Implement custom CPU kernels for non-contiguous tensor execution paths.
+- [ ] Add model building blocks (e.g., `Linear`, `ReLU`, and related components).
+- [ ] Expand dtype support (`f32`, `i32`, and others) with backend coverage.
+- [ ] Add benchmark suites for CUDA kernels.
+- [ ] Add benchmark suites for CPU kernels (contiguous and strided cases).
+- [ ] Add Promise serialization for debugging, reproducibility, and graph inspection.
+- [ ] Explore a **PromiseSkeleton**-style compile/pipeline representation for model reconstruction workflows.
+- [ ] Complete and optimize matmul kernels (including batched scenarios).
+- [ ] Improve diagnostics and consistency around panic-vs-`Result` behavior.
 
 ---
 
 ## Contributing
 
-Contributions are welcome, especially around:
+Contributions are welcome, especially in:
 
-- kernel implementation and optimization,
+- compute kernel development,
 - graph/fusion improvements,
-- matmul completion,
-- test coverage and benchmarking harnesses,
-- API hardening.
+- memory-model correctness and profiling,
+- test and benchmark infrastructure,
+- API ergonomics that preserve explicit memory control.
 
-If you contribute, please prefer changes that preserve explicit layout semantics and avoid hidden allocations unless clearly justified.
+When contributing, prefer changes that keep allocation/copy behavior transparent and maintain the project’s explicit-control philosophy.
 
 ---
 
 ## License
 
-MIT License (see [`LICENSE`](./LICENSE)).
+MIT License. See [`LICENSE`](./LICENSE).
