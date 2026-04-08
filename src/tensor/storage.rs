@@ -18,26 +18,26 @@ pub enum IterImpl<C, N> {
 
 #[derive(Debug)]
 pub struct Storage<T: Copy> {
-    pub(crate) buffer: Arc<RwLock<Vec<T>>>,
+    pub(crate) buffer: Arc<Vec<T>>,
 }
 
 impl<T: Copy> Storage<T> {
     #[inline]
     pub fn from_scalar(scalar: T, len: usize) -> Self {
         Self {
-            buffer: Arc::new(RwLock::new(vec![scalar; len])),
+            buffer: Arc::new(vec![scalar; len]),
         }
     }
 
     #[inline]
-    pub fn from_arc(buffer: Arc<RwLock<Vec<T>>>) -> Self {
+    pub fn from_arc(buffer: Arc<Vec<T>>) -> Self {
         Self { buffer }
     }
 
     #[inline]
     pub fn from_vec(vector: Vec<T>) -> Self {
         Self {
-            buffer: Arc::new(RwLock::new(vector)),
+            buffer: Arc::new(vector),
         }
     }
 
@@ -47,7 +47,6 @@ impl<T: Copy> Storage<T> {
         I: IntoIterator<Item = T>,
     {
         let vector = std::vec::Vec::from_iter(iter);
-        //////////////////////////////////////////////////////////////////////////////////////////////////
         Self::from_vec(vector)
     }
 
@@ -59,7 +58,7 @@ impl<T: Copy> Storage<T> {
 
 impl<T: Copy> Clone for Storage<T> {
     fn clone(&self) -> Self {
-        let buffer = self.buffer.read().clone();
+        let buffer = self.buffer.to_vec();
         Storage::from_vec(buffer)
     }
 }
@@ -97,7 +96,7 @@ impl<T: Copy> TensorData<T> {
     }
 
     #[inline]
-    pub fn from_arc(buffer: Arc<RwLock<Vec<T>>>, shape: &[i32]) -> Self {
+    pub fn from_arc(buffer: Arc<Vec<T>>, shape: &[i32]) -> Self {
         Self {
             storage: Storage::from_arc(buffer),
             layout: Layout::from_shape(shape, 0),

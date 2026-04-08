@@ -99,7 +99,7 @@ fn compute_elementwise_tensor_tensor<T: Copy + Default>(
         }
     // Contiguous path
     } else {
-        let lhs_buffer = inputs[0].storage.buffer.read();
+        let lhs_buffer = &inputs[0].storage.buffer;
 
         unsafe {
             operation(

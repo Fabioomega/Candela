@@ -14,8 +14,7 @@ fn strip_tensor<T: Copy + Default>(tensor: TensorData<T>) -> ReusableVec<T> {
     let len = tensor.len();
     let offset = tensor.offset();
 
-    if let Ok(lock) = Arc::try_unwrap(tensor.storage.buffer) {
-        let mut v = lock.into_inner();
+    if let Ok(mut v) = Arc::try_unwrap(tensor.storage.buffer) {
         v.resize(len + offset, T::default());
         ReusableVec { v, offset }
     } else {
