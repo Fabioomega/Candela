@@ -2,6 +2,7 @@ use crate::tensor::errors::OpError;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::impl_compute_op::OpKind;
 
+#[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
 pub fn compute_layout<'a, T: Copy>(
     op: &OpKind<T>,
     inputs: &[&'a Layout],

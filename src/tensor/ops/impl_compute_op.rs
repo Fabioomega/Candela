@@ -1,4 +1,3 @@
-use crate::cfg_tracing;
 use crate::tensor::definitions::{ChunkedIter, NumberLike};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::reusable::{get_reusable_or_alloc, unordered_get_reusable_or_alloc_n};
@@ -6,7 +5,6 @@ use crate::tensor::storage::{Storage, TensorData};
 use crate::tensor::traits::{Dimension, StreamingIterator};
 use cblas_sys::cblas_dgemm;
 use intel_mkl_sys::{vdAdd, vdDiv, vdMul, vdSub};
-use tracing::{Level, event};
 
 // TODO: Design some way to fuse arbitrary combinations of ops
 // without handling it at the runtime, because it would be annoying.
@@ -34,6 +32,26 @@ pub enum OpKind<T: Copy> {
     Sub,
     Mul,
     Div,
+}
+
+impl<T: Copy> OpKind<T> {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            OpKind::NoOp => "NoOp",
+            OpKind::ScalarOp(_) => "ScalarOp",
+            OpKind::FusedScalar(_) => "FusedScalar",
+            OpKind::View(_) => "View",
+            OpKind::Slice(_) => "Slice",
+            OpKind::Transpose => "Transpose",
+            OpKind::TransposeAxes(_) => "TransposeAxes",
+            OpKind::Matmul => "Matmul",
+            OpKind::AsContiguous => "AsContiguous",
+            OpKind::Add => "Add",
+            OpKind::Sub => "Sub",
+            OpKind::Mul => "Mul",
+            OpKind::Div => "Div",
+        }
+    }
 }
 
 // TODO: Add BLAS support for scalar ops using vdAddl and the like
@@ -196,13 +214,19 @@ fn cpu_compute_elementwise_f64(
     .mark_as_reusable()
 }
 
+#[cfg_attr(
+    feature = "tracing",
+    tracing::instrument(
+        level = "debug",
+        skip(inputs, output_layout),
+        fields(op = op.as_str(), out_len = output_layout.len())
+    )
+)]
 fn cpu_compute_op_f64(
     op: &OpKind<f64>,
     output_layout: &Layout,
     inputs: Vec<TensorData<f64>>,
 ) -> TensorData<f64> {
-    cfg_tracing!(event!(Level::DEBUG, "Computing {:?}", op));
-
     match op {
         OpKind::ScalarOp(_) | OpKind::FusedScalar(_) => {
             cpu_compute_elementwise_f64(op, output_layout, inputs)
