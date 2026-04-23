@@ -8,7 +8,7 @@ use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::mem_formats::slice::SliceRange;
 use crate::tensor::ops::ComputeWrapperSpec;
 use crate::tensor::ops::compute_layout;
-use crate::tensor::ops::impl_compute_op::{OpKind, OpKindScalar};
+use crate::tensor::ops::def_op::{OpKind, OpKindScalar};
 use crate::tensor::traits::Promising;
 use crate::tensor::{CachedTensorPromise, Tensor, TensorPromise};
 

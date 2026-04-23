@@ -7,8 +7,8 @@ use std::sync::{Arc, OnceLock};
 
 use crate::tensor::definitions::NumberLike;
 use crate::tensor::mem_formats::layout::Layout;
+use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::ops::fusion::try_fuse;
-use crate::tensor::ops::impl_compute_op::OpKind;
 use crate::tensor::ops::{ComputeWrapperSpec, compute_layout, cpu_compute};
 use crate::tensor::storage::TensorData;
 use crate::tensor::traits::Promising;

@@ -3,7 +3,7 @@ use std::str::Matches;
 
 use crate::tensor::definitions::NumberLike;
 use crate::tensor::graph::NodeKind;
-use crate::tensor::ops::impl_compute_op::{OpKind, OpKindScalar};
+use crate::tensor::ops::def_op::{OpKind, OpKindScalar};
 
 ///////////////////////////////////////////
 
