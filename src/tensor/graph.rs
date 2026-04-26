@@ -2,13 +2,13 @@ use std::boxed::Box;
 use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use crate::tensor::definitions::NumberLike;
 use crate::tensor::mem_formats::layout::Layout;
+use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::ops::fusion::try_fuse;
-use crate::tensor::ops::impl_compute_op::OpKind;
 use crate::tensor::ops::{ComputeWrapperSpec, compute_layout, cpu_compute};
 use crate::tensor::storage::TensorData;
 use crate::tensor::traits::Promising;
@@ -284,14 +284,14 @@ impl<T: Copy + Debug> Debug for TensorGraphNode<T> {
 
 pub struct TensorGraphCacheNode<T: Copy> {
     node: TensorGraphNode<T>,
-    cache: OnceCell<TensorData<T>>,
+    cache: OnceLock<TensorData<T>>,
 }
 
 impl<T: Copy> TensorGraphCacheNode<T> {
     pub fn from_node(node: TensorGraphNode<T>) -> Self {
         Self {
             node,
-            cache: OnceCell::new(),
+            cache: OnceLock::new(),
         }
     }
 
@@ -308,14 +308,14 @@ impl<T: NumberLike> TensorGraphCacheNode<T> {
     pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Self {
         Self {
             node: TensorGraphNode::new(op, inputs),
-            cache: OnceCell::new(),
+            cache: OnceLock::new(),
         }
     }
 
     pub fn with_layout(op: OpKind<T>, inputs: Box<[NodeKind<T>]>, layout: Layout) -> Self {
         Self {
             node: TensorGraphNode::with_layout(op, inputs, layout),
-            cache: OnceCell::new(),
+            cache: OnceLock::new(),
         }
     }
 }
@@ -324,14 +324,11 @@ impl<T: NumberLike + ComputeWrapperSpec> Promising for TensorGraphCacheNode<T> {
     type Output = T;
 
     fn compute(&self) -> TensorData<T> {
-        if let Some(tensor) = self.cache.get() {
-            tensor.clone_reference()
-        } else {
-            let tensor = self.node.compute();
-            let _ = self.cache.set(tensor.clone_reference());
-
-            tensor
-        }
+        // TODO: Once the cuda async is implemented, it would be ideal to change this to an async
+        // OnceCell from tokio or some other library
+        self.cache
+            .get_or_init(|| self.node.compute())
+            .clone_reference()
     }
 
     #[inline]

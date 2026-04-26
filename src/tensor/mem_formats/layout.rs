@@ -56,7 +56,7 @@ impl Layout {
         }
     }
 
-    pub fn view(&self, shape: &[i32]) -> Result<Self, OpError<'_>> {
+    pub fn view(&self, shape: &[i32]) -> Result<Self, OpError> {
         cfg_debug_only!({
             let size: i32 = shape.iter().product();
             if size.max(0) as usize != self.len() {
@@ -71,7 +71,7 @@ impl Layout {
         Ok(Layout::from_shape(shape, self.offset))
     }
 
-    pub fn slice(&self, range: &[SliceRange]) -> Result<Self, OpError<'_>> {
+    pub fn slice(&self, range: &[SliceRange]) -> Result<Self, OpError> {
         let info = SliceInfo::from_range(self, range);
 
         cfg_debug_only!(if let Err(err) = info {
@@ -118,7 +118,7 @@ impl Layout {
         }
     }
 
-    pub fn transpose_axes(&self, axes: &[usize]) -> Result<Self, OpError<'_>> {
+    pub fn transpose_axes(&self, axes: &[usize]) -> Result<Self, OpError> {
         cfg_debug_only!(if axes.len() != self.stride.len() {
             return Err(OpError::NotEnoughAxes(self.stride.len(), axes.len()));
         });
@@ -146,7 +146,7 @@ impl Layout {
         })
     }
 
-    pub fn broadcast_to_shape(&self, shape: &[i32]) -> Result<Self, OpError<'_>> {
+    pub fn broadcast_to_shape(&self, shape: &[i32]) -> Result<Self, OpError> {
         cfg_debug_only!(
             if shape.len() > self.shape.len() && shape[0] % self.shape[0] == 0 {
                 return Err(OpError::CannotBroadcast);
@@ -188,7 +188,7 @@ impl Layout {
         }
     }
 
-    pub fn to_dim_stride(&self, dim: usize) -> Result<Self, OpError<'_>> {
+    pub fn to_dim_stride(&self, dim: usize) -> Result<Self, OpError> {
         if dim >= self.shape().len() {
             return Err(OpError::OutOfBoundAxes);
         }

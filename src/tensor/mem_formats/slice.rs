@@ -91,10 +91,7 @@ pub struct SliceInfo {
 }
 
 impl SliceInfo {
-    pub(crate) fn from_range<'a>(
-        layout: &'a Layout,
-        range: &[SliceRange],
-    ) -> Result<Self, OpError<'a>> {
+    pub(crate) fn from_range(layout: &Layout, range: &[SliceRange]) -> Result<Self, OpError> {
         debug_assert!(layout.shape().len() >= range.len());
 
         let mut offset: i64 = layout.offset() as i64;

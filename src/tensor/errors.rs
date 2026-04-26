@@ -1,5 +1,5 @@
 #[derive(Debug)]
-pub enum OpError<'a> {
+pub enum OpError {
     InvalidViewShape,
     NonContiguousView,
     InvalidSliceShape(usize, usize),
@@ -8,11 +8,11 @@ pub enum OpError<'a> {
     CannotMatmul(i32, i32),
     CannotBroadcast,
     NotEnoughAxes(usize, usize),
-    NotSameShape(&'a [i32], &'a [i32]),
+    NotSameShape(Box<[i32]>, Box<[i32]>),
     NotSameBatch(i32, i32),
 }
 
-impl std::fmt::Display for OpError<'_> {
+impl std::fmt::Display for OpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OpError::InvalidViewShape => write!(
@@ -66,4 +66,4 @@ impl std::fmt::Display for OpError<'_> {
     }
 }
 
-impl std::error::Error for OpError<'_> {}
+impl std::error::Error for OpError {}

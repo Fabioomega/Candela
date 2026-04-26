@@ -4,7 +4,7 @@ use std::sync::Arc;
 use crate::tensor::definitions::NumberLike;
 use crate::tensor::graph::{NodeKind, TensorGraphCacheNode, TensorGraphNode};
 use crate::tensor::mem_formats::layout::Layout;
-use crate::tensor::ops::impl_compute_op::OpKind;
+use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::tensor::Tensor;
 use crate::tensor::traits::{Dimension, Promising};
 

@@ -8,7 +8,7 @@ use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::mem_formats::slice::SliceRange;
 use crate::tensor::ops::ComputeWrapperSpec;
 use crate::tensor::ops::compute_layout;
-use crate::tensor::ops::impl_compute_op::{OpKind, OpKindScalar};
+use crate::tensor::ops::def_op::{OpKind, OpKindScalar};
 use crate::tensor::traits::Promising;
 use crate::tensor::{CachedTensorPromise, Tensor, TensorPromise};
 
@@ -23,7 +23,7 @@ trait ComputationDef {
 
 //////////////////////////////////////////////////////////////
 
-fn view_impl<'a, D>(source: &'a D, shape: &[i32]) -> Result<TensorPromise<D::Output>, OpError<'a>>
+fn view_impl<D>(source: &D, shape: &[i32]) -> Result<TensorPromise<D::Output>, OpError>
 where
     D: ComputationDef,
     D::Output: NumberLike,
@@ -43,10 +43,7 @@ where
     ))
 }
 
-fn slice_impl<'a, D>(
-    source: &'a D,
-    range: &[SliceRange],
-) -> Result<TensorPromise<D::Output>, OpError<'a>>
+fn slice_impl<D>(source: &D, range: &[SliceRange]) -> Result<TensorPromise<D::Output>, OpError>
 where
     D: ComputationDef,
     D::Output: NumberLike,
@@ -76,10 +73,7 @@ where
     TensorPromise::new(OpKind::Transpose, input)
 }
 
-fn transpose_axes_impl<'a, D>(
-    source: &'a D,
-    axes: &[usize],
-) -> Result<TensorPromise<D::Output>, OpError<'a>>
+fn transpose_axes_impl<D>(source: &D, axes: &[usize]) -> Result<TensorPromise<D::Output>, OpError>
 where
     D: ComputationDef,
     D::Output: NumberLike,
@@ -263,7 +257,7 @@ macro_rules! impl_view {
             T: NumberLike + ComputeWrapperSpec,
         {
             #[inline]
-            pub fn view(&self, shape: &[i32]) -> Result<TensorPromise<T>, OpError<'_>> {
+            pub fn view(&self, shape: &[i32]) -> Result<TensorPromise<T>, OpError> {
                 view_impl(self, shape)
             }
         }
@@ -277,7 +271,7 @@ macro_rules! impl_slice {
             T: NumberLike + ComputeWrapperSpec,
         {
             #[inline]
-            pub fn slice(&self, shape: &[SliceRange]) -> Result<TensorPromise<T>, OpError<'_>> {
+            pub fn slice(&self, shape: &[SliceRange]) -> Result<TensorPromise<T>, OpError> {
                 slice_impl(self, shape)
             }
         }
@@ -305,10 +299,7 @@ macro_rules! impl_transpose_axes {
             T: NumberLike + ComputeWrapperSpec,
         {
             #[inline]
-            pub fn transpose_axes<'a>(
-                &'a self,
-                axes: &[usize],
-            ) -> Result<TensorPromise<T>, OpError<'a>> {
+            pub fn transpose_axes(&self, axes: &[usize]) -> Result<TensorPromise<T>, OpError> {
                 transpose_axes_impl(self, axes)
             }
         }

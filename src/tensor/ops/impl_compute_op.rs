@@ -1,58 +1,11 @@
 use crate::tensor::definitions::{ChunkedIter, NumberLike};
 use crate::tensor::mem_formats::layout::Layout;
+use crate::tensor::ops::def_op::{OpKind, OpKindScalar};
 use crate::tensor::ops::reusable::{get_reusable_or_alloc, unordered_get_reusable_or_alloc_n};
 use crate::tensor::storage::{Storage, TensorData};
 use crate::tensor::traits::{Dimension, StreamingIterator};
 use cblas_sys::cblas_dgemm;
 use intel_mkl_sys::{vdAdd, vdDiv, vdMul, vdSub};
-
-// TODO: Design some way to fuse arbitrary combinations of ops
-// without handling it at the runtime, because it would be annoying.
-// Maybe macros?
-#[derive(Clone, Debug)]
-pub enum OpKindScalar<T: Copy> {
-    Sum(T),
-    Sub(T),
-    Mul(T),
-    Div(T),
-}
-
-#[derive(Clone, Debug)]
-pub enum OpKind<T: Copy> {
-    NoOp,
-    ScalarOp(OpKindScalar<T>),
-    FusedScalar(Box<[OpKindScalar<T>]>),
-    View(Layout),
-    Slice(Layout),
-    Transpose,
-    TransposeAxes(Layout),
-    Matmul,
-    AsContiguous,
-    Add,
-    Sub,
-    Mul,
-    Div,
-}
-
-impl<T: Copy> OpKind<T> {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            OpKind::NoOp => "NoOp",
-            OpKind::ScalarOp(_) => "ScalarOp",
-            OpKind::FusedScalar(_) => "FusedScalar",
-            OpKind::View(_) => "View",
-            OpKind::Slice(_) => "Slice",
-            OpKind::Transpose => "Transpose",
-            OpKind::TransposeAxes(_) => "TransposeAxes",
-            OpKind::Matmul => "Matmul",
-            OpKind::AsContiguous => "AsContiguous",
-            OpKind::Add => "Add",
-            OpKind::Sub => "Sub",
-            OpKind::Mul => "Mul",
-            OpKind::Div => "Div",
-        }
-    }
-}
 
 // TODO: Add BLAS support for scalar ops using vdAddl and the like
 fn compute_scalar_op<T: NumberLike>(op: &OpKindScalar<T>, mut input: Vec<T>) -> Vec<T> {
@@ -65,7 +18,7 @@ fn compute_scalar_op<T: NumberLike>(op: &OpKindScalar<T>, mut input: Vec<T>) -> 
         }
         OpKindScalar::Sub(scalar) => {
             for el in input.iter_mut() {
-                *el = *el + *scalar;
+                *el = *el - *scalar;
             }
             input
         }
@@ -225,7 +178,7 @@ fn cpu_compute_elementwise_f64(
 fn cpu_compute_op_f64(
     op: &OpKind<f64>,
     output_layout: &Layout,
-    inputs: Vec<TensorData<f64>>,
+    mut inputs: Vec<TensorData<f64>>,
 ) -> TensorData<f64> {
     match op {
         OpKind::ScalarOp(_) | OpKind::FusedScalar(_) => {
@@ -249,7 +202,7 @@ fn cpu_compute_op_f64(
         OpKind::Sub => compute_elementwise_tensor_tensor(inputs, vdSub),
         OpKind::Mul => compute_elementwise_tensor_tensor(inputs, vdMul),
         OpKind::Div => compute_elementwise_tensor_tensor(inputs, vdDiv),
-        OpKind::NoOp => inputs[0].clone_reference(),
+        OpKind::NoOp => unsafe { inputs.pop().unwrap_unchecked() },
         _ => todo!("not implemented"),
     }
 }

@@ -1,3 +1,4 @@
+pub mod def_op;
 pub mod fusion;
 pub mod impl_compute_op;
 mod impl_layout;

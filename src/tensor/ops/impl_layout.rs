@@ -1,12 +1,9 @@
 use crate::tensor::errors::OpError;
 use crate::tensor::mem_formats::layout::Layout;
-use crate::tensor::ops::impl_compute_op::OpKind;
+use crate::tensor::ops::def_op::OpKind;
 
 #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
-pub fn compute_layout<'a, T: Copy>(
-    op: &OpKind<T>,
-    inputs: &[&'a Layout],
-) -> Result<Layout, OpError<'a>> {
+pub fn compute_layout<T: Copy>(op: &OpKind<T>, inputs: &[&Layout]) -> Result<Layout, OpError> {
     match op {
         OpKind::ScalarOp(_) | OpKind::FusedScalar(_) | OpKind::NoOp => Ok(inputs[0].clone()),
         OpKind::View(new_layout)
@@ -36,7 +33,10 @@ pub fn compute_layout<'a, T: Copy>(
             if inputs[0].shape() == inputs[1].shape() {
                 Ok(inputs[0].clone())
             } else {
-                Err(OpError::NotSameShape(inputs[0].shape(), inputs[0].shape()))
+                Err(OpError::NotSameShape(
+                    inputs[0].shape().into(),
+                    inputs[0].shape().into(),
+                ))
             }
         }
         _ => todo!("not implemented"),

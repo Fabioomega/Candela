@@ -95,7 +95,7 @@ impl<T: NumberLike> Tensor<T> {
     #[inline]
     pub fn as_promise(&self) -> TensorPromise<T> {
         TensorPromise::new(
-            super::ops::impl_compute_op::OpKind::NoOp,
+            super::ops::def_op::OpKind::NoOp,
             [NodeKind::Edge(self.graph.clone())].into(),
         )
     }
