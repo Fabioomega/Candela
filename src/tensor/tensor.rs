@@ -14,7 +14,7 @@ pub struct Tensor<T: Copy> {
 
 impl<T: Copy> Tensor<T> {
     #[inline]
-    pub fn from_scalar(scalar: T, shape: &[i32]) -> Self {
+    pub fn from_scalar(scalar: T, shape: &[usize]) -> Self {
         Self {
             graph: Arc::new(TensorGraphEdge::from_tensor_data(TensorData::from_scalar(
                 scalar, shape,
@@ -23,21 +23,21 @@ impl<T: Copy> Tensor<T> {
     }
 
     #[inline]
-    pub fn from_vec(vector: Vec<T>, shape: &[i32], offset: usize) -> Self {
+    pub fn from_vec(vector: Vec<T>, shape: &[usize]) -> Self {
         Self {
             graph: Arc::new(TensorGraphEdge::from_tensor_data(TensorData::from_vec(
-                vector, shape, offset,
+                vector, shape, 0,
             ))),
         }
     }
 
     #[inline]
-    pub fn from_iter<I>(iter: I, shape: &[i32]) -> Self
+    pub fn from_iter<I>(iter: I, shape: &[usize]) -> Self
     where
         I: IntoIterator<Item = T>,
     {
         let vector: Vec<T> = std::vec::Vec::from_iter(iter);
-        Self::from_vec(vector, shape, 0)
+        Self::from_vec(vector, shape)
     }
 
     #[inline]
@@ -63,30 +63,28 @@ impl<T: Copy> Tensor<T> {
     }
 
     #[inline]
-    // Make a shallow copy of this tensor.
-    // That means that the underlying memory is, or may be, shared with other objects.
-    // The shallow copy still maintain connection with all the promises depending on this tensor
-    // If you want to create a shallow copy without any connection with existing promises
-    // use clone_detached() instead.
-    pub fn clone_reference(&self) -> Self {
+    /// Makes a deep copy of this tensor.
+    pub fn clone_deep(&self) -> Self {
+        let data = self.graph.get();
+
         Self {
-            graph: self.graph.clone(),
+            graph: Arc::new(TensorGraphEdge::from_tensor_data(data.clone_deep())),
         }
     }
 
     #[inline]
-    // Make a shallow copy of this tensor.
-    // That means that the underlying memory is, or may be, shared with other objects.
-    // The shallow copy does not maintain connection with promises depending on this tensor.
-    // It will be treated as a completely different tensor during topological sorting
-    // and materialization.
-    // If you want to create a shallow copy while maintaining connection with existing promises
-    // use clone_reference() instead.
+    /// Make a shallow copy of this tensor.
+    /// That means that the underlying memory is, or may be, shared with other objects.
+    /// The shallow copy does not maintain connection with promises depending on this tensor.
+    /// It will be treated as a completely different tensor during topological sorting
+    /// and materialization.
+    /// If you want to create a shallow copy while maintaining connection with existing promises
+    /// use .clone() instead.
     pub fn clone_detached(&self) -> Self {
         let data = self.graph.get();
 
         Self {
-            graph: Arc::new(TensorGraphEdge::from_tensor_data(data.clone_reference())),
+            graph: Arc::new(TensorGraphEdge::from_tensor_data(data.clone())),
         }
     }
 }
@@ -94,10 +92,13 @@ impl<T: Copy> Tensor<T> {
 impl<T: NumberLike> Tensor<T> {
     #[inline]
     pub fn as_promise(&self) -> TensorPromise<T> {
-        TensorPromise::new(
-            super::ops::def_op::OpKind::NoOp,
-            [NodeKind::Edge(self.graph.clone())].into(),
-        )
+        unsafe {
+            TensorPromise::new(
+                super::ops::def_op::OpKind::NoOp,
+                [NodeKind::Edge(self.graph.clone())].into(),
+            )
+            .unwrap_unchecked()
+        }
     }
 }
 
@@ -108,15 +109,16 @@ impl<T: Copy> Dimension for Tensor<T> {
     }
 }
 
-// A clone is a deep clone always. That means that memory will be allocated every time a clone is done.
-// If you don't want to allocate new memory but want a different layout, or the like,
-// use clone_reference() or clone_detached() instead.
+/// Make a shallow copy of this tensor.
+/// That means that the underlying memory is, or may be, shared with other objects.
+/// The shallow copy still maintain connection with all the promises depending on this tensor
+/// If you want to create a shallow copy without any connection with existing promises
+/// use clone_detached() instead, or clone_deep for a deep clone.
 impl<T: Copy> Clone for Tensor<T> {
+    #[inline]
     fn clone(&self) -> Self {
-        let data = self.graph.get();
-
         Self {
-            graph: Arc::new(TensorGraphEdge::from_tensor_data(data.clone())),
+            graph: self.graph.clone(),
         }
     }
 }

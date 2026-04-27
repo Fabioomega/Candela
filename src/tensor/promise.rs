@@ -2,6 +2,7 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::tensor::definitions::NumberLike;
+use crate::tensor::errors::OpError;
 use crate::tensor::graph::{NodeKind, TensorGraphCacheNode, TensorGraphNode};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKind;
@@ -16,9 +17,14 @@ pub struct RawTensorPromise<P> {
 }
 
 impl<T: NumberLike> TensorPromise<T> {
-    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Self {
-        Self {
-            graph: Arc::new(TensorGraphNode::new(op, inputs)),
+    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Result<Self, OpError> {
+        let node = TensorGraphNode::new(op, inputs);
+
+        match node {
+            Ok(node) => Ok(Self {
+                graph: Arc::new(node),
+            }),
+            Err(err) => Err(err),
         }
     }
 
@@ -29,14 +35,22 @@ impl<T: NumberLike> TensorPromise<T> {
     }
 
     pub fn cache(self) -> CachedTensorPromise<T> {
-        CachedTensorPromise::new(OpKind::NoOp, [NodeKind::Node(self.graph)].into())
+        unsafe {
+            CachedTensorPromise::new(OpKind::NoOp, [NodeKind::Node(self.graph)].into())
+                .unwrap_unchecked()
+        }
     }
 }
 
 impl<T: NumberLike> CachedTensorPromise<T> {
-    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Self {
-        Self {
-            graph: Arc::new(TensorGraphCacheNode::new(op, inputs)),
+    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Result<Self, OpError> {
+        let node = TensorGraphCacheNode::new(op, inputs);
+
+        match node {
+            Ok(node) => Ok(Self {
+                graph: Arc::new(node),
+            }),
+            Err(err) => Err(err),
         }
     }
 

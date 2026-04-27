@@ -110,7 +110,7 @@ fn cpu_compute_matmul_f64(
     // and if it would be contiguous if it was.
     if raw_a.shape().len() >= 2
         && raw_a.stride()[a_stride_len - 2] == 1
-        && raw_a.stride()[a_stride_len - 1] == raw_a.shape()[a_stride_len - 1]
+        && raw_a.stride()[a_stride_len - 1] as usize == raw_a.shape()[a_stride_len - 1]
     {
         transa = cblas::Transpose::Ordinary;
         is_a_trans = true;
@@ -118,7 +118,7 @@ fn cpu_compute_matmul_f64(
 
     if raw_b.shape().len() >= 2
         && raw_b.stride()[b_stride_len - 2] == 1
-        && raw_b.stride()[b_stride_len - 1] == raw_b.shape()[b_stride_len - 1]
+        && raw_b.stride()[b_stride_len - 1] as usize == raw_b.shape()[b_stride_len - 1]
     {
         transb = cblas::Transpose::Ordinary;
         is_b_trans = true;
@@ -189,7 +189,7 @@ fn cpu_compute_op_f64(
         | OpKind::TransposeAxes(new_layout) => inputs[0].as_layout(new_layout.clone()),
         OpKind::AsContiguous => {
             if inputs[0].is_contiguous() {
-                inputs[0].clone_reference()
+                inputs[0].clone()
             } else {
                 TensorData::from_iter(inputs[0].copied_iter(), inputs[0].shape()).mark_as_reusable()
             }

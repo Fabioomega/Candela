@@ -35,7 +35,7 @@ pub fn compute_layout<T: Copy>(op: &OpKind<T>, inputs: &[&Layout]) -> Result<Lay
             } else {
                 Err(OpError::NotSameShape(
                     inputs[0].shape().into(),
-                    inputs[0].shape().into(),
+                    inputs[1].shape().into(),
                 ))
             }
         }

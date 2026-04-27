@@ -8,7 +8,7 @@ use crate::cfg_debug_only;
 
 #[derive(Clone, Debug)]
 pub struct Layout {
-    pub(crate) shape: Box<[i32]>,
+    pub(crate) shape: Box<[usize]>,
     pub(crate) stride: Box<[i32]>,
     pub(crate) adj_stride: Box<[i32]>,
     pub(crate) offset: usize,
@@ -17,7 +17,7 @@ pub struct Layout {
 
 impl Layout {
     pub fn new(
-        shape: Box<[i32]>,
+        shape: Box<[usize]>,
         stride: Box<[i32]>,
         adj_stride: Box<[i32]>,
         offset: usize,
@@ -32,34 +32,34 @@ impl Layout {
         }
     }
 
-    pub fn from_shape(shape: &[i32], offset: usize) -> Self {
-        let len: i32 = shape.iter().product();
+    pub fn from_shape(shape: &[usize], offset: usize) -> Self {
+        let len: usize = shape.iter().product();
 
         Self {
             shape: shape.into(),
             stride: calculate_dim_stride(shape),
             adj_stride: vec![1; shape.len()].into_boxed_slice(),
             offset,
-            len: len as usize,
+            len,
         }
     }
 
-    pub fn from_slice(shape: &[i32], stride: &[i32], offset: usize) -> Self {
-        let len: i32 = shape.iter().product();
+    pub fn from_slice(shape: &[usize], stride: &[i32], offset: usize) -> Self {
+        let len: usize = shape.iter().product();
 
         Self {
             shape: shape.into(),
             stride: stride.into(),
             adj_stride: calculate_adjacent_dim_stride(stride, shape),
             offset,
-            len: len as usize,
+            len,
         }
     }
 
-    pub fn view(&self, shape: &[i32]) -> Result<Self, OpError> {
+    pub fn view(&self, shape: &[usize]) -> Result<Self, OpError> {
         cfg_debug_only!({
-            let size: i32 = shape.iter().product();
-            if size.max(0) as usize != self.len() {
+            let size: usize = shape.iter().product();
+            if size != self.len() {
                 return Err(OpError::InvalidViewShape);
             }
 
@@ -80,14 +80,14 @@ impl Layout {
 
         let unwrapped_info = unsafe { info.unwrap_unchecked() };
 
-        let len: i32 = unwrapped_info.shape.iter().product();
+        let len: usize = unwrapped_info.shape.iter().product();
 
         Ok(Self {
             shape: unwrapped_info.shape,
             stride: self.stride.clone(),
             adj_stride: unwrapped_info.adj_stride,
             offset: unwrapped_info.offset,
-            len: len as usize,
+            len,
         })
     }
 
@@ -102,7 +102,7 @@ impl Layout {
             stride[last] = stride[i];
             stride[i] = temp;
 
-            temp = shape[last];
+            let temp = shape[last];
             shape[last] = shape[i];
             shape[i] = temp;
         }
@@ -124,7 +124,7 @@ impl Layout {
         });
 
         let mut stride: Vec<i32> = Vec::with_capacity(self.stride.len());
-        let mut shape: Vec<i32> = Vec::with_capacity(self.stride.len());
+        let mut shape: Vec<usize> = Vec::with_capacity(self.stride.len());
 
         for &axis in axes.iter() {
             cfg_debug_only!(if axis >= self.stride.len() {
@@ -146,32 +146,32 @@ impl Layout {
         })
     }
 
-    pub fn broadcast_to_shape(&self, shape: &[i32]) -> Result<Self, OpError> {
-        cfg_debug_only!(
-            if shape.len() > self.shape.len() && shape[0] % self.shape[0] == 0 {
-                return Err(OpError::CannotBroadcast);
-            }
-        );
-        let diff = shape.len() - self.shape.len();
+    // pub fn broadcast_to_shape(&self, shape: &[usize]) -> Result<Self, OpError> {
+    //     cfg_debug_only!(
+    //         if shape.len() > self.shape.len() && shape[0] % self.shape[0] == 0 {
+    //             return Err(OpError::CannotBroadcast);
+    //         }
+    //     );
+    //     let diff = shape.len() - self.shape.len();
 
-        let mut stride: Vec<i32> = Vec::new();
-        stride.extend((0..diff).map(|_| 0));
-        stride.extend_from_slice(shape);
+    //     let mut stride: Vec<i32> = Vec::new();
+    //     stride.extend((0..diff).map(|_| 0));
+    //     stride.extend_from_slice(shape);
 
-        let adj_stride = calculate_adjacent_dim_stride(&stride, shape);
-        let len: i32 = self.shape().iter().product();
-        let len: usize = len as usize;
+    //     let adj_stride = calculate_adjacent_dim_stride(&stride, shape);
+    //     let len: i32 = self.shape().iter().product();
+    //     let len: usize = len as usize;
 
-        Ok(Self {
-            shape: shape.into(),
-            stride: stride.into_boxed_slice(),
-            adj_stride,
-            offset: self.offset,
-            len,
-        })
-    }
+    //     Ok(Self {
+    //         shape: shape.into(),
+    //         stride: stride.into_boxed_slice(),
+    //         adj_stride,
+    //         offset: self.offset,
+    //         len,
+    //     })
+    // }
 
-    pub fn shape_as_3d(&self) -> [i32; 3] {
+    pub fn shape_as_3d(&self) -> [usize; 3] {
         if self.shape.len() == 1 {
             [1, 1, self.shape[0]]
         } else if self.shape.len() == 2 {
@@ -179,7 +179,7 @@ impl Layout {
         } else {
             let len = self.shape.len();
 
-            let mut acc: i32 = 1;
+            let mut acc: usize = 1;
             for i in 0..len - 2 {
                 acc *= self.shape[i];
             }
@@ -245,7 +245,7 @@ impl Layout {
     }
 
     #[inline]
-    pub fn shape(&self) -> &'_ [i32] {
+    pub fn shape(&self) -> &'_ [usize] {
         &self.shape
     }
 

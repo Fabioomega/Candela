@@ -1,5 +1,4 @@
 use std::iter::FusedIterator;
-use std::ptr::NonNull;
 use std::sync::Arc;
 
 use crate::debug_assert_positive;
@@ -135,7 +134,7 @@ impl<'a, T: Copy> FusedIterator for CopiedContiguousIter<'a, T> {}
 pub struct SliceIter<'a, T: Copy> {
     data: &'a Arc<Vec<T>>,
     pos: isize,
-    counter: Box<[i32]>,
+    counter: Box<[usize]>,
     layout: &'a Layout,
     left_over: usize,
 }
@@ -268,7 +267,7 @@ impl<'a, T: Copy> FusedIterator for SliceIter<'a, T> {}
 pub struct CopiedSliceIter<'a, T: Copy> {
     data: &'a Arc<Vec<T>>,
     pos: isize,
-    counter: Box<[i32]>,
+    counter: Box<[usize]>,
     layout: &'a Layout,
     left_over: usize,
 }
@@ -342,7 +341,7 @@ pub struct InformedSliceIter<'a, T: Copy> {
     layout: &'a Layout,
     next_state: StepInfo<T>,
     pos: i64,
-    counter: Vec<i32>,
+    counter: Vec<usize>,
 }
 
 impl<'a, T: Copy> InformedSliceIter<'a, T> {

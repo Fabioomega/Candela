@@ -4,7 +4,7 @@ use crate::tensor::storage::TensorData;
 pub trait Dimension {
     fn layout(&self) -> &Layout;
 
-    fn shape(&self) -> &'_ [i32] {
+    fn shape(&self) -> &'_ [usize] {
         self.layout().shape()
     }
 

@@ -82,8 +82,8 @@ impl<T: Copy> TensorData<T> {
     }
 
     #[inline]
-    pub fn from_scalar(scalar: T, shape: &[i32]) -> Self {
-        let len: i32 = shape.iter().product();
+    pub fn from_scalar(scalar: T, shape: &[usize]) -> Self {
+        let len: usize = shape.iter().product();
 
         debug_assert_positive!(len);
 
@@ -95,7 +95,7 @@ impl<T: Copy> TensorData<T> {
     }
 
     #[inline]
-    pub fn from_arc(buffer: Arc<Vec<T>>, shape: &[i32]) -> Self {
+    pub fn from_arc(buffer: Arc<Vec<T>>, shape: &[usize]) -> Self {
         Self {
             storage: Storage::from_arc(buffer),
             layout: Layout::from_shape(shape, 0),
@@ -104,8 +104,8 @@ impl<T: Copy> TensorData<T> {
     }
 
     #[inline]
-    pub fn from_vec(vector: Vec<T>, shape: &[i32], offset: usize) -> Self {
-        debug_assert!(vector.len() <= (shape.iter().product::<i32>() as usize));
+    pub fn from_vec(vector: Vec<T>, shape: &[usize], offset: usize) -> Self {
+        debug_assert!(vector.len() <= (shape.iter().product()));
 
         Self {
             storage: Storage::from_vec(vector),
@@ -115,7 +115,7 @@ impl<T: Copy> TensorData<T> {
     }
 
     #[inline]
-    pub fn from_iter<I>(iter: I, shape: &[i32]) -> Self
+    pub fn from_iter<I>(iter: I, shape: &[usize]) -> Self
     where
         I: IntoIterator<Item = T>,
     {
@@ -177,9 +177,9 @@ impl<T: Copy> TensorData<T> {
     }
 
     #[inline]
-    pub fn clone_reference(&self) -> Self {
+    pub fn clone_deep(&self) -> Self {
         Self {
-            storage: self.storage.clone_reference(),
+            storage: self.storage.clone(),
             layout: self.layout.clone(),
             reusable: self.reusable,
         }
@@ -190,7 +190,7 @@ impl<T: Copy> TensorData<T> {
         if !self.is_contiguous() {
             Self::from_iter(self.copied_iter(), self.shape())
         } else {
-            self.clone()
+            self.clone_deep()
         }
     }
 
@@ -224,7 +224,7 @@ impl<T: Copy + Default> TensorData<T> {
 impl<T: Copy> Clone for TensorData<T> {
     fn clone(&self) -> Self {
         Self {
-            storage: self.storage.clone(),
+            storage: self.storage.clone_reference(),
             layout: self.layout.clone(),
             reusable: self.reusable,
         }

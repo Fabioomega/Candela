@@ -5,11 +5,11 @@ pub enum OpError {
     InvalidSliceShape(usize, usize),
     OutOfBoundSlice,
     OutOfBoundAxes,
-    CannotMatmul(i32, i32),
+    CannotMatmul(usize, usize),
     CannotBroadcast,
     NotEnoughAxes(usize, usize),
-    NotSameShape(Box<[i32]>, Box<[i32]>),
-    NotSameBatch(i32, i32),
+    NotSameShape(Box<[usize]>, Box<[usize]>),
+    NotSameBatch(usize, usize),
 }
 
 impl std::fmt::Display for OpError {

@@ -23,7 +23,7 @@ trait ComputationDef {
 
 //////////////////////////////////////////////////////////////
 
-fn view_impl<D>(source: &D, shape: &[i32]) -> Result<TensorPromise<D::Output>, OpError>
+fn view_impl<D>(source: &D, shape: &[usize]) -> Result<TensorPromise<D::Output>, OpError>
 where
     D: ComputationDef,
     D::Output: NumberLike,
@@ -37,9 +37,12 @@ where
         }
     });
 
-    Ok(TensorPromise::new(
-        OpKind::View(unsafe { layout.unwrap_unchecked() }),
+    let layout = unsafe { layout.unwrap_unchecked() };
+
+    Ok(TensorPromise::with_layout(
+        OpKind::View(layout.clone()),
         input,
+        layout,
     ))
 }
 
@@ -57,9 +60,12 @@ where
         }
     });
 
-    Ok(TensorPromise::new(
-        OpKind::Slice(unsafe { layout.unwrap_unchecked() }),
+    let layout = unsafe { layout.unwrap_unchecked() };
+
+    Ok(TensorPromise::with_layout(
+        OpKind::Slice(layout.clone()),
         input,
+        layout,
     ))
 }
 
@@ -70,7 +76,7 @@ where
 {
     let input = Box::new([source.create_node()]);
 
-    TensorPromise::new(OpKind::Transpose, input)
+    unsafe { TensorPromise::new(OpKind::Transpose, input).unwrap_unchecked() }
 }
 
 fn transpose_axes_impl<D>(source: &D, axes: &[usize]) -> Result<TensorPromise<D::Output>, OpError>
@@ -87,9 +93,12 @@ where
         }
     });
 
-    Ok(TensorPromise::new(
-        OpKind::TransposeAxes(unsafe { layout.unwrap_unchecked() }),
+    let layout = unsafe { layout.unwrap_unchecked() };
+
+    Ok(TensorPromise::with_layout(
+        OpKind::TransposeAxes(layout.clone()),
         input,
+        layout,
     ))
 }
 
@@ -100,7 +109,7 @@ where
 {
     let input = Box::new([source.create_node()]);
 
-    TensorPromise::new(OpKind::AsContiguous, input)
+    unsafe { TensorPromise::new(OpKind::AsContiguous, input).unwrap_unchecked() }
 }
 
 //////////////////////////////////////////////////////////////
@@ -110,10 +119,13 @@ where
     D: ComputationDef,
     D::Output: Copy + ComputeWrapperSpec,
 {
-    TensorPromise::new(
-        OpKind::ScalarOp(OpKindScalar::Sum(rhs)),
-        Box::new([lhs.create_node()]),
-    )
+    unsafe {
+        TensorPromise::new(
+            OpKind::ScalarOp(OpKindScalar::Sum(rhs)),
+            Box::new([lhs.create_node()]),
+        )
+        .unwrap_unchecked()
+    }
 }
 
 fn sub_scalar_impl<D>(lhs: &D, rhs: D::Output) -> TensorPromise<D::Output>
@@ -121,10 +133,13 @@ where
     D: ComputationDef,
     D::Output: Copy + ComputeWrapperSpec,
 {
-    TensorPromise::new(
-        OpKind::ScalarOp(OpKindScalar::Sub(rhs)),
-        Box::new([lhs.create_node()]),
-    )
+    unsafe {
+        TensorPromise::new(
+            OpKind::ScalarOp(OpKindScalar::Sub(rhs)),
+            Box::new([lhs.create_node()]),
+        )
+        .unwrap_unchecked()
+    }
 }
 
 fn mul_scalar_impl<D>(lhs: &D, rhs: D::Output) -> TensorPromise<D::Output>
@@ -132,10 +147,13 @@ where
     D: ComputationDef,
     D::Output: Copy + ComputeWrapperSpec,
 {
-    TensorPromise::new(
-        OpKind::ScalarOp(OpKindScalar::Mul(rhs)),
-        Box::new([lhs.create_node()]),
-    )
+    unsafe {
+        TensorPromise::new(
+            OpKind::ScalarOp(OpKindScalar::Mul(rhs)),
+            Box::new([lhs.create_node()]),
+        )
+        .unwrap_unchecked()
+    }
 }
 
 fn div_scalar_impl<D>(lhs: &D, rhs: D::Output) -> TensorPromise<D::Output>
@@ -143,10 +161,13 @@ where
     D: ComputationDef,
     D::Output: Copy + ComputeWrapperSpec,
 {
-    TensorPromise::new(
-        OpKind::ScalarOp(OpKindScalar::Div(rhs)),
-        Box::new([lhs.create_node()]),
-    )
+    unsafe {
+        TensorPromise::new(
+            OpKind::ScalarOp(OpKindScalar::Div(rhs)),
+            Box::new([lhs.create_node()]),
+        )
+        .unwrap_unchecked()
+    }
 }
 
 //////////////////////////////////////////////////////////////
@@ -257,7 +278,7 @@ macro_rules! impl_view {
             T: NumberLike + ComputeWrapperSpec,
         {
             #[inline]
-            pub fn view(&self, shape: &[i32]) -> Result<TensorPromise<T>, OpError> {
+            pub fn view(&self, shape: &[usize]) -> Result<TensorPromise<T>, OpError> {
                 view_impl(self, shape)
             }
         }

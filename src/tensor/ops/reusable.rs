@@ -48,7 +48,7 @@ pub fn get_reusable_or_alloc<T: Copy + Default>(tensor: TensorData<T>) -> Reusab
 
 #[inline]
 fn unordered_remove_tensor<T: Copy>(tensors: &mut Vec<TensorData<T>>, n: usize) -> TensorData<T> {
-    let temp = tensors[n].clone_reference();
+    let temp = tensors[n].clone();
     tensors[n] = tensors.pop().unwrap();
 
     temp

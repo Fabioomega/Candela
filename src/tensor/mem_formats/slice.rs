@@ -86,7 +86,7 @@ impl From<Range<i32>> for SliceRange {
 #[derive(Debug)]
 pub struct SliceInfo {
     pub(crate) offset: usize,
-    pub(crate) shape: Box<[i32]>,
+    pub(crate) shape: Box<[usize]>,
     pub(crate) adj_stride: Box<[i32]>,
 }
 
@@ -95,7 +95,7 @@ impl SliceInfo {
         debug_assert!(layout.shape().len() >= range.len());
 
         let mut offset: i64 = layout.offset() as i64;
-        let mut new_shape: Vec<i32> = layout.shape().into();
+        let mut new_shape: Vec<usize> = layout.shape().into();
 
         for (dim, r) in range.iter().enumerate() {
             let start = match r.start {
@@ -103,23 +103,23 @@ impl SliceInfo {
                 SliceBounds::Index(i) => {
                     offset += (i as i64) * layout.stride()[dim] as i64;
 
-                    i as i32
+                    i
                 }
                 SliceBounds::ReverseIndex(i) => {
-                    let true_index = layout.shape()[dim] as i64 - i as i64;
-                    offset += true_index * layout.stride()[dim] as i64;
+                    let true_index = layout.shape()[dim] - i;
+                    offset += true_index as i64 * layout.stride()[dim] as i64;
 
-                    true_index as i32
+                    true_index
                 }
                 _ => unreachable!("a new variation of SliceBounds was implemented"),
             };
 
             let end = match r.end {
                 SliceBounds::End => layout.shape()[dim],
-                SliceBounds::Index(i) => i as i32,
+                SliceBounds::Index(i) => i,
                 SliceBounds::ReverseIndex(i) => {
-                    let true_index = layout.shape()[dim] as i64 - i as i64;
-                    true_index as i32
+                    let true_index = layout.shape()[dim] - i;
+                    true_index
                 }
                 _ => unreachable!("a new variation of SliceBounds was implemented"),
             };
@@ -132,7 +132,7 @@ impl SliceInfo {
         }
 
         cfg_debug_only!({
-            let len: i32 = new_shape.iter().product();
+            let len: usize = new_shape.iter().product();
             let len = len as usize;
 
             if len + (offset as usize) > layout.len() {

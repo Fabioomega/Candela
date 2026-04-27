@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::tensor::definitions::NumberLike;
+use crate::tensor::errors::OpError;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::ops::fusion::try_fuse;
@@ -66,7 +67,7 @@ fn get_inputs_tensor_data<T: Copy>(
                 computation_cache
                     .get(&id)
                     .unwrap()
-                    .clone_reference()
+                    .clone()
                     .mark_as_not_reusable()
             }
         } else {
@@ -105,7 +106,7 @@ impl<T: Copy> Promising for TensorGraphEdge<T> {
 
     #[inline]
     fn compute(&self) -> TensorData<T> {
-        self.data.clone_reference()
+        self.data.clone()
     }
 
     #[inline]
@@ -131,27 +132,24 @@ pub struct TensorGraphNode<T: Copy> {
 }
 
 impl<T: NumberLike> TensorGraphNode<T> {
-    // Panics if the layout is fucked for the specified operation
-    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Self {
+    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Result<Self, OpError> {
         let fused = try_fuse(op, inputs);
 
         let layouts = get_inputs_layout(&fused.inputs);
         let layout = compute_layout(&fused.op, &layouts);
 
-        if layout.is_err() {
-            unreachable!(
-                "the compute layout should never fail. if this happened the op interface is wrong"
-            );
+        if let Err(err) = layout {
+            return Err(err);
         }
 
         let unchecked_layout = unsafe { layout.unwrap_unchecked() };
 
-        Self {
+        Ok(Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             op: fused.op,
             inputs: fused.inputs,
             layout: unchecked_layout,
-        }
+        })
     }
 
     pub fn with_layout(op: OpKind<T>, inputs: Box<[NodeKind<T>]>, layout: Layout) -> Self {
@@ -239,7 +237,7 @@ impl<T: NumberLike + ComputeWrapperSpec> Promising for TensorGraphNode<T> {
                 }
                 NodeKind::Cache(cache) => {
                     let tensor_data = if cache.is_cache_filled() {
-                        unsafe { cache.cache.get().unwrap_unchecked().clone_reference() }
+                        unsafe { cache.cache.get().unwrap_unchecked().clone() }
                             .mark_as_not_reusable()
                     } else {
                         let inputs: Vec<TensorData<T>> = get_inputs_tensor_data(
@@ -249,7 +247,7 @@ impl<T: NumberLike + ComputeWrapperSpec> Promising for TensorGraphNode<T> {
                         );
 
                         let result = cpu_compute(&cache.node.op, cache.layout(), inputs);
-                        let _ = cache.cache.set(result.clone_reference());
+                        let _ = cache.cache.set(result.clone());
                         result.mark_as_not_reusable()
                     };
 
@@ -305,10 +303,15 @@ impl<T: Copy> TensorGraphCacheNode<T> {
 }
 
 impl<T: NumberLike> TensorGraphCacheNode<T> {
-    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Self {
-        Self {
-            node: TensorGraphNode::new(op, inputs),
-            cache: OnceLock::new(),
+    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Result<Self, OpError> {
+        let node = TensorGraphNode::new(op, inputs);
+
+        match node {
+            Ok(node) => Ok(Self {
+                node: node,
+                cache: OnceLock::new(),
+            }),
+            Err(err) => Err(err),
         }
     }
 
@@ -326,9 +329,7 @@ impl<T: NumberLike + ComputeWrapperSpec> Promising for TensorGraphCacheNode<T> {
     fn compute(&self) -> TensorData<T> {
         // TODO: Once the cuda async is implemented, it would be ideal to change this to an async
         // OnceCell from tokio or some other library
-        self.cache
-            .get_or_init(|| self.node.compute())
-            .clone_reference()
+        self.cache.get_or_init(|| self.node.compute()).clone()
     }
 
     #[inline]
