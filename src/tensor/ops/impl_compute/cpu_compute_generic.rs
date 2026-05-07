@@ -10,6 +10,15 @@ use crate::tensor::ops::def_op::OpKindScalar;
 use crate::tensor::storage::TensorData;
 use crate::tensor::traits::StreamingIterator;
 
+struct CommonBLASOps<T> {
+    add: unsafe extern "C" fn(i32, *const T, i32, *const T, i32, *mut T, i32),
+    scal: unsafe extern "C" fn(i32, T, *mut T, i32),
+    axby: unsafe extern "C" fn(i32, T, *const T, i32, *mut T, i32),
+    exp: unsafe extern "C" fn(i32, *const T, *mut T),
+    ln: unsafe extern "C" fn(i32, *const T, *mut T),
+    log2: unsafe extern "C" fn(i32, *const T, *mut T),
+}
+
 #[inline]
 pub fn clone_to_buffer<T: NumberLike>(tensor: TensorData<T>, mut buffer: Vec<T>) -> Vec<T> {
     branch_fast_iter!(tensor.copied_fast_iter() => iter, {
@@ -36,12 +45,7 @@ fn compute_blas_scalar_op<T: NumberLike>(
     n: usize,
     input: *const T,
     output: *mut T,
-    add: unsafe extern "C" fn(i32, *const T, i32, *const T, i32, *mut T, i32),
-    scal: unsafe extern "C" fn(i32, T, *mut T, i32),
-    axby: unsafe extern "C" fn(i32, T, *const T, i32, *mut T, i32),
-    exp: unsafe extern "C" fn(i32, *const T, *mut T),
-    ln: unsafe extern "C" fn(i32, *const T, *mut T),
-    log2: unsafe extern "C" fn(i32, *const T, *mut T),
+    blas: CommonBLASOps<T>,
 ) {
     let mut ops_iter = ops.iter();
 
@@ -50,16 +54,16 @@ fn compute_blas_scalar_op<T: NumberLike>(
             OpKindScalar::AxBy(a, b) => {
                 fill_buffer(output, n, b);
 
-                unsafe { axby(n as i32, a, input, 1, output, 1) };
+                unsafe { (blas.axby)(n as i32, a, input, 1, output, 1) };
             }
             OpKindScalar::Exp => {
-                unsafe { exp(n as i32, input, output) };
+                unsafe { (blas.exp)(n as i32, input, output) };
             }
             OpKindScalar::Ln => {
-                unsafe { ln(n as i32, input, output) };
+                unsafe { (blas.ln)(n as i32, input, output) };
             }
             OpKindScalar::Log2 => {
-                unsafe { log2(n as i32, input, output) };
+                unsafe { (blas.log2)(n as i32, input, output) };
             }
         }
     }
@@ -67,18 +71,18 @@ fn compute_blas_scalar_op<T: NumberLike>(
     for op in ops_iter {
         match *op {
             OpKindScalar::AxBy(a, b) => {
-                unsafe { scal(n as i32, a, output, 1) };
+                unsafe { (blas.scal)(n as i32, a, output, 1) };
 
-                unsafe { add(n as i32, output, 1, &b as *const T, 0, output, 1) };
+                unsafe { (blas.add)(n as i32, output, 1, &b as *const T, 0, output, 1) };
             }
             OpKindScalar::Exp => {
-                unsafe { exp(n as i32, output, output) };
+                unsafe { (blas.exp)(n as i32, output, output) };
             }
             OpKindScalar::Ln => {
-                unsafe { ln(n as i32, output, output) };
+                unsafe { (blas.ln)(n as i32, output, output) };
             }
             OpKindScalar::Log2 => {
-                unsafe { log2(n as i32, output, output) };
+                unsafe { (blas.log2)(n as i32, output, output) };
             }
         }
     }
@@ -89,12 +93,7 @@ fn compute_non_cont_scalar_op_f64<T: NumberLike>(
     ops: &[OpKindScalar<T>],
     input: &TensorData<T>,
     output: *mut T,
-    add: unsafe extern "C" fn(i32, *const T, i32, *const T, i32, *mut T, i32),
-    scal: unsafe extern "C" fn(i32, T, *mut T, i32),
-    axby: unsafe extern "C" fn(i32, T, *const T, i32, *mut T, i32),
-    exp: unsafe extern "C" fn(i32, *const T, *mut T),
-    ln: unsafe extern "C" fn(i32, *const T, *mut T),
-    log2: unsafe extern "C" fn(i32, *const T, *mut T),
+    blas: CommonBLASOps<T>,
 ) {
     // TODO: For big ops tensors rayon would be ideal.
     let mut it: ChunkedIter<'_, T> = input.packed_iter();
@@ -108,16 +107,16 @@ fn compute_non_cont_scalar_op_f64<T: NumberLike>(
                 OpKindScalar::AxBy(a, b) => {
                     fill_buffer(pos, chunk.packing_buffer.len(), b);
 
-                    unsafe { axby(n as i32, a, chunk.packing_buffer.as_ptr(), 1, pos, 1) };
+                    unsafe { (blas.axby)(n as i32, a, chunk.packing_buffer.as_ptr(), 1, pos, 1) };
                 }
                 OpKindScalar::Exp => {
-                    unsafe { exp(n as i32, chunk.packing_buffer.as_ptr(), pos) };
+                    unsafe { (blas.exp)(n as i32, chunk.packing_buffer.as_ptr(), pos) };
                 }
                 OpKindScalar::Ln => {
-                    unsafe { ln(n as i32, chunk.packing_buffer.as_ptr(), pos) };
+                    unsafe { (blas.ln)(n as i32, chunk.packing_buffer.as_ptr(), pos) };
                 }
                 OpKindScalar::Log2 => {
-                    unsafe { log2(n as i32, chunk.packing_buffer.as_ptr(), pos) };
+                    unsafe { (blas.log2)(n as i32, chunk.packing_buffer.as_ptr(), pos) };
                 }
             }
         }
@@ -125,18 +124,18 @@ fn compute_non_cont_scalar_op_f64<T: NumberLike>(
         for op in ops_iter {
             match *op {
                 OpKindScalar::AxBy(a, b) => {
-                    unsafe { scal(n as i32, a, output, 1) };
+                    unsafe { (blas.scal)(n as i32, a, output, 1) };
 
-                    unsafe { add(n as i32, pos, 1, &b as *const T, 0, pos, 1) };
+                    unsafe { (blas.add)(n as i32, pos, 1, &b as *const T, 0, pos, 1) };
                 }
                 OpKindScalar::Exp => {
-                    unsafe { exp(n as i32, pos, pos) };
+                    unsafe { (blas.exp)(n as i32, pos, pos) };
                 }
                 OpKindScalar::Ln => {
-                    unsafe { ln(n as i32, pos, pos) };
+                    unsafe { (blas.ln)(n as i32, pos, pos) };
                 }
                 OpKindScalar::Log2 => {
-                    unsafe { log2(n as i32, pos, pos) };
+                    unsafe { (blas.log2)(n as i32, pos, pos) };
                 }
             }
         }
