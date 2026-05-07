@@ -161,7 +161,63 @@ pub fn compute_elementwise_tensor_tensor<T: Copy + Default>(
                 )
             }
         }
-        (true, false) => {}
+        (true, false) => {
+            let mut it: ChunkedIter<'_, T> = inputs[1].packed_iter();
+
+            while let Some(chunk) = it.next() {
+                let n = chunk.packing_buffer.len();
+                let input_ptr = unsafe {
+                    inputs[0]
+                        .storage
+                        .buffer
+                        .as_ptr()
+                        .add(chunk.absolute_buffer_position)
+                };
+                let output_ptr = unsafe {
+                    output_buffer
+                        .as_mut_ptr()
+                        .add(chunk.absolute_buffer_position)
+                };
+
+                unsafe {
+                    operation(
+                        n as i32,
+                        input_ptr,
+                        chunk.packing_buffer.as_ptr(),
+                        output_ptr,
+                    )
+                };
+            }
+        }
+        (false, true) => {
+            let mut it: ChunkedIter<'_, T> = inputs[0].packed_iter();
+
+            while let Some(chunk) = it.next() {
+                let n = chunk.packing_buffer.len();
+                let input_ptr = unsafe {
+                    inputs[1]
+                        .storage
+                        .buffer
+                        .as_ptr()
+                        .add(chunk.absolute_buffer_position)
+                };
+                let output_ptr = unsafe {
+                    output_buffer
+                        .as_mut_ptr()
+                        .add(chunk.absolute_buffer_position)
+                };
+
+                unsafe {
+                    operation(
+                        n as i32,
+                        chunk.packing_buffer.as_ptr(),
+                        input_ptr,
+                        output_ptr,
+                    )
+                };
+            }
+        }
+
         _ => unreachable!(),
     };
 
