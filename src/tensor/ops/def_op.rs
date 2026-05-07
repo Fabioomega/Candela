@@ -5,10 +5,10 @@ use crate::tensor::mem_formats::layout::Layout;
 // Maybe macros?
 #[derive(Clone, Debug)]
 pub enum OpKindScalar<T: Copy> {
-    Sum(T),
-    Sub(T),
-    Mul(T),
-    Div(T),
+    AxBy(T, T),
+    Exp,
+    Ln,
+    Log2,
 }
 
 #[derive(Clone, Debug)]

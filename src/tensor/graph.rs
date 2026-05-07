@@ -10,7 +10,8 @@ use crate::tensor::errors::OpError;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::ops::fusion::try_fuse;
-use crate::tensor::ops::{ComputeWrapperSpec, compute_layout, cpu_compute};
+use crate::tensor::ops::{ComputeWrapperSpec, compute_layout, cpu_compute, cpu_compute_inplace};
+use crate::tensor::planner::{ComputeKind, OutputKind, get_id, plan_computation};
 use crate::tensor::storage::TensorData;
 use crate::tensor::traits::Promising;
 
@@ -27,15 +28,6 @@ pub enum NodeKind<T: Copy> {
 
 //////////////////////////////////////////////////////////////////////////////////
 
-#[inline]
-pub fn get_id<T: Copy>(node: &NodeKind<T>) -> usize {
-    match node {
-        NodeKind::Edge(edge) => edge.id,
-        NodeKind::Node(node) => node.id,
-        NodeKind::Cache(cache) => cache.node.id,
-    }
-}
-
 pub fn get_inputs_layout<T: NumberLike>(inputs: &[NodeKind<T>]) -> Box<[&Layout]> {
     inputs
         .iter()
@@ -50,37 +42,75 @@ pub fn get_inputs_layout<T: NumberLike>(inputs: &[NodeKind<T>]) -> Box<[&Layout]
 fn get_inputs_tensor_data<T: Copy>(
     inputs: &[NodeKind<T>],
     computation_cache: &mut HashMap<usize, TensorData<T>>,
-    reference_counter: &mut HashMap<usize, usize>,
 ) -> Vec<TensorData<T>> {
     let mut inputs_data: Vec<TensorData<T>> = Vec::with_capacity(inputs.len());
-    for n in inputs.iter() {
-        let id = get_id(n);
+    for kind in inputs.iter() {
+        let id = get_id(kind);
 
-        // If this panics, you fucked up the topological sort, congrats!
-        let tensor_data = if let Some(count) = reference_counter.get_mut(&id) {
-            if *count == 1 {
-                *count = 0;
-
-                computation_cache.remove(&id).unwrap()
-            } else {
-                *count -= 1;
-                computation_cache
-                    .get(&id)
-                    .unwrap()
-                    .clone()
-                    .mark_as_not_reusable()
+        match kind {
+            NodeKind::Node(_) => {
+                let tensor = computation_cache.get(&id).unwrap();
+                inputs_data.push(tensor.clone());
             }
-        } else {
-            unreachable!(
-                "this should never panic unless the implementation of the topological sort is wrong"
-            )
-        };
-
-        inputs_data.push(tensor_data);
+            NodeKind::Cache(cache) => {
+                // TODO: The topological sort guarantees cache nodes are computed before they
+                // appear as inputs, so this is always Some. Can use unwrap_unchecked once
+                // the planner/executor contract is verified to be sound.
+                inputs_data.push(cache.cache.get().unwrap().clone());
+            }
+            NodeKind::Edge(edge) => {
+                inputs_data.push(edge.compute());
+            }
+        }
     }
 
     inputs_data
 }
+
+#[inline]
+fn strip_tensor<T: Copy>(tensor: TensorData<T>) -> Vec<T> {
+    if let Ok(v) = Arc::try_unwrap(tensor.storage.buffer) {
+        v
+    } else {
+        unreachable!("cannot strip a tensor that is being used!")
+    }
+}
+
+#[inline]
+pub fn alloc_vec<T: Default + Clone>(len: usize) -> Vec<T> {
+    let mut output_buffer = Vec::with_capacity(len);
+    output_buffer.resize(len, T::default());
+
+    output_buffer
+}
+
+fn execute_output<T: NumberLike + ComputeWrapperSpec>(
+    node: &TensorGraphNode<T>,
+    output: OutputKind,
+    computation_cache: &mut HashMap<usize, TensorData<T>>,
+) -> TensorData<T> {
+    match output {
+        OutputKind::Allocate(len) => {
+            let output_buffer = alloc_vec(len);
+            let inputs = get_inputs_tensor_data(&node.inputs, computation_cache);
+            cpu_compute(&node.op, output_buffer, &node.layout, &inputs)
+        }
+        OutputKind::Buffer(id) => {
+            // TODO: The planner guarantees this id is present in the cache, so this is
+            // always Some. Can use unwrap_unchecked once the planner/executor contract
+            // is verified to be sound.
+            let reused = computation_cache.remove(&id).unwrap();
+            let output_buffer = strip_tensor(reused);
+            let inputs = get_inputs_tensor_data(&node.inputs, computation_cache);
+            cpu_compute(&node.op, output_buffer, &node.layout, &inputs)
+        }
+        OutputKind::InPlaceIdx(idx) => {
+            let inputs = get_inputs_tensor_data(&node.inputs, computation_cache);
+            cpu_compute_inplace(&node.op, &node.layout, inputs, idx)
+        }
+    }
+}
+
 //////////////////////////////////////////////////////////////////////////////////
 
 pub struct TensorGraphEdge<T: Copy> {
@@ -162,104 +192,79 @@ impl<T: NumberLike> TensorGraphNode<T> {
             layout,
         }
     }
-
-    // Performs a DFS topological sort on the current DAG that this leaf (sink) is part of.
-    //  It should be iterated from left to right.
-    // NOTE: This node is not added to the returning vec.
-    //  but, naturally, would be the last element if added.
-    // NOTE 2: If a cache and non-cache node with the same id are present in the same DAG,
-    //  the cache will not be used. That will not be fixed as it would require
-    //  invalidating some elements in the sorted.
-    //  It's the user responsibility to use the cached node correctly.
-    // TODO: Maybe make an iterator so that we don't need to allocate a Vec
-    // still, even for big graphs, it should still be ok.
-    fn topological_sort(&self) -> (Vec<&NodeKind<T>>, HashMap<usize, usize>) {
-        let mut sorted: Vec<&NodeKind<T>> = Vec::with_capacity(64);
-        let mut reference_counter: HashMap<usize, usize> = HashMap::new();
-
-        let mut stack: Vec<(&NodeKind<T>, bool)> = Vec::new();
-
-        stack.extend(self.inputs.iter().map(|i| (i, false)));
-
-        while let Some((node, exiting)) = stack.pop() {
-            let id = get_id(node);
-
-            if exiting {
-                sorted.push(node);
-                continue;
-            }
-
-            if let Some(count) = reference_counter.get_mut(&id) {
-                *count += 1;
-                continue;
-            } else {
-                reference_counter.insert(id, 1);
-            }
-
-            stack.push((node, true));
-
-            match node {
-                NodeKind::Edge(_) => {}
-                NodeKind::Node(n) => stack.extend(n.inputs.iter().rev().map(|i| (i, false))),
-                NodeKind::Cache(cache) => {
-                    if !cache.is_cache_filled() {
-                        stack.extend(cache.get_node().inputs.iter().rev().map(|i| (i, false)))
-                    }
-                }
-            }
-        }
-
-        (sorted, reference_counter)
-    }
 }
 
 impl<T: NumberLike + ComputeWrapperSpec> Promising for TensorGraphNode<T> {
     type Output = T;
 
     fn compute(&self) -> TensorData<T> {
-        let (sorted_dag, mut reference_counter) = self.topological_sort();
+        let plan = plan_computation(&self);
         let mut computation_cache: HashMap<usize, TensorData<T>> = HashMap::new();
 
-        for node in sorted_dag.into_iter() {
-            match node {
-                NodeKind::Edge(edge) => {
-                    computation_cache.insert(edge.id, edge.compute().mark_as_not_reusable());
-                }
-                NodeKind::Node(node) => {
-                    let inputs: Vec<TensorData<T>> = get_inputs_tensor_data(
-                        &node.inputs,
-                        &mut computation_cache,
-                        &mut reference_counter,
-                    );
-
-                    let result = cpu_compute(&node.op, node.layout(), inputs);
+        for comp in plan.into_iter() {
+            match comp {
+                ComputeKind::Op {
+                    node,
+                    output,
+                    dealloc_after,
+                } => {
+                    let result = execute_output(node, output, &mut computation_cache);
                     computation_cache.insert(node.id, result);
+
+                    for dealloc_id in dealloc_after {
+                        computation_cache.remove(&dealloc_id);
+                    }
                 }
-                NodeKind::Cache(cache) => {
-                    let tensor_data = if cache.is_cache_filled() {
-                        unsafe { cache.cache.get().unwrap_unchecked().clone() }
-                            .mark_as_not_reusable()
-                    } else {
-                        let inputs: Vec<TensorData<T>> = get_inputs_tensor_data(
-                            &cache.node.inputs,
-                            &mut computation_cache,
-                            &mut reference_counter,
-                        );
+                ComputeKind::CachedOp {
+                    cache,
+                    output,
+                    dealloc_after,
+                } => {
+                    if cache.is_cache_filled() {
+                        // The planner emits Allocate(0) for nodes that were already cached at
+                        // plan time, so Allocate is the common case here. Buffer and InPlaceIdx
+                        // are reached only when a race occurs: the cache was empty at plan time
+                        // but filled by another thread before this executor step runs. In that
+                        // case we still need to release the slot the planner reserved.
+                        //
+                        // TODO: is_cache_filled() returning true guarantees cache.get() is Some,
+                        // so this unwrap can become unwrap_unchecked once the contract is verified.
+                        computation_cache
+                            .insert(cache.get_node().id, cache.cache.get().unwrap().clone());
 
-                        let result = cpu_compute(&cache.node.op, cache.layout(), inputs);
-                        let _ = cache.cache.set(result.clone());
-                        result.mark_as_not_reusable()
-                    };
+                        match output {
+                            OutputKind::Allocate(_) => {}
+                            OutputKind::Buffer(id) => {
+                                computation_cache.remove(&id);
+                            }
+                            OutputKind::InPlaceIdx(idx) => {
+                                let id = get_id(&cache.get_node().inputs[idx]);
+                                computation_cache.remove(&id);
+                            }
+                        }
 
-                    computation_cache.insert(cache.node.id, tensor_data);
+                        for dealloc_id in dealloc_after {
+                            computation_cache.remove(&dealloc_id);
+                        }
+
+                        continue;
+                    }
+
+                    let node = cache.get_node();
+                    let result = execute_output(node, output, &mut computation_cache);
+                    let _ = cache.cache.set(result.clone());
+                    computation_cache.insert(node.id, result);
+
+                    for dealloc_id in dealloc_after {
+                        computation_cache.remove(&dealloc_id);
+                    }
                 }
             }
         }
 
-        let inputs: Vec<TensorData<T>> =
-            get_inputs_tensor_data(&self.inputs, &mut computation_cache, &mut reference_counter);
-
-        cpu_compute(&self.op, self.layout(), inputs).mark_as_not_reusable()
+        // TODO: The plan always ends with self computed and inserted into the cache, so this
+        // is always Some. Can use unwrap_unchecked once the executor contract is verified.
+        computation_cache.remove(&self.id).unwrap()
     }
 
     #[inline]

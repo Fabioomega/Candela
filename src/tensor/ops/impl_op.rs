@@ -121,7 +121,7 @@ where
 {
     unsafe {
         TensorPromise::new(
-            OpKind::ScalarOp(OpKindScalar::Sum(rhs)),
+            OpKind::ScalarOp(OpKindScalar::AxBy(D::Output::MUL_NEUTRAL, rhs)),
             Box::new([lhs.create_node()]),
         )
         .unwrap_unchecked()
@@ -135,7 +135,7 @@ where
 {
     unsafe {
         TensorPromise::new(
-            OpKind::ScalarOp(OpKindScalar::Sub(rhs)),
+            OpKind::ScalarOp(OpKindScalar::AxBy(D::Output::MUL_NEUTRAL, -rhs)),
             Box::new([lhs.create_node()]),
         )
         .unwrap_unchecked()
@@ -149,7 +149,7 @@ where
 {
     unsafe {
         TensorPromise::new(
-            OpKind::ScalarOp(OpKindScalar::Mul(rhs)),
+            OpKind::ScalarOp(OpKindScalar::AxBy(rhs, D::Output::SUM_NEUTRAL)),
             Box::new([lhs.create_node()]),
         )
         .unwrap_unchecked()
@@ -163,7 +163,10 @@ where
 {
     unsafe {
         TensorPromise::new(
-            OpKind::ScalarOp(OpKindScalar::Div(rhs)),
+            OpKind::ScalarOp(OpKindScalar::AxBy(
+                D::Output::MUL_NEUTRAL / rhs,
+                D::Output::SUM_NEUTRAL,
+            )),
             Box::new([lhs.create_node()]),
         )
         .unwrap_unchecked()

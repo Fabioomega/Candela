@@ -1,7 +1,6 @@
 extern crate cblas;
 extern crate intel_mkl_src;
 extern crate intel_mkl_sys;
-extern crate lapacke;
 
 pub const PACKING_BUFFER_SIZE: usize = 128;
 
@@ -16,17 +15,15 @@ mod iter;
 mod macros;
 mod mem_formats;
 mod mkl_extension;
+mod planner;
 mod storage;
 mod traits;
 
 pub mod graph;
 pub mod ops;
 pub mod promise;
-// pub mod slice;
 pub mod tensor;
 pub use convenience::*;
-// pub use iter::StepInfo;
-// pub use traits::Dimension;
 
 pub use mem_formats::slice::SliceRange;
 pub use promise::{CachedTensorPromise, TensorPromise};

@@ -140,6 +140,7 @@ pub struct SliceIter<'a, T: Copy> {
 }
 
 impl<'a, T: Copy> SliceIter<'a, T> {
+    // TODO: data_len is used anywhere? Like at all? If not, maybe just remove it.
     pub fn new(data: &'a Arc<Vec<T>>, data_len: usize, layout: &'a Layout) -> Self {
         let counter = vec![0; layout.shape().len()].into_boxed_slice();
 
@@ -198,70 +199,71 @@ impl<'a, T: Copy> FusedIterator for SliceIter<'a, T> {}
 
 ///////////////////////////////////////////////////////////////
 
-// pub struct MutSliceIter<'a, T: Copy> {
-//     data: RwLockWriteGuard<'a, Vec<T>>,
-//     pos: isize,
-//     counter: Box<[i32]>,
-//     layout: &'a Layout,
-//     left_over: usize,
-// }
-//
-// impl<'a, T: Copy> MutSliceIter<'a, T> {
-//     pub fn new(lock: &'a RwLock<Vec<T>>, data_len: usize, layout: &'a Layout) -> Self {
-//         let counter = vec![0; layout.shape().len()].into_boxed_slice();
-//
-//         Self {
-//             data: lock.write(),
-//             pos: layout.offset() as isize,
-//             layout,
-//             counter,
-//             left_over: data_len,
-//         }
-//     }
-// }
-//
-// impl<'a, T: Copy> Iterator for MutSliceIter<'a, T> {
-//     type Item = &'a mut T;
-//
-//     fn next(&mut self) -> Option<Self::Item> {
-//         if self.left_over == 0 {
-//             return None;
-//         }
-//
-//         let last = self.counter.len() - 1;
-//         self.counter[last] += 1;
-//         let mut step_dim = last;
-//
-//         for dim in (1..self.counter.len()).rev() {
-//             if self.counter[dim] == self.layout.shape[dim] {
-//                 self.counter[dim] = 0;
-//                 self.counter[dim - 1] += 1;
-//
-//                 step_dim = dim - 1;
-//                 continue;
-//             }
-//             break;
-//         }
-//
-//         let step = self.layout.adj_stride()[step_dim];
-//         unsafe {
-//             let item_ptr = &mut self.data[self.pos as usize] as *mut T;
-//             self.pos += step as isize;
-//             self.left_over -= 1;
-//
-//             Some(&mut *item_ptr)
-//         }
-//     }
-//
-//     fn size_hint(&self) -> (usize, Option<usize>) {
-//         (self.left_over, Some(self.left_over))
-//     }
-// }
-//
-// impl<'a, T: Copy> ExactSizeIterator for MutSliceIter<'a, T> {}
-//
-// impl<'a, T: Copy> FusedIterator for MutSliceIter<'a, T> {}
-//
+pub struct MutSliceIter<'a, T: Copy> {
+    data: &'a mut Vec<T>,
+    pos: isize,
+    counter: Box<[usize]>,
+    layout: &'a Layout,
+    left_over: usize,
+}
+
+impl<'a, T: Copy> MutSliceIter<'a, T> {
+    pub fn new(data: &'a mut Vec<T>, data_len: usize, layout: &'a Layout) -> Self {
+        let counter = vec![0; layout.shape().len()].into_boxed_slice();
+
+        Self {
+            data,
+            pos: layout.offset() as isize,
+            layout,
+            counter,
+            left_over: data_len,
+        }
+    }
+}
+
+impl<'a, T: Copy> Iterator for MutSliceIter<'a, T> {
+    type Item = &'a mut T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.left_over == 0 {
+            return None;
+        }
+
+        let last = self.counter.len() - 1;
+        self.counter[last] += 1;
+        let mut step_dim = last;
+
+        for dim in (1..self.counter.len()).rev() {
+            if self.counter[dim] == self.layout.shape()[dim] {
+                self.counter[dim] = 0;
+                self.counter[dim - 1] += 1;
+
+                step_dim = dim - 1;
+                continue;
+            }
+            break;
+        }
+
+        let pos = self.pos as usize;
+
+        unsafe {
+            let item = &mut self.data[pos] as *mut T;
+            self.pos += self.layout.adj_stride()[step_dim] as isize;
+            self.left_over -= 1;
+
+            Some(&mut *item)
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.left_over, Some(self.left_over))
+    }
+}
+
+impl<'a, T: Copy> ExactSizeIterator for MutSliceIter<'a, T> {}
+
+impl<'a, T: Copy> FusedIterator for MutSliceIter<'a, T> {}
+
 ///////////////////////////////////////////////////////////////
 
 pub struct CopiedSliceIter<'a, T: Copy> {

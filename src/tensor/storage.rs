@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::tensor::iter::{
     ChunkedSliceIter, ContiguousIter, CopiedContiguousIter, CopiedSliceIter, InformedSliceIter,
-    SliceIter,
+    MutSliceIter, SliceIter,
 };
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::traits::Dimension;
@@ -50,15 +50,15 @@ impl<T: Copy> Storage<T> {
     }
 
     #[inline]
-    pub fn clone_reference(&self) -> Self {
-        Storage::from_arc(self.buffer.clone())
+    pub fn clone_deep(&self) -> Self {
+        let buffer = self.buffer.to_vec();
+        Storage::from_vec(buffer)
     }
 }
 
 impl<T: Copy> Clone for Storage<T> {
     fn clone(&self) -> Self {
-        let buffer = self.buffer.to_vec();
-        Storage::from_vec(buffer)
+        Storage::from_arc(self.buffer.clone())
     }
 }
 
@@ -68,17 +68,12 @@ impl<T: Copy> Clone for Storage<T> {
 pub struct TensorData<T: Copy> {
     pub(crate) storage: Storage<T>,
     layout: Layout,
-    pub(crate) reusable: bool,
 }
 
 impl<T: Copy> TensorData<T> {
     #[inline]
     pub fn new(storage: Storage<T>, layout: Layout) -> Self {
-        Self {
-            storage,
-            layout,
-            reusable: false,
-        }
+        Self { storage, layout }
     }
 
     #[inline]
@@ -90,7 +85,6 @@ impl<T: Copy> TensorData<T> {
         Self {
             storage: Storage::from_scalar(scalar, len as usize),
             layout: Layout::from_shape(shape, 0),
-            reusable: false,
         }
     }
 
@@ -99,7 +93,6 @@ impl<T: Copy> TensorData<T> {
         Self {
             storage: Storage::from_arc(buffer),
             layout: Layout::from_shape(shape, 0),
-            reusable: false,
         }
     }
 
@@ -110,7 +103,6 @@ impl<T: Copy> TensorData<T> {
         Self {
             storage: Storage::from_vec(vector),
             layout: Layout::from_shape(shape, offset),
-            reusable: false,
         }
     }
 
@@ -126,10 +118,16 @@ impl<T: Copy> TensorData<T> {
     #[inline]
     pub fn as_layout(&self, layout: Layout) -> Self {
         Self {
-            storage: self.storage.clone_reference(),
+            storage: self.storage.clone(),
             layout,
-            reusable: self.reusable,
         }
+    }
+
+    #[inline]
+    pub fn into_layout(mut self, layout: Layout) -> Self {
+        self.layout = layout;
+
+        self
     }
 
     #[inline]
@@ -138,7 +136,17 @@ impl<T: Copy> TensorData<T> {
     }
 
     #[inline]
+    pub fn iter_mut(&mut self) -> Option<MutSliceIter<'_, T>> {
+        if let Some(data) = Arc::get_mut(&mut self.storage.buffer) {
+            Some(MutSliceIter::new(data, self.layout.len, &self.layout))
+        } else {
+            None
+        }
+    }
+
+    #[inline]
     pub unsafe fn iter_as_layout<'a>(&'a self, layout: &'a Layout) -> SliceIter<'a, T> {
+        debug_assert!(self.layout().len() == layout.len());
         SliceIter::new(&self.storage.buffer, layout.len(), layout)
     }
 
@@ -181,7 +189,6 @@ impl<T: Copy> TensorData<T> {
         Self {
             storage: self.storage.clone(),
             layout: self.layout.clone(),
-            reusable: self.reusable,
         }
     }
 
@@ -192,20 +199,6 @@ impl<T: Copy> TensorData<T> {
         } else {
             self.clone_deep()
         }
-    }
-
-    #[inline]
-    pub fn mark_as_reusable(mut self) -> Self {
-        self.reusable = true;
-
-        self
-    }
-
-    #[inline]
-    pub fn mark_as_not_reusable(mut self) -> Self {
-        self.reusable = false;
-
-        self
     }
 
     #[inline]
@@ -224,9 +217,8 @@ impl<T: Copy + Default> TensorData<T> {
 impl<T: Copy> Clone for TensorData<T> {
     fn clone(&self) -> Self {
         Self {
-            storage: self.storage.clone_reference(),
+            storage: self.storage.clone(),
             layout: self.layout.clone(),
-            reusable: self.reusable,
         }
     }
 }

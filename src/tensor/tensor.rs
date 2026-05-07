@@ -1,7 +1,6 @@
 use crate::impl_display;
-use crate::tensor::errors::OpError;
 use crate::tensor::graph::{NodeKind, TensorGraphEdge};
-use crate::tensor::iter::{ContiguousIter, InformedSliceIter, SliceIter};
+use crate::tensor::iter::{InformedSliceIter, SliceIter};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::promise::TensorPromise;
 use crate::tensor::storage::TensorData;
