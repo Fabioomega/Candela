@@ -50,6 +50,20 @@ impl<T: Copy> Storage<T> {
     }
 
     #[inline]
+    pub fn as_ptr(&self) -> *const T {
+        self.buffer.as_ptr()
+    }
+
+    #[inline]
+    pub fn as_mut_ptr(&mut self) -> Option<*mut T> {
+        if let Some(buffer) = Arc::get_mut(&mut self.buffer) {
+            Some(buffer.as_mut_ptr())
+        } else {
+            None
+        }
+    }
+
+    #[inline]
     pub fn clone_deep(&self) -> Self {
         let buffer = self.buffer.to_vec();
         Storage::from_vec(buffer)
@@ -128,6 +142,16 @@ impl<T: Copy> TensorData<T> {
         self.layout = layout;
 
         self
+    }
+
+    #[inline]
+    pub fn as_ptr(&self) -> *const T {
+        self.storage.as_ptr()
+    }
+
+    #[inline]
+    pub fn as_mut_ptr(&mut self) -> Option<*mut T> {
+        self.storage.as_mut_ptr()
     }
 
     #[inline]

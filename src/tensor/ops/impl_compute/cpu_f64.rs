@@ -1,14 +1,15 @@
-use crate::tensor::definitions::{ChunkedIter, NumberLike};
 use crate::tensor::mem_formats::layout::Layout;
-use crate::tensor::ops::def_op::{OpKind, OpKindScalar};
+use crate::tensor::mkl_extension::vdAddI;
+use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::ops::impl_compute::cpu_compute_generic::{
-    compute_elementwise_tensor_tensor, fill_buffer,
+    CommonBLASOps, compute_elementwise_tensor_tensor, compute_elementwise_tensor_tensor_inplace,
+    compute_scalar, compute_scalar_inplace,
 };
 use crate::tensor::storage::{Storage, TensorData};
-use crate::tensor::traits::{Dimension, StreamingIterator};
+use crate::tensor::traits::Dimension;
 use cblas::daxpy;
-use cblas_sys::{cblas_daxpy, cblas_dgemm};
-use intel_mkl_sys::{vdAdd, vdDiv, vdMul, vdSub};
+use cblas_sys::{cblas_daxpy, cblas_dgemm, cblas_dscal};
+use intel_mkl_sys::{vdAdd, vdDiv, vdExp, vdLn, vdLog2, vdMul, vdSub};
 
 // TODO: Add custom kernel for non-contiguous tensors.
 // TODO: Add support for matmul
@@ -76,10 +77,22 @@ pub fn cpu_compute_op_f64(
     output_layout: &Layout,
     inputs: &[TensorData<f64>],
 ) -> TensorData<f64> {
+    const BLAS_OPS: CommonBLASOps<f64> = CommonBLASOps {
+        add: vdAddI,
+        scal: cblas_dscal,
+        axby: cblas_daxpy,
+        exp: vdExp,
+        ln: vdLn,
+        log2: vdLog2,
+    };
+
     match op {
-        // OpKind::ScalarOp(_) | OpKind::FusedScalar(_) => {
-        //     cpu_compute_elementwise_f64(op, output_layout, inputs)
-        // }
+        OpKind::ScalarOp(s) => {
+            compute_scalar(&[s.clone()], output_buffer, output_layout, inputs, BLAS_OPS)
+        }
+        OpKind::FusedScalar(ss) => {
+            compute_scalar(ss, output_buffer, output_layout, inputs, BLAS_OPS)
+        }
         OpKind::AsContiguous => TensorData::from_iter(inputs[0].copied_iter(), inputs[0].shape()),
         OpKind::Add => compute_elementwise_tensor_tensor(inputs, output_buffer, vdAdd),
         OpKind::Sub => compute_elementwise_tensor_tensor(inputs, output_buffer, vdSub),
@@ -103,10 +116,24 @@ pub fn cpu_compute_op_f64_inplace(
     mut inputs: Vec<TensorData<f64>>,
     output_idx: usize,
 ) -> TensorData<f64> {
+    const BLAS_OPS: CommonBLASOps<f64> = CommonBLASOps {
+        add: vdAddI,
+        scal: cblas_dscal,
+        axby: cblas_daxpy,
+        exp: vdExp,
+        ln: vdLn,
+        log2: vdLog2,
+    };
+
     match op {
-        // OpKind::ScalarOp(_) | OpKind::FusedScalar(_) => {
-        //     cpu_compute_elementwise_f64(op, output_layout, inputs)
-        // }
+        OpKind::ScalarOp(s) => {
+            compute_scalar_inplace(&[s.clone()], output_layout, inputs, BLAS_OPS)
+        }
+        OpKind::FusedScalar(ss) => compute_scalar_inplace(ss, output_layout, inputs, BLAS_OPS),
+        OpKind::Add => compute_elementwise_tensor_tensor_inplace(inputs, output_idx, vdAdd),
+        OpKind::Sub => compute_elementwise_tensor_tensor_inplace(inputs, output_idx, vdSub),
+        OpKind::Mul => compute_elementwise_tensor_tensor_inplace(inputs, output_idx, vdMul),
+        OpKind::Div => compute_elementwise_tensor_tensor_inplace(inputs, output_idx, vdDiv),
         OpKind::Slice(new_layout)
         | OpKind::View(new_layout)
         | OpKind::TransposeAxes(new_layout) => {

@@ -1,4 +1,4 @@
-use std::ops::{Add, Div, Mul, Sub};
+use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Sub, SubAssign};
 
 use crate::cfg_debug_only;
 use crate::tensor::definitions::NumberLike;
@@ -478,6 +478,73 @@ macro_rules! impl_op_scalar {
 
 //////////////////////////////////////////////////////////////
 
+macro_rules! impl_add_assign_scalar {
+    ($ty:ident) => {
+        impl<T> AddAssign<T> for $ty<T>
+        where
+            T: NumberLike + ComputeWrapperSpec,
+        {
+            #[inline]
+            fn add_assign(&mut self, rhs: T) {
+                *self = add_scalar_impl(&*self, rhs);
+            }
+        }
+    };
+}
+
+macro_rules! impl_sub_assign_scalar {
+    ($ty:ident) => {
+        impl<T> SubAssign<T> for $ty<T>
+        where
+            T: NumberLike + ComputeWrapperSpec,
+        {
+            #[inline]
+            fn sub_assign(&mut self, rhs: T) {
+                *self = sub_scalar_impl(&*self, rhs);
+            }
+        }
+    };
+}
+
+macro_rules! impl_mul_assign_scalar {
+    ($ty:ident) => {
+        impl<T> MulAssign<T> for $ty<T>
+        where
+            T: NumberLike + ComputeWrapperSpec,
+        {
+            #[inline]
+            fn mul_assign(&mut self, rhs: T) {
+                *self = mul_scalar_impl(&*self, rhs);
+            }
+        }
+    };
+}
+
+macro_rules! impl_div_assign_scalar {
+    ($ty:ident) => {
+        impl<T> DivAssign<T> for $ty<T>
+        where
+            T: NumberLike + ComputeWrapperSpec,
+        {
+            #[inline]
+            fn div_assign(&mut self, rhs: T) {
+                *self = div_scalar_impl(&*self, rhs);
+            }
+        }
+    };
+}
+
+macro_rules! impl_op_assign_scalar {
+    ($ty:ident) => {
+        impl_add_assign_scalar!($ty);
+        impl_sub_assign_scalar!($ty);
+        impl_mul_assign_scalar!($ty);
+        impl_div_assign_scalar!($ty);
+    };
+}
+
+//////////////////////////////////////////////////////////////
+
 macro_rules! impl_tensor_binop {
     ($trait:ident, $method:ident, $impl_fn:ident, $lhs:ident, $rhs:ident) => {
         impl<T> $trait<&$rhs<T>> for &$lhs<T>
@@ -541,6 +608,41 @@ macro_rules! impl_tensor_ops {
 
 //////////////////////////////////////////////////////////////
 
+macro_rules! impl_tensor_assign_binop {
+    ($trait:ident, $method:ident, $impl_fn:ident, $rhs:ident) => {
+        impl<T> $trait<$rhs<T>> for TensorPromise<T>
+        where
+            T: NumberLike + ComputeWrapperSpec,
+        {
+            #[inline]
+            fn $method(&mut self, rhs: $rhs<T>) {
+                *self = $impl_fn(&*self, &rhs);
+            }
+        }
+
+        impl<T> $trait<&$rhs<T>> for TensorPromise<T>
+        where
+            T: NumberLike + ComputeWrapperSpec,
+        {
+            #[inline]
+            fn $method(&mut self, rhs: &$rhs<T>) {
+                *self = $impl_fn(&*self, rhs);
+            }
+        }
+    };
+}
+
+macro_rules! impl_tensor_assign_ops {
+    ($rhs:ident) => {
+        impl_tensor_assign_binop!(AddAssign, add_assign, add_tensor_impl, $rhs);
+        impl_tensor_assign_binop!(SubAssign, sub_assign, sub_tensor_impl, $rhs);
+        impl_tensor_assign_binop!(MulAssign, mul_assign, mul_tensor_impl, $rhs);
+        impl_tensor_assign_binop!(DivAssign, div_assign, div_tensor_impl, $rhs);
+    };
+}
+
+//////////////////////////////////////////////////////////////
+
 impl_computation_def!(Tensor, Edge);
 impl_computation_def!(TensorPromise, Node);
 impl_computation_def!(CachedTensorPromise, Cache);
@@ -564,3 +666,9 @@ impl_tensor_ops!(TensorPromise, CachedTensorPromise);
 impl_tensor_ops!(CachedTensorPromise, Tensor);
 impl_tensor_ops!(CachedTensorPromise, TensorPromise);
 impl_tensor_ops!(CachedTensorPromise, CachedTensorPromise);
+
+impl_op_assign_scalar!(TensorPromise);
+
+impl_tensor_assign_ops!(Tensor);
+impl_tensor_assign_ops!(TensorPromise);
+impl_tensor_assign_ops!(CachedTensorPromise);

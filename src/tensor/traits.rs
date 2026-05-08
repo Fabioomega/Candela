@@ -55,4 +55,37 @@ pub trait StreamingIterator {
         Self: 'a;
 
     fn next<'a>(&'a mut self) -> Option<Self::Item<'a>>;
+
+    fn zip<Other>(self, other: Other) -> StreamingZip<Self, Other>
+    where
+        Self: Sized,
+        Other: StreamingIterator,
+    {
+        StreamingZip {
+            left: self,
+            right: other,
+        }
+    }
+}
+
+pub struct StreamingZip<A: StreamingIterator, B: StreamingIterator> {
+    left: A,
+    right: B,
+}
+
+impl<A, B> StreamingIterator for StreamingZip<A, B>
+where
+    A: StreamingIterator,
+    B: StreamingIterator,
+{
+    type Item<'a>
+        = (A::Item<'a>, B::Item<'a>)
+    where
+        Self: 'a;
+
+    fn next<'a>(&'a mut self) -> Option<Self::Item<'a>> {
+        let l = self.left.next()?;
+        let r = self.right.next()?;
+        Some((l, r))
+    }
 }

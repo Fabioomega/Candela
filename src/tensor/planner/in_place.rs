@@ -49,6 +49,20 @@ pub fn find_buffer_inplace<T: Copy>(
                 (slot_idx, 0)
             }
         },
+        OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Div => {
+            for (i, inp) in inputs.iter().enumerate() {
+                let id = get_id(inp);
+                let slot_idx = id_slot_map.get(&id);
+
+                if let Some(idx) = slot_idx
+                    && slot_is_free(&slots[*idx], op_location, output_layout.len())
+                {
+                    return (Some(*idx), i);
+                }
+            }
+
+            (None, 0)
+        }
         OpKind::Slice(_)
         | OpKind::View(_)
         | OpKind::TransposeAxes(_)

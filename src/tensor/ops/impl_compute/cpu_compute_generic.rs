@@ -5,18 +5,19 @@ use intel_mkl_sys::{vdAdd, vdExp, vdLn, vdLog10, vdLogb};
 use crate::branch_fast_iter;
 use crate::tensor::Dimension;
 use crate::tensor::definitions::{ChunkedIter, NumberLike};
+use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::mkl_extension::vdAddI;
 use crate::tensor::ops::def_op::OpKindScalar;
 use crate::tensor::storage::TensorData;
-use crate::tensor::traits::StreamingIterator;
+use crate::tensor::traits::{StreamingIterator, StreamingZip};
 
-struct CommonBLASOps<T> {
-    add: unsafe extern "C" fn(i32, *const T, i32, *const T, i32, *mut T, i32),
-    scal: unsafe extern "C" fn(i32, T, *mut T, i32),
-    axby: unsafe extern "C" fn(i32, T, *const T, i32, *mut T, i32),
-    exp: unsafe extern "C" fn(i32, *const T, *mut T),
-    ln: unsafe extern "C" fn(i32, *const T, *mut T),
-    log2: unsafe extern "C" fn(i32, *const T, *mut T),
+pub struct CommonBLASOps<T> {
+    pub add: unsafe extern "C" fn(i32, *const T, i32, *const T, i32, *mut T, i32),
+    pub scal: unsafe extern "C" fn(i32, T, *mut T, i32),
+    pub axby: unsafe extern "C" fn(i32, T, *const T, i32, *mut T, i32),
+    pub exp: unsafe extern "C" fn(i32, *const T, *mut T),
+    pub ln: unsafe extern "C" fn(i32, *const T, *mut T),
+    pub log2: unsafe extern "C" fn(i32, *const T, *mut T),
 }
 
 #[inline]
@@ -40,6 +41,7 @@ pub fn fill_buffer<T: Clone>(buffer: *mut T, len: usize, value: T) {
 }
 
 // Supports inplace ops
+#[inline]
 fn compute_blas_scalar_op<T: NumberLike>(
     ops: &[OpKindScalar<T>],
     n: usize,
@@ -89,7 +91,8 @@ fn compute_blas_scalar_op<T: NumberLike>(
 }
 
 // If the input is non-contiguous, the output buffer is always different than the input. Ths is guaranteed by the planner.
-fn compute_non_cont_scalar_op_f64<T: NumberLike>(
+#[inline]
+fn compute_non_cont_scalar_op<T: NumberLike>(
     ops: &[OpKindScalar<T>],
     input: &TensorData<T>,
     output: *mut T,
@@ -142,6 +145,52 @@ fn compute_non_cont_scalar_op_f64<T: NumberLike>(
     }
 }
 
+#[inline]
+pub fn compute_scalar_inplace<T: NumberLike>(
+    ops: &[OpKindScalar<T>],
+    output_layout: &Layout,
+    mut inputs: Vec<TensorData<T>>,
+    blas: CommonBLASOps<T>,
+) -> TensorData<T> {
+    // TODO: If the planner is sound this should be safe to unwrap unchecked.
+    let mut tensor = inputs.pop().unwrap();
+    let ptr = tensor.as_mut_ptr().unwrap();
+
+    if tensor.is_contiguous() {
+        compute_blas_scalar_op(ops, output_layout.len(), tensor.as_ptr(), ptr, blas);
+    } else {
+        compute_non_cont_scalar_op(ops, &tensor, ptr, blas);
+    }
+
+    tensor
+}
+
+#[inline]
+pub fn compute_scalar<T: NumberLike>(
+    ops: &[OpKindScalar<T>],
+    mut output_buffer: Vec<T>,
+    output_layout: &Layout,
+    inputs: &[TensorData<T>],
+    blas: CommonBLASOps<T>,
+) -> TensorData<T> {
+    if inputs[0].is_contiguous() {
+        compute_blas_scalar_op(
+            ops,
+            output_layout.len(),
+            inputs[0].as_ptr(),
+            output_buffer.as_mut_ptr(),
+            blas,
+        );
+    } else {
+        compute_non_cont_scalar_op(ops, &inputs[0], output_buffer.as_mut_ptr(), blas);
+    }
+
+    TensorData::new(
+        crate::tensor::storage::Storage::from_vec(output_buffer),
+        output_layout.clone(),
+    )
+}
+
 pub fn compute_elementwise_tensor_tensor<T: Copy + Default>(
     inputs: &[TensorData<T>],
     mut output_buffer: Vec<T>,
@@ -149,14 +198,14 @@ pub fn compute_elementwise_tensor_tensor<T: Copy + Default>(
 ) -> TensorData<T> {
     match (inputs[0].is_contiguous(), inputs[1].is_contiguous()) {
         (true, true) => {
-            let lhs_buffer = &inputs[0].storage.buffer;
-            let rhs_buffer = &inputs[1].storage.buffer;
+            let lhs_buffer = inputs[0].as_ptr();
+            let rhs_buffer = inputs[1].as_ptr();
 
             unsafe {
                 operation(
                     output_buffer.len() as i32,
-                    lhs_buffer.as_ptr(),
-                    rhs_buffer.as_ptr(),
+                    lhs_buffer,
+                    rhs_buffer,
                     output_buffer.as_mut_ptr(),
                 )
             }
@@ -201,6 +250,7 @@ pub fn compute_elementwise_tensor_tensor<T: Copy + Default>(
                         .as_ptr()
                         .add(chunk.absolute_buffer_position)
                 };
+
                 let output_ptr = unsafe {
                     output_buffer
                         .as_mut_ptr()
@@ -217,43 +267,79 @@ pub fn compute_elementwise_tensor_tensor<T: Copy + Default>(
                 };
             }
         }
+        (false, false) => {
+            let mut it: StreamingZip<ChunkedIter<'_, T>, ChunkedIter<'_, T>> =
+                inputs[0].packed_iter().zip(inputs[1].packed_iter());
 
-        _ => unreachable!(),
-    };
-
-    // Non-contiguous path
-    if !inputs[0].is_contiguous() {
-        // TODO: There's no need to pack the input. Maybe we should
-        // allocate a full buffer and then operate directly
-        let mut packed_iter: ChunkedIter<'_, T> = inputs[0].packed_iter();
-
-        while let Some(chunk) = packed_iter.next() {
-            let buffer_size: usize = chunk.packing_buffer.len();
-
-            unsafe {
-                operation(
-                    buffer_size as i32,
-                    output_buffer.as_ptr().add(chunk.absolute_buffer_position),
-                    chunk.packing_buffer.as_ptr(),
+            while let Some((chunk1, chunk2)) = it.next() {
+                let n = chunk1.packing_buffer.len();
+                let output_ptr = unsafe {
                     output_buffer
                         .as_mut_ptr()
-                        .add(chunk.absolute_buffer_position),
-                )
+                        .add(chunk1.absolute_buffer_position)
+                };
+
+                unsafe {
+                    operation(
+                        n as i32,
+                        chunk1.packing_buffer.as_ptr(),
+                        chunk2.packing_buffer.as_ptr(),
+                        output_ptr,
+                    );
+                }
             }
         }
-    // Contiguous path
-    } else {
-        let lhs_buffer = &inputs[0].storage.buffer;
+    };
 
-        unsafe {
-            operation(
-                output_buffer.len() as i32,
-                output_buffer.as_ptr(),
-                lhs_buffer.as_ptr(),
-                output_buffer.as_mut_ptr(),
-            )
+    TensorData::from_vec(output_buffer, inputs[0].shape(), 0)
+}
+
+// The reused tensor must be contiguous; guaranteed by the planner (as_mut_ptr returns None otherwise).
+pub fn compute_elementwise_tensor_tensor_inplace<T: Copy + Default>(
+    mut inputs: Vec<TensorData<T>>,
+    reuse_index: usize,
+    operation: unsafe extern "C" fn(i32, *const T, *const T, *mut T),
+) -> TensorData<T> {
+    let last_idx = inputs.len() - 1;
+    inputs.swap(reuse_index, last_idx);
+    let mut output = inputs.pop().unwrap();
+    let output_ptr = output.as_mut_ptr().unwrap();
+    let other_is_left = reuse_index != 0;
+
+    if inputs[0].is_contiguous() {
+        let n = output.storage.buffer.len() as i32;
+        let other_ptr = inputs[0].as_ptr();
+        if other_is_left {
+            unsafe { operation(n, other_ptr, output_ptr as *const T, output_ptr) };
+        } else {
+            unsafe { operation(n, output_ptr as *const T, other_ptr, output_ptr) };
+        }
+    } else {
+        let mut it: ChunkedIter<'_, T> = inputs[0].packed_iter();
+        while let Some(chunk) = it.next() {
+            let n = chunk.packing_buffer.len() as i32;
+            let out_ptr = unsafe { output_ptr.add(chunk.absolute_buffer_position) };
+            if other_is_left {
+                unsafe {
+                    operation(
+                        n,
+                        chunk.packing_buffer.as_ptr(),
+                        out_ptr as *const T,
+                        out_ptr,
+                    )
+                };
+            } else {
+                unsafe {
+                    operation(
+                        n,
+                        out_ptr as *const T,
+                        chunk.packing_buffer.as_ptr(),
+                        out_ptr,
+                    )
+                };
+            }
         }
     }
 
-    TensorData::from_vec(output_buffer, inputs[0].shape(), 0)
+    output
 }
