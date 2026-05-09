@@ -96,17 +96,19 @@ General tensor-level fusion is a future goal.
 
 ## Memory Layout
 
-Candela separates logical shape from physical memory layout. Views, slices, and transposes are **zero-copy** — they produce a new layout descriptor pointing into the same underlying buffer. Which is expected of tensor libraries - to be fair.
+Candela separates logical shape from physical memory layout. Views, slices, and transposes are **zero-copy** — they produce a new layout descriptor pointing into the same underlying buffer. (To be fair, this is what every tensor library worth its salt does.)
 
 ```rust
 let t = arange![0, 12]; // shape [1, 12]
 
-let p = t.as_promise().view(&[3, 4])?;         // reshape, no copy
-let p = t.as_promise().transpose();            // swap last two axes, no copy
+let p = t.as_promise().view(&[3, 4])?;          // reshape, no copy
+let p = t.as_promise().transpose();             // swap last two axes, no copy
 let p = t.as_promise().slice(s![0..2, 1..3])?; // 2x2 subview, no copy
 ```
 
 When an operation needs contiguous memory (e.g., for a BLAS call), Candela packs the data at that point using a chunked buffer to keep packing cache-friendly.
+
+For a full explanation of the layout system — including the `adj_stride` field that makes non-contiguous iteration fast — see [doc/layout.md](doc/layout.md).
 
 ---
 
@@ -148,18 +150,19 @@ The rule is: if the failure is something you should handle at runtime (e.g., use
 
 ---
 
+## Internals
+
+If you want to understand how things work under the hood:
+
+- [doc/graph.md](doc/graph.md) — the computation graph: node types, sharing, and how ops fuse during construction
+- [doc/planner.md](doc/planner.md) — the execution planner: how Candela decides what to compute, in what order, and which buffers to reuse
+- [doc/layout.md](doc/layout.md) — the memory layout system: strides, zero-copy views, and the `adj_stride` iteration trick
+
+---
+
 ## Roadmap
 
-- [ ] Complete matmul — finish `cblas_dgemm` integration
-- [ ] Expand dtype support — `f32`, `i32`, and others
-- [ ] Custom CPU kernels for non-contiguous tensor execution paths
-- [ ] Broadcasting in element-wise ops
-- [ ] General operator fusion beyond scalar chains
-- [ ] Model building blocks — `Linear`, `ReLU`, `Softmax`, etc.
-- [ ] CUDA backend — fully async via CUDA streams
-- [ ] Benchmarks for both CPU and CUDA
-- [ ] Promise serialization — save and reload computation graphs
-- [ ] `PromiseSkeleton` — reusable graph templates, potentially compiled to bytecode or optimized as CUDA graphs
+See [ROADMAP.md](ROADMAP.md) for the full plan — phases, rationale, tests, and what comes next.
 
 ---
 
@@ -169,8 +172,11 @@ Candela uses Intel MKL for CPU kernels. The `intel-mkl-src` crate handles linkin
 
 ```bash
 cargo build
-cargo run
+cargo test --doc           # run the doctests
+cargo run --example basic  # run the basic example
 ```
+
+Examples live in `examples/`.
 
 ---
 

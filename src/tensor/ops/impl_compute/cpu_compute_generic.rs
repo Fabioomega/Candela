@@ -11,7 +11,7 @@ use crate::tensor::ops::def_op::OpKindScalar;
 use crate::tensor::storage::TensorData;
 use crate::tensor::traits::{StreamingIterator, StreamingZip};
 
-pub struct CommonBLASOps<T> {
+pub(crate) struct CommonBLASOps<T> {
     pub add: unsafe extern "C" fn(i32, *const T, i32, *const T, i32, *mut T, i32),
     pub scal: unsafe extern "C" fn(i32, T, *mut T, i32),
     pub axby: unsafe extern "C" fn(i32, T, *const T, i32, *mut T, i32),
@@ -21,7 +21,7 @@ pub struct CommonBLASOps<T> {
 }
 
 #[inline]
-pub fn clone_to_buffer<T: NumberLike>(tensor: TensorData<T>, mut buffer: Vec<T>) -> Vec<T> {
+pub(crate) fn clone_to_buffer<T: NumberLike>(tensor: TensorData<T>, mut buffer: Vec<T>) -> Vec<T> {
     branch_fast_iter!(tensor.copied_fast_iter() => iter, {
         for (i, el) in iter.enumerate() {
             buffer[i] = el;
@@ -32,7 +32,7 @@ pub fn clone_to_buffer<T: NumberLike>(tensor: TensorData<T>, mut buffer: Vec<T>)
 }
 
 #[inline]
-pub fn fill_buffer<T: Clone>(buffer: *mut T, len: usize, value: T) {
+pub(crate) fn fill_buffer<T: Clone>(buffer: *mut T, len: usize, value: T) {
     let mut i = buffer;
     for _ in 0..len {
         unsafe { *i = value.clone() };
@@ -40,13 +40,14 @@ pub fn fill_buffer<T: Clone>(buffer: *mut T, len: usize, value: T) {
     }
 }
 
-// Supports inplace ops
+// When inplace=true, input and output alias the same buffer.
 #[inline]
 fn compute_blas_scalar_op<T: NumberLike>(
     ops: &[OpKindScalar<T>],
     n: usize,
     input: *const T,
     output: *mut T,
+    inplace: bool,
     blas: CommonBLASOps<T>,
 ) {
     let mut ops_iter = ops.iter();
@@ -54,9 +55,14 @@ fn compute_blas_scalar_op<T: NumberLike>(
     if let Some(op) = ops_iter.next() {
         match *op {
             OpKindScalar::AxBy(a, b) => {
-                fill_buffer(output, n, b);
-
-                unsafe { (blas.axby)(n as i32, a, input, 1, output, 1) };
+                // TODO: Maybe find another solution for this that does not require another check.
+                if inplace {
+                    unsafe { (blas.scal)(n as i32, a, output, 1) };
+                    unsafe { (blas.add)(n as i32, output, 1, &b as *const T, 0, output, 1) };
+                } else {
+                    fill_buffer(output, n, b);
+                    unsafe { (blas.axby)(n as i32, a, input, 1, output, 1) };
+                }
             }
             OpKindScalar::Exp => {
                 unsafe { (blas.exp)(n as i32, input, output) };
@@ -127,7 +133,7 @@ fn compute_non_cont_scalar_op<T: NumberLike>(
         for op in ops_iter {
             match *op {
                 OpKindScalar::AxBy(a, b) => {
-                    unsafe { (blas.scal)(n as i32, a, output, 1) };
+                    unsafe { (blas.scal)(n as i32, a, pos, 1) };
 
                     unsafe { (blas.add)(n as i32, pos, 1, &b as *const T, 0, pos, 1) };
                 }
@@ -146,7 +152,7 @@ fn compute_non_cont_scalar_op<T: NumberLike>(
 }
 
 #[inline]
-pub fn compute_scalar_inplace<T: NumberLike>(
+pub(crate) fn compute_scalar_inplace<T: NumberLike>(
     ops: &[OpKindScalar<T>],
     output_layout: &Layout,
     mut inputs: Vec<TensorData<T>>,
@@ -157,7 +163,7 @@ pub fn compute_scalar_inplace<T: NumberLike>(
     let ptr = tensor.as_mut_ptr().unwrap();
 
     if tensor.is_contiguous() {
-        compute_blas_scalar_op(ops, output_layout.len(), tensor.as_ptr(), ptr, blas);
+        compute_blas_scalar_op(ops, output_layout.len(), tensor.as_ptr(), ptr, true, blas);
     } else {
         compute_non_cont_scalar_op(ops, &tensor, ptr, blas);
     }
@@ -166,7 +172,7 @@ pub fn compute_scalar_inplace<T: NumberLike>(
 }
 
 #[inline]
-pub fn compute_scalar<T: NumberLike>(
+pub(crate) fn compute_scalar<T: NumberLike>(
     ops: &[OpKindScalar<T>],
     mut output_buffer: Vec<T>,
     output_layout: &Layout,
@@ -179,6 +185,7 @@ pub fn compute_scalar<T: NumberLike>(
             output_layout.len(),
             inputs[0].as_ptr(),
             output_buffer.as_mut_ptr(),
+            false,
             blas,
         );
     } else {
@@ -191,7 +198,7 @@ pub fn compute_scalar<T: NumberLike>(
     )
 }
 
-pub fn compute_elementwise_tensor_tensor<T: Copy + Default>(
+pub(crate) fn compute_elementwise_tensor_tensor<T: Copy + Default>(
     inputs: &[TensorData<T>],
     mut output_buffer: Vec<T>,
     operation: unsafe extern "C" fn(i32, *const T, *const T, *mut T),
@@ -295,7 +302,7 @@ pub fn compute_elementwise_tensor_tensor<T: Copy + Default>(
 }
 
 // The reused tensor must be contiguous; guaranteed by the planner (as_mut_ptr returns None otherwise).
-pub fn compute_elementwise_tensor_tensor_inplace<T: Copy + Default>(
+pub(crate) fn compute_elementwise_tensor_tensor_inplace<T: Copy + Default>(
     mut inputs: Vec<TensorData<T>>,
     reuse_index: usize,
     operation: unsafe extern "C" fn(i32, *const T, *const T, *mut T),

@@ -1,5 +1,15 @@
+//! Graph node types and the execution entry point.
+//!
+//! The computation graph is a DAG of [`NodeKind`] variants. Building a promise
+//! chain constructs this graph without running anything; calling
+//! [`Promising::compute`] on the root node triggers the planner and then
+//! executes the resulting schedule. See [doc/graph.md] and [doc/planner.md]
+//! for a detailed walkthrough.
+//!
+//! [doc/graph.md]: https://github.com/Fabioomega/candela/blob/main/doc/graph.md
+//! [doc/planner.md]: https://github.com/Fabioomega/candela/blob/main/doc/planner.md
+
 use std::boxed::Box;
-use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -19,6 +29,12 @@ static NEXT_ID: AtomicUsize = const { AtomicUsize::new(0) };
 
 //////////////////////////////////////////////////////////////////////////////////
 
+/// Every node in the computation graph is one of these three variants.
+///
+/// - `Edge` — a leaf that wraps a materialized tensor (no computation attached).
+/// - `Cache` — a computation whose result is stored after the first evaluation
+///   and returned directly on subsequent calls.
+/// - `Node` — a regular computation that runs every time it's reached in the plan.
 #[derive(Clone, Debug)]
 pub enum NodeKind<T: Copy> {
     Edge(Arc<TensorGraphEdge<T>>),
@@ -28,7 +44,7 @@ pub enum NodeKind<T: Copy> {
 
 //////////////////////////////////////////////////////////////////////////////////
 
-pub fn get_inputs_layout<T: NumberLike>(inputs: &[NodeKind<T>]) -> Box<[&Layout]> {
+pub(crate) fn get_inputs_layout<T: NumberLike>(inputs: &[NodeKind<T>]) -> Box<[&Layout]> {
     inputs
         .iter()
         .map(|node| match &node {
@@ -77,7 +93,7 @@ fn strip_tensor<T: Copy>(tensor: TensorData<T>) -> Vec<T> {
 }
 
 #[inline]
-pub fn alloc_vec<T: Default + Clone>(len: usize) -> Vec<T> {
+fn alloc_vec<T: Default + Clone>(len: usize) -> Vec<T> {
     let mut output_buffer = Vec::with_capacity(len);
     output_buffer.resize(len, T::default());
 
@@ -113,6 +129,14 @@ fn execute_output<T: NumberLike + ComputeWrapperSpec>(
 
 //////////////////////////////////////////////////////////////////////////////////
 
+/// Leaf node in the computation graph — a plain [`Tensor`] entering the graph.
+///
+/// Created by [`Tensor::as_promise`], which wraps the underlying [`TensorData`]
+/// in an edge and assigns it a unique ID. The edge carries no op; its only job
+/// is to make existing data addressable within the graph.
+///
+/// [`Tensor`]: crate::tensor::tensor::Tensor
+/// [`Tensor::as_promise`]: crate::tensor::tensor::Tensor::as_promise
 pub struct TensorGraphEdge<T: Copy> {
     pub(crate) id: usize,
     data: TensorData<T>,
@@ -153,6 +177,14 @@ impl<T: Copy> Debug for TensorGraphEdge<T> {
 
 //////////////////////////////////////////////////////////////////////////////////
 
+/// A computation node in the graph. Holds an op, its inputs, and the output layout.
+///
+/// Constructed via [`TensorGraphNode::new`], which runs operator fusion and
+/// computes the output layout before storing anything — so by the time a node
+/// exists, compatible scalar chains have already been collapsed into a single
+/// [`OpKind::FusedScalar`] and the output shape is known.
+///
+/// [`OpKind::FusedScalar`]: crate::tensor::ops::def_op::OpKind::FusedScalar
 #[derive(Clone)]
 pub struct TensorGraphNode<T: Copy> {
     pub(crate) id: usize,
@@ -197,6 +229,22 @@ impl<T: NumberLike> TensorGraphNode<T> {
 impl<T: NumberLike + ComputeWrapperSpec> Promising for TensorGraphNode<T> {
     type Output = T;
 
+    /// Execute the subgraph rooted at this node and return the result.
+    ///
+    /// This is the entry point for `.materialize()`. It calls [`plan_computation`]
+    /// to build a static schedule, then steps through it in order — running each
+    /// op, inserting its result into a live-buffer cache, and dropping entries
+    /// listed in `dealloc_after` immediately so intermediate buffers are freed as
+    /// soon as they're no longer needed.
+    ///
+    /// Four execution paths exist, corresponding to the four [`OutputKind`] variants
+    /// the planner can assign:
+    /// - **Allocate** — allocate a fresh buffer and compute into it.
+    /// - **Buffer reuse** — extract a previously freed buffer from the cache and
+    ///   compute into it without allocating.
+    /// - **In-place** — mutate one of the op's inputs directly.
+    /// - **Reference** — layout-only ops (`View`, `Slice`, `Transpose`) reuse the
+    ///   input buffer at a new layout; no computation runs.
     fn compute(&self) -> TensorData<T> {
         let plan = plan_computation(&self);
         let mut computation_cache: HashMap<usize, TensorData<T>> = HashMap::new();
@@ -285,6 +333,17 @@ impl<T: Copy + Debug> Debug for TensorGraphNode<T> {
 
 //////////////////////////////////////////////////////////////////////////////////
 
+/// A computation node whose result is kept alive after the first evaluation.
+///
+/// Wraps a [`TensorGraphNode`] and adds a `OnceLock<TensorData<T>>`. The inner
+/// computation runs at most once; every subsequent call to `compute()` returns a
+/// clone of the stored result without re-running the graph.
+///
+/// This is what you get when you call [`.cache()`] on a `TensorPromise`. The
+/// planner never reclaims the slot owned by a cache node — its buffer survives
+/// across separate `.materialize()` calls.
+///
+/// [`.cache()`]: crate::tensor::promise::TensorPromise::cache
 pub struct TensorGraphCacheNode<T: Copy> {
     node: TensorGraphNode<T>,
     cache: OnceLock<TensorData<T>>,
@@ -304,6 +363,10 @@ impl<T: Copy> TensorGraphCacheNode<T> {
 
     pub fn is_cache_filled(&self) -> bool {
         self.cache.get().is_some()
+    }
+
+    pub fn get_cache(&self) -> Option<&TensorData<T>> {
+        self.cache.get()
     }
 }
 

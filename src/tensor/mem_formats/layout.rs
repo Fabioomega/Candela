@@ -32,6 +32,16 @@ impl Layout {
         }
     }
 
+    pub fn empty() -> Self {
+        Self {
+            shape: Box::new([0]),
+            stride: Box::new([0]),
+            adj_stride: Box::new([0]),
+            offset: 0,
+            len: 0,
+        }
+    }
+
     pub fn from_shape(shape: &[usize], offset: usize) -> Self {
         let len: usize = shape.iter().product();
 

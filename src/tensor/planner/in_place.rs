@@ -20,7 +20,7 @@ fn slot_is_free(slot: &Slot, op_location: usize, required_len: usize) -> bool {
     )
 )]
 #[inline]
-pub fn find_buffer_inplace<T: Copy>(
+pub(crate) fn find_buffer_inplace<T: Copy>(
     op: &OpKind<T>,
     inputs: &[NodeKind<T>],
     output_layout: &Layout,

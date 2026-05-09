@@ -1,5 +1,5 @@
 [package]
-name = "Candela"
+name = "candela"
 version = "0.1.0"
 edition = "2024"
 
@@ -9,6 +9,7 @@ debug_only_check = []
 tracing = []
 
 [dev-dependencies]
+tracing-subscriber = "0.3.23"
 
 [dependencies]
 tracing = "0.1.44"
@@ -16,5 +17,3 @@ intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-iomp"] }
 intel-mkl-sys = { version = "0.8.1", features = ["mkl-static-lp64-iomp"] }
 cblas = "0.5.0"
 cblas-sys = "0.3.0"
-lapacke = "0.5.0"
-tracing-subscriber = "0.3.23"

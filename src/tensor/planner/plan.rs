@@ -1,3 +1,9 @@
+//! Static execution planner.
+//!
+//! [`plan_computation`] analyses the computation graph once and returns a
+//! `Vec<ComputeKind>` that tells the executor exactly what to run, which
+//! buffer to write into, and what to free after each step.
+
 use std::collections::HashMap;
 
 use crate::tensor::graph::{NodeKind, TensorGraphCacheNode, TensorGraphNode};
@@ -6,18 +12,31 @@ use crate::tensor::planner::in_place::find_buffer_inplace;
 use crate::tensor::planner::reference::{ReferenceKind, is_a_reference};
 use crate::tensor::planner::sort::topological_sort;
 
-pub enum OutputKind {
-    Buffer(usize),     // id
-    InPlaceIdx(usize), // idx
-    Allocate(usize),   // size
+/// How the executor should produce the output buffer for a single operation.
+pub(crate) enum OutputKind {
+    /// Re-use the buffer previously owned by node `id`. The planner guarantees
+    /// that buffer is no longer referenced by any live node at this point.
+    Buffer(usize),
+    /// Overwrite input at position `idx` in-place. The planner guarantees the
+    /// input's buffer is not aliased by any other live node.
+    InPlaceIdx(usize),
+    /// Allocate a fresh `Vec<T>` of this length.
+    Allocate(usize),
 }
 
-pub enum ComputeKind<'a, T: Copy> {
+/// One step in the execution plan produced by [`plan_computation`].
+pub(crate) enum ComputeKind<'a, T: Copy> {
+    /// A regular computation node.
     Op {
         node: &'a TensorGraphNode<T>,
         output: OutputKind,
+        /// Node IDs whose buffers should be dropped from the live-buffer cache
+        /// immediately after this step completes.
         dealloc_after: Vec<usize>,
     },
+    /// A cached computation node. The executor checks the cache before running;
+    /// if already filled it inserts the cached result and cleans up any reserved
+    /// buffers.
     CachedOp {
         cache: &'a TensorGraphCacheNode<T>,
         output: OutputKind,
@@ -25,10 +44,16 @@ pub enum ComputeKind<'a, T: Copy> {
     },
 }
 
-pub struct Slot {
+/// A buffer slot tracked by the planner.
+///
+/// Each live buffer in the plan is represented by one slot. `end` is the index
+/// of the last plan step that reads this buffer; after that step the executor
+/// drops it. `end = None` means the buffer lives forever — this is used for
+/// cached nodes whose results must survive across separate `.materialize()` calls.
+pub(crate) struct Slot {
     id: usize,
-    pub len: usize,
-    pub end: Option<usize>,
+    pub(crate) len: usize,
+    pub(crate) end: Option<usize>,
 }
 
 struct OpPlan<'a, T: Copy> {
@@ -324,6 +349,18 @@ fn plan_cache_node<'a, T: Copy>(
     }
 }
 
+/// Build a static execution plan for the subgraph rooted at `base_node`.
+///
+/// This is called once per `.materialize()` invocation. It performs a topological
+/// sort, analyses buffer lifetimes, and assigns each node an [`OutputKind`] that
+/// tells the executor whether to allocate a new buffer, reuse a freed one, or
+/// write in-place into an input.
+///
+/// The returned `Vec<ComputeKind>` is in dependency order and includes the root
+/// node as its last element. See [doc/planner.md] for a full walkthrough of the
+/// algorithm.
+///
+/// [doc/planner.md]: https://github.com/Fabioomega/candela/blob/main/doc/planner.md
 // TODO: Add a planner that is very dumbed down and don't waste so much processing on planning
 // TODO: That is specially useful for small computations where this planning time is significant
 #[cfg_attr(
@@ -340,7 +377,7 @@ fn plan_cache_node<'a, T: Copy>(
         )
     )
 )]
-pub fn plan_computation<T: Copy>(base_node: &TensorGraphNode<T>) -> Vec<ComputeKind<'_, T>> {
+pub(crate) fn plan_computation<T: Copy>(base_node: &TensorGraphNode<T>) -> Vec<ComputeKind<'_, T>> {
     let dag_iter = topological_sort(base_node);
 
     let mut plan: Vec<ComputeKind<'_, T>> = Vec::with_capacity(32);

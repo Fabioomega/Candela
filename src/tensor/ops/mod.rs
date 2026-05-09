@@ -6,12 +6,13 @@ pub mod impl_op;
 
 pub use impl_layout::compute_layout;
 
+use crate::tensor::definitions::NumberLike;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::ops::impl_compute::{cpu_compute_op_f64, cpu_compute_op_f64_inplace};
 use crate::tensor::storage::TensorData;
 
-pub trait ComputeWrapperSpec
+pub(crate) trait ComputeWrapperSpec
 where
     Self: Copy,
 {
@@ -58,8 +59,11 @@ impl ComputeWrapperSpec for f64 {
     }
 }
 
+pub(crate) trait TensorElement: NumberLike + ComputeWrapperSpec {}
+impl<T: NumberLike + ComputeWrapperSpec> TensorElement for T {}
+
 #[inline]
-pub fn cpu_compute<T: ComputeWrapperSpec>(
+pub(crate) fn cpu_compute<T: ComputeWrapperSpec>(
     op: &OpKind<T>,
     output_buffer: Vec<T>,
     output_layout: &Layout,
@@ -69,7 +73,7 @@ pub fn cpu_compute<T: ComputeWrapperSpec>(
 }
 
 #[inline]
-pub fn cpu_compute_inplace<T: ComputeWrapperSpec>(
+pub(crate) fn cpu_compute_inplace<T: ComputeWrapperSpec>(
     op: &OpKind<T>,
     output_layout: &Layout,
     inputs: Vec<TensorData<T>>,

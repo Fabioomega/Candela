@@ -1,10 +1,10 @@
 #[macro_export]
 macro_rules! impl_display {
     ($struct_name: ty) => {
-        use $crate::tensor::definitions::NumberLike;
         use $crate::tensor::iter::StepInfo;
 
-        impl<T: std::fmt::Display + NumberLike> std::fmt::Display for $struct_name {
+        #[allow(private_bounds)]
+        impl<T: std::fmt::Display + $crate::tensor::ops::ComputeWrapperSpec> std::fmt::Display for $struct_name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 let mut indent = 0;
                 let mut in_seq = false;

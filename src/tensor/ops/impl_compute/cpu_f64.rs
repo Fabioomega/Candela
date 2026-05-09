@@ -7,7 +7,6 @@ use crate::tensor::ops::impl_compute::cpu_compute_generic::{
 };
 use crate::tensor::storage::{Storage, TensorData};
 use crate::tensor::traits::Dimension;
-use cblas::daxpy;
 use cblas_sys::{cblas_daxpy, cblas_dgemm, cblas_dscal};
 use intel_mkl_sys::{vdAdd, vdDiv, vdExp, vdLn, vdLog2, vdMul, vdSub};
 
@@ -71,9 +70,9 @@ fn cpu_compute_matmul_f64(
         fields(op = op.as_str(), out_len = output_layout.len())
     )
 )]
-pub fn cpu_compute_op_f64(
+pub(crate) fn cpu_compute_op_f64(
     op: &OpKind<f64>,
-    output_buffer: Vec<f64>,
+    mut output_buffer: Vec<f64>,
     output_layout: &Layout,
     inputs: &[TensorData<f64>],
 ) -> TensorData<f64> {
@@ -93,7 +92,13 @@ pub fn cpu_compute_op_f64(
         OpKind::FusedScalar(ss) => {
             compute_scalar(ss, output_buffer, output_layout, inputs, BLAS_OPS)
         }
-        OpKind::AsContiguous => TensorData::from_iter(inputs[0].copied_iter(), inputs[0].shape()),
+        OpKind::AsContiguous => {
+            for (i, el) in inputs[0].iter().enumerate() {
+                output_buffer[i] = *el;
+            }
+
+            TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
+        }
         OpKind::Add => compute_elementwise_tensor_tensor(inputs, output_buffer, vdAdd),
         OpKind::Sub => compute_elementwise_tensor_tensor(inputs, output_buffer, vdSub),
         OpKind::Mul => compute_elementwise_tensor_tensor(inputs, output_buffer, vdMul),
@@ -110,7 +115,7 @@ pub fn cpu_compute_op_f64(
         fields(op = op.as_str(), out_len = output_layout.len())
     )
 )]
-pub fn cpu_compute_op_f64_inplace(
+pub(crate) fn cpu_compute_op_f64_inplace(
     op: &OpKind<f64>,
     output_layout: &Layout,
     mut inputs: Vec<TensorData<f64>>,
@@ -147,3 +152,7 @@ pub fn cpu_compute_op_f64_inplace(
         _ => todo!("not implemented"),
     }
 }
+
+#[cfg(test)]
+#[path = "cpu_f64_tests.rs"]
+mod tests;

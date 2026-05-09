@@ -1,15 +1,24 @@
+//! Topological sort for the computation graph.
+//!
+//! Yields graph nodes in post-order (inputs before the ops that consume them)
+//! so the planner and executor can process them in a safe dependency order.
+
 use std::collections::HashSet;
 
 use crate::tensor::graph::{NodeKind, TensorGraphNode};
 use crate::tensor::planner::get_id;
 
-pub struct TopologicalSortIter<'a, T: Copy> {
+/// Iterator that yields the nodes of a computation DAG in topological order.
+///
+/// Built by [`topological_sort`]. Uses an explicit stack so arbitrarily deep
+/// graphs don't overflow the call stack.
+pub(crate) struct TopologicalSortIter<'a, T: Copy> {
     stack: Vec<(&'a NodeKind<T>, bool)>,
     visited: HashSet<usize>,
 }
 
 impl<'a, T: Copy> TopologicalSortIter<'a, T> {
-    pub fn new(base_node: &'a TensorGraphNode<T>) -> Self {
+    pub(crate) fn new(base_node: &'a TensorGraphNode<T>) -> Self {
         let mut stack = Vec::new();
         stack.extend(base_node.inputs.iter().map(|i| (i, false)));
         Self {
@@ -52,13 +61,23 @@ impl<'a, T: Copy> Iterator for TopologicalSortIter<'a, T> {
     }
 }
 
-// Performs a DFS topological sort on the current DAG that this leaf (sink) is part of.
-// NOTE: The base_node is not added to the iterator output,
-//  but would naturally be the last element if added.
-// NOTE 2: If a cache and non-cache node with the same id are present in the same DAG,
-//  the cache will not be used. That will not be fixed as it would require
-//  invalidating some elements after the iteration already went trough.
-//  It's the user responsibility to use the cached node correctly.
+/// Returns an iterator that visits every node reachable from `base_node` in
+/// topological order (inputs before the ops that consume them).
+///
+/// `base_node` itself is **not** yielded — the planner adds it separately at the
+/// end of the plan. All other nodes are deduplicated by ID, so shared nodes
+/// appear exactly once.
+///
+/// If a [`TensorGraphCacheNode`] in the graph is already filled, its entire
+/// subtree is skipped; the cache node is treated as a leaf.
+///
+/// [`TensorGraphCacheNode`]: crate::tensor::graph::TensorGraphCacheNode
+///
+/// # Note on mixed cache/non-cache nodes
+///
+/// If a cache node and a regular node share the same ID in the same DAG, the
+/// regular node wins and the cache is ignored for that branch. This is a known
+/// edge case — avoid constructing graphs where this can happen.
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(
@@ -67,6 +86,6 @@ impl<'a, T: Copy> Iterator for TopologicalSortIter<'a, T> {
         fields(node_id = base_node.id, inputs_count = base_node.inputs.len())
     )
 )]
-pub fn topological_sort<T: Copy>(base_node: &TensorGraphNode<T>) -> TopologicalSortIter<'_, T> {
+pub(crate) fn topological_sort<T: Copy>(base_node: &TensorGraphNode<T>) -> TopologicalSortIter<'_, T> {
     TopologicalSortIter::new(base_node)
 }

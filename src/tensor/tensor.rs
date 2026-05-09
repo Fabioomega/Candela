@@ -1,7 +1,9 @@
+#![allow(private_bounds)]
 use crate::impl_display;
 use crate::tensor::graph::{NodeKind, TensorGraphEdge};
 use crate::tensor::iter::{InformedSliceIter, SliceIter};
 use crate::tensor::mem_formats::layout::Layout;
+use crate::tensor::ops::{ComputeWrapperSpec, TensorElement};
 use crate::tensor::promise::TensorPromise;
 use crate::tensor::storage::TensorData;
 use crate::tensor::traits::{Dimension, Promising};
@@ -11,7 +13,7 @@ pub struct Tensor<T: Copy> {
     pub(crate) graph: Arc<TensorGraphEdge<T>>,
 }
 
-impl<T: Copy> Tensor<T> {
+impl<T: ComputeWrapperSpec> Tensor<T> {
     #[inline]
     pub fn from_scalar(scalar: T, shape: &[usize]) -> Self {
         Self {
@@ -44,6 +46,11 @@ impl<T: Copy> Tensor<T> {
         Self {
             graph: Arc::new(TensorGraphEdge::from_tensor_data(data)),
         }
+    }
+
+    #[inline]
+    pub fn data(&self) -> &Vec<T> {
+        self.graph.get().data()
     }
 
     #[inline]
@@ -88,7 +95,7 @@ impl<T: Copy> Tensor<T> {
     }
 }
 
-impl<T: NumberLike> Tensor<T> {
+impl<T: TensorElement> Tensor<T> {
     #[inline]
     pub fn as_promise(&self) -> TensorPromise<T> {
         unsafe {
@@ -101,7 +108,7 @@ impl<T: NumberLike> Tensor<T> {
     }
 }
 
-impl<T: Copy> Dimension for Tensor<T> {
+impl<T: ComputeWrapperSpec> Dimension for Tensor<T> {
     #[inline]
     fn layout(&self) -> &super::mem_formats::layout::Layout {
         self.graph.layout()
@@ -113,7 +120,7 @@ impl<T: Copy> Dimension for Tensor<T> {
 /// The shallow copy still maintain connection with all the promises depending on this tensor
 /// If you want to create a shallow copy without any connection with existing promises
 /// use clone_detached() instead, or clone_deep for a deep clone.
-impl<T: Copy> Clone for Tensor<T> {
+impl<T: ComputeWrapperSpec> Clone for Tensor<T> {
     #[inline]
     fn clone(&self) -> Self {
         Self {

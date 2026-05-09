@@ -3,14 +3,14 @@ use std::collections::HashMap;
 use crate::tensor::graph::NodeKind;
 use crate::tensor::ops::def_op::OpKind;
 
-pub enum ReferenceKind {
+pub(crate) enum ReferenceKind {
     Edge(usize),
     Slot(usize, usize),
     NoRef,
 }
 
 #[inline]
-pub fn is_a_reference<T: Copy>(
+pub(crate) fn is_a_reference<T: Copy>(
     op: &OpKind<T>,
     inputs: &[NodeKind<T>],
     id_slot_map: &HashMap<usize, usize>,

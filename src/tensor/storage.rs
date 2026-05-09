@@ -1,3 +1,5 @@
+use std::fmt::Display;
+use std::iter::zip;
 use std::sync::Arc;
 
 use crate::tensor::iter::{
@@ -6,7 +8,7 @@ use crate::tensor::iter::{
 };
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::traits::Dimension;
-use crate::{debug_assert_positive, impl_display};
+use crate::{SliceRange, Tensor, debug_assert_positive, impl_display};
 
 pub enum IterImpl<C, N> {
     Contiguous(C),
@@ -47,6 +49,11 @@ impl<T: Copy> Storage<T> {
     {
         let vector = std::vec::Vec::from_iter(iter);
         Self::from_vec(vector)
+    }
+
+    #[inline]
+    pub fn data(&self) -> &Vec<T> {
+        &self.buffer
     }
 
     #[inline]
@@ -145,6 +152,11 @@ impl<T: Copy> TensorData<T> {
     }
 
     #[inline]
+    pub fn data(&self) -> &Vec<T> {
+        self.storage.data()
+    }
+
+    #[inline]
     pub fn as_ptr(&self) -> *const T {
         self.storage.as_ptr()
     }
@@ -211,9 +223,18 @@ impl<T: Copy> TensorData<T> {
     #[inline]
     pub fn clone_deep(&self) -> Self {
         Self {
-            storage: self.storage.clone(),
+            storage: self.storage.clone_deep(),
             layout: self.layout.clone(),
         }
+    }
+
+    #[inline]
+    // This is an internal method and should be, mostly used for
+    //  tests and the like. DO NOT USE IT IN ANYTHING USER FACING!
+    pub fn slice(&self, range: &[SliceRange]) -> Self {
+        let lay = self.layout.slice(range).unwrap();
+
+        self.as_layout(lay)
     }
 
     #[inline]
@@ -251,6 +272,25 @@ impl<T: Copy> Dimension for TensorData<T> {
     #[inline]
     fn layout(&self) -> &Layout {
         &self.layout
+    }
+}
+
+impl<T> PartialEq for TensorData<T>
+where
+    T: Copy + PartialEq + Display,
+{
+    fn eq(&self, other: &Self) -> bool {
+        if self.layout.len() != other.layout.len() {
+            return false;
+        }
+
+        for (el1, el2) in zip(self.iter(), other.iter()) {
+            if *el1 != *el2 {
+                return false;
+            }
+        }
+
+        true
     }
 }
 

@@ -12,7 +12,7 @@ pub(crate) struct Fusion<T: Copy> {
 }
 
 #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
-pub fn try_fuse<T: NumberLike>(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Fusion<T> {
+pub(crate) fn try_fuse<T: NumberLike>(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Fusion<T> {
     let mut current_fusion: Fusion<T> = Fusion {
         op,
         inputs: inputs.clone(),
@@ -56,7 +56,7 @@ pub fn try_fuse<T: NumberLike>(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Fus
 }
 
 #[inline]
-pub fn fuse_scalar_op<T: NumberLike>(
+pub(crate) fn fuse_scalar_op<T: NumberLike>(
     op1: &[OpKindScalar<T>],
     inputs1: &[NodeKind<T>],
     op2: &[OpKindScalar<T>],
@@ -95,7 +95,7 @@ pub fn fuse_scalar_op<T: NumberLike>(
 }
 
 #[inline]
-pub fn fuse_scalar_ops<T>(op1: &OpKind<T>, inputs1: &[NodeKind<T>], op2: &OpKind<T>) -> Fusion<T>
+pub(crate) fn fuse_scalar_ops<T>(op1: &OpKind<T>, inputs1: &[NodeKind<T>], op2: &OpKind<T>) -> Fusion<T>
 where
     T: NumberLike,
 {
@@ -115,7 +115,7 @@ where
 }
 
 #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
-pub fn compute_fusion<T>(
+pub(crate) fn compute_fusion<T>(
     op1: &OpKind<T>, // This is the father operand
     inputs1: &[NodeKind<T>],
     op2: &OpKind<T>, // This is the child operand
