@@ -198,26 +198,17 @@ impl Layout {
         }
     }
 
+    #[inline]
     pub fn to_dim_stride(&self, dim: usize) -> Result<Self, OpError> {
         if dim >= self.shape().len() {
             return Err(OpError::OutOfBoundAxes);
         }
 
-        let mut temp = self.clone();
-        let mut new_len: usize = 1;
-        for i in 0..temp.shape().len() {
-            if i > dim && self.shape[i] > 0 {
-                temp.shape[i] = 1;
-            }
-            if i <= dim {
-                new_len *= self.shape[i] as usize;
-            }
-        }
+        let mut axes = self.shape.to_vec();
+        axes.remove(dim);
+        axes.push(dim);
 
-        temp.adj_stride = calculate_adjacent_dim_stride(&temp.stride, &temp.shape);
-        temp.len = new_len;
-
-        Ok(temp)
+        self.transpose_axes(&axes)
     }
 
     #[inline]
