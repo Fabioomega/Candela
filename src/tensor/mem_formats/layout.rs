@@ -156,30 +156,40 @@ impl Layout {
         })
     }
 
-    // pub fn broadcast_to_shape(&self, shape: &[usize]) -> Result<Self, OpError> {
-    //     cfg_debug_only!(
-    //         if shape.len() > self.shape.len() && shape[0] % self.shape[0] == 0 {
-    //             return Err(OpError::CannotBroadcast);
-    //         }
-    //     );
-    //     let diff = shape.len() - self.shape.len();
+    pub fn broadcast_to_shape(&self, shape: &[usize]) -> Result<Self, OpError> {
+        if shape.len() < self.shape.len()
+            || (self.shape.len() == shape.len() && shape[0] % self.shape[0] != 0)
+        {
+            return Err(OpError::CannotBroadcast);
+        }
 
-    //     let mut stride: Vec<i32> = Vec::new();
-    //     stride.extend((0..diff).map(|_| 0));
-    //     stride.extend_from_slice(shape);
+        let mut new_stride: Vec<i32> = Vec::with_capacity(shape.len());
+        new_stride.extend(
+            (self.shape.len()..shape.len())
+                .into_iter()
+                .map(|_| 0)
+                .chain(self.stride.iter().cloned()),
+        );
 
-    //     let adj_stride = calculate_adjacent_dim_stride(&stride, shape);
-    //     let len: i32 = self.shape().iter().product();
-    //     let len: usize = len as usize;
+        let len = new_stride.len();
 
-    //     Ok(Self {
-    //         shape: shape.into(),
-    //         stride: stride.into_boxed_slice(),
-    //         adj_stride,
-    //         offset: self.offset,
-    //         len,
-    //     })
-    // }
+        for (dim, s) in self.shape.iter().rev().enumerate() {
+            if *s == 1 {
+                new_stride[len - dim - 1] = 0;
+            }
+        }
+
+        let adj_stride = calculate_adjacent_dim_stride(&new_stride, shape);
+        let len: usize = shape.iter().product();
+
+        Ok(Self {
+            shape: shape.into(),
+            stride: new_stride.into_boxed_slice(),
+            adj_stride,
+            offset: self.offset,
+            len,
+        })
+    }
 
     pub fn shape_as_3d(&self) -> [usize; 3] {
         if self.shape.len() == 1 {
@@ -200,15 +210,15 @@ impl Layout {
 
     #[inline]
     pub fn to_dim_stride(&self, dim: usize) -> Result<Self, OpError> {
-        if dim >= self.shape().len() {
+        cfg_debug_only!(if dim >= self.shape().len() {
             return Err(OpError::OutOfBoundAxes);
-        }
+        });
 
         let mut axes = self.shape.to_vec();
         axes.remove(dim);
         axes.push(dim);
 
-        self.transpose_axes(&axes)
+        unsafe { Ok(self.transpose_axes(&axes).unwrap_unchecked()) }
     }
 
     #[inline]
