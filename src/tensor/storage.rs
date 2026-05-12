@@ -8,7 +8,7 @@ use crate::tensor::iter::{
 };
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::traits::Dimension;
-use crate::{SliceRange, Tensor, debug_assert_positive, impl_display};
+use crate::{SliceRange, cfg_debug_assert, impl_display};
 
 pub enum IterImpl<C, N> {
     Contiguous(C),
@@ -101,8 +101,6 @@ impl<T: Copy> TensorData<T> {
     pub fn from_scalar(scalar: T, shape: &[usize]) -> Self {
         let len: usize = shape.iter().product();
 
-        debug_assert_positive!(len);
-
         Self {
             storage: Storage::from_scalar(scalar, len as usize),
             layout: Layout::from_shape(shape, 0),
@@ -119,7 +117,7 @@ impl<T: Copy> TensorData<T> {
 
     #[inline]
     pub fn from_vec(vector: Vec<T>, shape: &[usize], offset: usize) -> Self {
-        debug_assert!(vector.len() <= (shape.iter().product()));
+        cfg_debug_assert!(vector.len() <= (shape.iter().product()));
 
         Self {
             storage: Storage::from_vec(vector),
@@ -182,7 +180,7 @@ impl<T: Copy> TensorData<T> {
 
     #[inline]
     pub unsafe fn iter_as_layout<'a>(&'a self, layout: &'a Layout) -> SliceIter<'a, T> {
-        debug_assert!(self.layout().len() == layout.len());
+        cfg_debug_assert!(self.layout().len() == layout.len());
         SliceIter::new(&self.storage.buffer, layout.len(), layout)
     }
 

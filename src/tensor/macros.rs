@@ -7,13 +7,6 @@ macro_rules! debug_only {
 }
 
 #[macro_export]
-macro_rules! debug_assert_positive {
-    ($e: expr) => {
-        debug_assert!($e >= 0)
-    };
-}
-
-#[macro_export]
 macro_rules! debug_shape_check {
     ($size_a: expr, $size_b: expr) => {
         debug_only!(if $size_a != $size_b {
@@ -50,25 +43,15 @@ macro_rules! cfg_debug_only {
 }
 
 #[macro_export]
-macro_rules! cfg_tracing {
+macro_rules! cfg_debug_assert {
     ($body:expr) => {
-        #[cfg(feature = "tracing")]
+        #[cfg(feature = "debug_only_check")]
         {
-            $body
+            debug_assert!($body)
+        }
+        #[cfg(not(feature = "debug_only_check"))]
+        {
+            assert!($body)
         }
     };
-}
-
-#[macro_export]
-macro_rules! cfg_tracing_in_scope {
-    ($scope:expr, $($body:tt)*) => {{
-        #[cfg(feature = "tracing")]
-        {
-            $scope.in_scope(|| { $($body)* })
-        }
-        #[cfg(not(feature = "tracing"))]
-        {
-            { $($body)* }
-        }
-    }};
 }

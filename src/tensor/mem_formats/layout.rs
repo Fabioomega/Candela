@@ -157,6 +157,9 @@ impl Layout {
     }
 
     pub fn broadcast_to_shape(&self, shape: &[usize]) -> Result<Self, OpError> {
+        // Usually a check like this would be added to the cfg_debug_assert or the like.
+        // This is different because it checks if a shape can be broacastable, instead
+        // of only checking incorrect inputs.
         if shape.len() < self.shape.len()
             || (self.shape.len() == shape.len() && shape[0] % self.shape[0] != 0)
         {

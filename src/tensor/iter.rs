@@ -1,7 +1,6 @@
 use std::iter::FusedIterator;
 use std::sync::Arc;
 
-use crate::debug_assert_positive;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::traits::StreamingIterator;
 
@@ -88,7 +87,7 @@ impl<'a, T: Copy> FusedIterator for ContiguousIter<'a, T> {}
 // impl<'a, T: Copy> FusedIterator for MutContiguousIter<'a, T> {}
 //
 ///////////////////////////////////////////////////////////////
-
+// TODO: This version does not need to exist at all
 pub struct CopiedContiguousIter<'a, T: Copy> {
     data: &'a Arc<Vec<T>>,
     offset: usize,
@@ -265,7 +264,7 @@ impl<'a, T: Copy> ExactSizeIterator for MutSliceIter<'a, T> {}
 impl<'a, T: Copy> FusedIterator for MutSliceIter<'a, T> {}
 
 ///////////////////////////////////////////////////////////////
-
+// TODO: This version does not need to exist at all
 pub struct CopiedSliceIter<'a, T: Copy> {
     data: &'a Arc<Vec<T>>,
     pos: isize,
@@ -367,8 +366,6 @@ impl<'a, T: Copy> Iterator for InformedSliceIter<'a, T> {
         match self.next_state {
             StepInfo::EnterDimension(dim) => {
                 if dim == self.layout.shape().len() - 1 {
-                    debug_assert_positive!(self.pos);
-
                     self.next_state = StepInfo::Value(self.buffer[self.pos as usize]);
 
                     return Some(StepInfo::EnterDimension(dim));
@@ -409,8 +406,6 @@ impl<'a, T: Copy> Iterator for InformedSliceIter<'a, T> {
 
                 self.pos += *self.layout.adj_stride().last().unwrap() as i64;
                 self.counter[counter_last] += 1;
-
-                debug_assert_positive!(self.pos);
 
                 self.next_state = StepInfo::Value(self.buffer[self.pos as usize]);
 

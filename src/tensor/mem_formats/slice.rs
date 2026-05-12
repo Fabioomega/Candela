@@ -2,9 +2,9 @@ use std::ops::{Range, RangeFrom, RangeFull, RangeTo};
 
 use crate::tensor::mem_formats::layout::Layout;
 
-use crate::cfg_debug_only;
 use crate::tensor::errors::OpError;
 use crate::tensor::internals::calculate_adjacent_dim_stride;
+use crate::{cfg_debug_assert, cfg_debug_only};
 
 enum SliceBounds {
     Beginning,
@@ -92,7 +92,7 @@ pub struct SliceInfo {
 
 impl SliceInfo {
     pub(crate) fn from_range(layout: &Layout, range: &[SliceRange]) -> Result<Self, OpError> {
-        debug_assert!(layout.shape().len() >= range.len());
+        cfg_debug_assert!(layout.shape().len() >= range.len());
 
         let mut offset: i64 = layout.offset() as i64;
         let mut new_shape: Vec<usize> = layout.shape().into();
