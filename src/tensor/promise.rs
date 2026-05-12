@@ -6,7 +6,6 @@
 //! the result around so subsequent uses don't need to recompute.
 
 #![allow(private_bounds)]
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crate::tensor::errors::OpError;
@@ -31,7 +30,7 @@ use crate::tensor::traits::{Dimension, Promising};
 /// use candela::Tensor;
 ///
 /// let t = Tensor::from_scalar(3.0_f64, &[4]);
-/// let result = (t.as_promise() * 2.0 + 1.0).materialize();
+/// let result = (t * 2.0 + 1.0).materialize();
 /// assert_eq!(result.data(), &vec![7.0; 4]);
 /// ```
 pub type TensorPromise<T> = RawTensorPromise<TensorGraphNode<T>>;
@@ -54,7 +53,7 @@ pub type TensorPromise<T> = RawTensorPromise<TensorGraphNode<T>>;
 /// use candela::Tensor;
 ///
 /// let t = Tensor::from_scalar(1.0_f64, &[4]);
-/// let cached = (t.as_promise() + 2.0).cache();
+/// let cached = (t + 2.0).cache();
 ///
 /// // Two separate materializations — the inner graph runs only once.
 /// let r1 = (&cached * 2.0).materialize();
@@ -155,7 +154,7 @@ impl<P: Promising<Output: TensorElement>> RawTensorPromise<P> {
     /// use candela::Tensor;
     ///
     /// let t = Tensor::from_scalar(4.0_f64, &[3]);
-    /// let result = (t.as_promise() - 1.0).materialize();
+    /// let result = (t - 1.0).materialize();
     /// assert_eq!(result.data(), &vec![3.0; 3]);
     /// ```
     pub fn materialize(self) -> Tensor<P::Output> {

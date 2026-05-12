@@ -50,9 +50,8 @@ let t = ones!(&[4]);                        // 1D tensor of ones
 A description of a computation that hasn't run yet. Building a promise chain allocates no intermediate tensors — the graph is constructed, not evaluated. Calling `.materialize()` runs the whole thing.
 
 ```rust
-let p = t.as_promise();        // wrap a Tensor into a Promise (free)
-let p = p + 5.0;               // add to the graph
-let p = p * 2.0;               // continue building
+let p = t + 5.0;               // ops return a TensorPromise automatically
+let p = p * 2.0;               // continue building the graph
 let result = p.materialize();  // execute the graph now
 ```
 
@@ -101,9 +100,9 @@ Candela separates logical shape from physical memory layout. Views, slices, and 
 ```rust
 let t = arange![0, 12]; // shape [1, 12]
 
-let p = t.as_promise().view(&[3, 4])?;          // reshape, no copy
-let p = t.as_promise().transpose();             // swap last two axes, no copy
-let p = t.as_promise().slice(s![0..2, 1..3])?; // 2x2 subview, no copy
+let p = t.view(&[3, 4])?;           // reshape, no copy
+let p = t.transpose();              // swap last two axes, no copy
+let p = t.slice(s![0..2, 1..3])?;   // 2x2 subview, no copy
 ```
 
 When an operation needs contiguous memory (e.g., for a BLAS call), Candela packs the data at that point using a chunked buffer to keep packing cache-friendly.
