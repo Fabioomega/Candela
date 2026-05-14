@@ -51,7 +51,7 @@ instance — get `end = None`.
 
 ### 3. Buffer assignment
 
-This is the core of the planner. For each node in order, it picks one of four strategies:
+This is the core of the planner. For each node in order, it picks one of five strategies:
 
 **In-place reuse.** Scalar ops and binary tensor ops can overwrite one of their own
 inputs. If an input's buffer is already free at this point and the sizes match, the
@@ -60,6 +60,14 @@ planner chooses this — no extra allocation, no cache lookup.
 **Reference pass-through.** Layout-only ops (`View`, `Slice`, `Transpose`) don't produce
 new data at all. They alias an existing buffer. The planner just extends the original
 buffer's lifetime to cover all aliases and moves on.
+
+**Redirect deduplication.** Some ops produce a transformed version of their input that
+downstream consumers should use instead of the original — `AsContiguous` is the main
+example, packing a non-contiguous tensor into a fresh contiguous buffer. When a second
+`AsContiguous` node appears for the same input, the planner skips planning a new buffer
+entirely: it extends the first node's slot lifetime to cover both sets of consumers and
+records `duplicate_id → canonical_id` in a redirect table. No plan step is emitted for
+the duplicate — the executor resolves its ID via the redirect table at runtime.
 
 **Buffer reuse.** If a previously allocated buffer has been freed and has the right size,
 the planner reclaims it. This is a linear scan over the current slot list.
@@ -79,6 +87,12 @@ The executor in `TensorGraphNode::compute` (in `src/tensor/graph.rs`) works thro
 plan one step at a time, maintaining a live-buffer cache keyed by node ID. After each
 step it removes any IDs listed in `dealloc_after`, dropping the buffer as soon as it's
 no longer needed.
+
+The plan also carries a redirect table alongside the step list. When resolving inputs for
+any step, the executor checks this table first: if an input's node ID has a redirect
+entry, the canonical ID is used for the cache lookup instead. This is how deduplicated
+`AsContiguous` nodes are served — they emit no step and hold no cache entry of their own,
+but their consumers find the packed buffer transparently through the redirect table.
 
 ---
 

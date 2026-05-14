@@ -55,13 +55,24 @@ pub(crate) fn get_inputs_layout<T: NumberLike>(inputs: &[NodeKind<T>]) -> Box<[&
         .collect()
 }
 
+/// Collect the materialized inputs for one plan step.
+///
+/// Node IDs are resolved through `redirect_table` before lookup so that
+/// deduplicated [`OpKind::AsContiguous`] nodes transparently serve the result
+/// computed by the canonical redirect node.
+///
+/// [`OpKind::AsContiguous`]: crate::tensor::ops::def_op::OpKind::AsContiguous
 fn get_inputs_tensor_data<T: Copy>(
     inputs: &[NodeKind<T>],
     computation_cache: &mut HashMap<usize, TensorData<T>>,
+    redirect_table: &HashMap<usize, usize>,
 ) -> Vec<TensorData<T>> {
     let mut inputs_data: Vec<TensorData<T>> = Vec::with_capacity(inputs.len());
     for kind in inputs.iter() {
-        let id = get_id(kind);
+        let mut id = get_id(kind);
+        if let Some(redirect_to) = redirect_table.get(&id) {
+            id = *redirect_to;
+        }
 
         match kind {
             NodeKind::Node(_) => {
@@ -104,11 +115,12 @@ fn execute_output<T: NumberLike + ComputeWrapperSpec>(
     node: &TensorGraphNode<T>,
     output: OutputKind,
     computation_cache: &mut HashMap<usize, TensorData<T>>,
+    redirect_table: &HashMap<usize, usize>,
 ) -> TensorData<T> {
     match output {
         OutputKind::Allocate(len) => {
             let output_buffer = alloc_vec(len);
-            let inputs = get_inputs_tensor_data(&node.inputs, computation_cache);
+            let inputs = get_inputs_tensor_data(&node.inputs, computation_cache, redirect_table);
             cpu_compute(&node.op, output_buffer, &node.layout, &inputs)
         }
         OutputKind::Buffer(id) => {
@@ -117,11 +129,11 @@ fn execute_output<T: NumberLike + ComputeWrapperSpec>(
             // is verified to be sound.
             let reused = computation_cache.remove(&id).unwrap();
             let output_buffer = strip_tensor(reused);
-            let inputs = get_inputs_tensor_data(&node.inputs, computation_cache);
+            let inputs = get_inputs_tensor_data(&node.inputs, computation_cache, redirect_table);
             cpu_compute(&node.op, output_buffer, &node.layout, &inputs)
         }
         OutputKind::InPlaceIdx(idx) => {
-            let inputs = get_inputs_tensor_data(&node.inputs, computation_cache);
+            let inputs = get_inputs_tensor_data(&node.inputs, computation_cache, redirect_table);
             cpu_compute_inplace(&node.op, &node.layout, inputs, idx)
         }
     }
@@ -237,16 +249,26 @@ impl<T: NumberLike + ComputeWrapperSpec> Promising for TensorGraphNode<T> {
     /// listed in `dealloc_after` immediately so intermediate buffers are freed as
     /// soon as they're no longer needed.
     ///
-    /// Four execution paths exist, corresponding to the four [`OutputKind`] variants
-    /// the planner can assign:
+    /// Three [`OutputKind`] variants drive execution:
     /// - **Allocate** — allocate a fresh buffer and compute into it.
     /// - **Buffer reuse** — extract a previously freed buffer from the cache and
     ///   compute into it without allocating.
-    /// - **In-place** — mutate one of the op's inputs directly.
-    /// - **Reference** — layout-only ops (`View`, `Slice`, `Transpose`) reuse the
-    ///   input buffer at a new layout; no computation runs.
+    /// - **In-place** — mutate one of the op's inputs directly. Layout-only ops
+    ///   (`View`, `Slice`, `Transpose`) also use this path; they share the input
+    ///   buffer at a new layout without running any computation.
+    ///
+    /// Additionally, the plan carries a redirect table for deduplicated nodes (see
+    /// [`plan::Plan`]). Duplicate [`OpKind::AsContiguous`] nodes emit no plan step;
+    /// their IDs are resolved through the redirect table in [`get_inputs_tensor_data`]
+    /// so their consumers transparently receive the result that was already computed.
+    ///
+    /// [`plan::Plan`]: crate::tensor::planner::plan::Plan
+    /// [`OpKind::AsContiguous`]: crate::tensor::ops::def_op::OpKind::AsContiguous
     fn compute(&self) -> TensorData<T> {
         let plan = plan_computation(&self);
+        let redirect_table = plan.redirect_table;
+        let plan = plan.plan;
+
         let mut computation_cache: HashMap<usize, TensorData<T>> = HashMap::new();
 
         for comp in plan.into_iter() {
@@ -256,7 +278,8 @@ impl<T: NumberLike + ComputeWrapperSpec> Promising for TensorGraphNode<T> {
                     output,
                     dealloc_after,
                 } => {
-                    let result = execute_output(node, output, &mut computation_cache);
+                    let result =
+                        execute_output(node, output, &mut computation_cache, &redirect_table);
                     computation_cache.insert(node.id, result);
 
                     for dealloc_id in dealloc_after {
@@ -299,7 +322,8 @@ impl<T: NumberLike + ComputeWrapperSpec> Promising for TensorGraphNode<T> {
                     }
 
                     let node = cache.get_node();
-                    let result = execute_output(node, output, &mut computation_cache);
+                    let result =
+                        execute_output(node, output, &mut computation_cache, &redirect_table);
                     let _ = cache.cache.set(result.clone());
                     computation_cache.insert(node.id, result);
 

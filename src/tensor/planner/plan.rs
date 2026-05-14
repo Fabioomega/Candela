@@ -7,8 +7,10 @@
 use std::collections::HashMap;
 
 use crate::tensor::graph::{NodeKind, TensorGraphCacheNode, TensorGraphNode};
+use crate::tensor::iter::MutSliceIter;
 use crate::tensor::planner::get_id;
 use crate::tensor::planner::in_place::find_buffer_inplace;
+use crate::tensor::planner::redirect::{RedirectKind, is_a_redirect};
 use crate::tensor::planner::reference::{ReferenceKind, is_a_reference};
 use crate::tensor::planner::sort::topological_sort;
 
@@ -81,19 +83,20 @@ fn extend_slot_life(slot_end1: Option<usize>, slot_end2: Option<usize>) -> Optio
     feature = "tracing",
     tracing::instrument(
         level = "trace",
-        skip(node, plan, slots, id_slot_map, ref_deallocs),
+        skip(node, plan, slots, id_slot_map, ref_deallocs, id_redirect),
         fields(node_id = node.id, output_len = node.layout.len(), slots_available = slots.len())
     )
 )]
 #[inline]
 fn plan_node<'a, T: Copy>(
     op_start: usize,
-    op_end: Option<usize>,
+    mut op_end: Option<usize>,
     node: &'a TensorGraphNode<T>,
     plan: &mut Vec<ComputeKind<'a, T>>,
     slots: &mut Vec<Slot>,
     id_slot_map: &mut HashMap<usize, usize>,
     ref_deallocs: &mut Vec<(usize, Option<usize>)>,
+    id_redirect: &mut HashMap<usize, usize>,
 ) {
     let (inplace_slot, input_idx) = find_buffer_inplace(
         &node.op,
@@ -166,6 +169,43 @@ fn plan_node<'a, T: Copy>(
         ReferenceKind::NoRef => {}
     }
 
+    match is_a_redirect(&node.op, &node.inputs, id_redirect) {
+        RedirectKind::RedirectFrom(id) => {
+            id_redirect.insert(id, node.id);
+            if let Some(&slot_idx) = id_slot_map.get(&id) {
+                let extended_end = extend_slot_life(slots[slot_idx].end, op_end);
+                op_end = extended_end;
+                // slots[slot_idx].end = Some(op_start); // This could generate problems, as it could have references mapped to it, so it cannot be deallocated early.
+            }
+
+            #[cfg(feature = "tracing")]
+            tracing::trace!(
+                decision = "redirect_register",
+                input_id = id,
+                "registered as canonical redirect for input; planning normally"
+            );
+        }
+        RedirectKind::AlreadyRedirectingTo(id) => {
+            id_redirect.insert(node.id, id);
+            if let Some(&slot_idx) = id_slot_map.get(&id) {
+                let extended_end = extend_slot_life(slots[slot_idx].end, op_end);
+                slots[slot_idx].end = extended_end;
+                id_slot_map.insert(node.id, slot_idx);
+
+                #[cfg(feature = "tracing")]
+                tracing::trace!(
+                    decision = "redirect_dedup",
+                    canonical_id = id,
+                    slot_idx,
+                    ?extended_end,
+                    "duplicate redirect; sharing slot with canonical node, no plan step emitted"
+                );
+            }
+            return;
+        }
+        RedirectKind::NoRedirect => {}
+    }
+
     let slot = find_slot(slots, op_start, node.layout.len());
     if let Some(slot_idx) = slot {
         #[cfg(feature = "tracing")]
@@ -179,6 +219,7 @@ fn plan_node<'a, T: Copy>(
 
         id_slot_map.insert(node.id, slot_idx);
         slots[slot_idx].end = op_end;
+
         plan.push(ComputeKind::Op {
             node,
             output: OutputKind::Buffer(slots[slot_idx].id),
@@ -218,7 +259,7 @@ fn plan_node<'a, T: Copy>(
     feature = "tracing",
     tracing::instrument(
         level = "trace",
-        skip(cache, plan, slots, id_slot_map, ref_deallocs),
+        skip(cache, plan, slots, id_slot_map, ref_deallocs, id_redirect),
         fields(
             node_id = cache.get_node().id,
             output_len = cache.get_node().layout.len(),
@@ -234,6 +275,7 @@ fn plan_cache_node<'a, T: Copy>(
     slots: &mut Vec<Slot>,
     id_slot_map: &mut HashMap<usize, usize>,
     ref_deallocs: &mut Vec<(usize, Option<usize>)>,
+    id_redirect: &mut HashMap<usize, usize>,
 ) {
     if cache.is_cache_filled() {
         #[cfg(feature = "tracing")]
@@ -293,7 +335,7 @@ fn plan_cache_node<'a, T: Copy>(
             return;
         }
         ReferenceKind::Slot(slot_idx, input_idx) => {
-            slots[slot_idx].end = extend_slot_life(slots[slot_idx].end, None);
+            slots[slot_idx].end = None;
             ref_deallocs.push((node.id, None));
 
             plan.push(ComputeKind::CachedOp {
@@ -307,6 +349,17 @@ fn plan_cache_node<'a, T: Copy>(
         ReferenceKind::NoRef => {}
     }
 
+    match is_a_redirect(&node.op, &node.inputs, id_redirect) {
+        RedirectKind::RedirectFrom(id) => {
+            id_redirect.insert(id, node.id);
+        }
+        RedirectKind::AlreadyRedirectingTo(_) => {
+            // Duplicating cannot be avoided as the user is caching an AsContiguous op
+            // Even if it was already pre-computed.
+        }
+        RedirectKind::NoRedirect => {}
+    }
+
     let slot = find_slot(slots, op_start, node.layout.len());
     if let Some(slot_idx) = slot {
         #[cfg(feature = "tracing")]
@@ -318,7 +371,6 @@ fn plan_cache_node<'a, T: Copy>(
             "planned buffer reuse; slot will be kept alive for the cache"
         );
 
-        // id_slot_map.insert(node.id, slot_idx);
         slots[slot_idx].end = None;
 
         plan.push(ComputeKind::CachedOp {
@@ -334,19 +386,29 @@ fn plan_cache_node<'a, T: Copy>(
             "no free slot found, will allocate new buffer for the cache"
         );
 
-        // id_slot_map.insert(node.id, slots.len());
-        // slots.push(Slot {
-        //     id: node.id,
-        //     len: node.layout.len(),
-        //     end: None,
-        // });
-
         plan.push(ComputeKind::CachedOp {
             cache,
             output: OutputKind::Allocate(node.layout.len()),
             dealloc_after: Vec::new(),
         });
     }
+}
+
+/// The output of [`plan_computation`].
+///
+/// Bundles the ordered execution schedule with the redirect table the executor
+/// needs to resolve deduplicated node IDs at runtime.
+pub(crate) struct Plan<'a, T: Copy> {
+    /// Ordered list of steps to execute. Each step carries its [`OutputKind`] and
+    /// the list of buffer IDs to drop once the step completes.
+    pub(crate) plan: Vec<ComputeKind<'a, T>>,
+    /// Maps a deduplicated node's ID to the canonical node's ID whose
+    /// `computation_cache` entry should be used in its place. The executor checks
+    /// this table when resolving inputs so duplicate [`OpKind::AsContiguous`] nodes
+    /// are served from the single buffer that was actually allocated.
+    ///
+    /// [`OpKind::AsContiguous`]: crate::tensor::ops::def_op::OpKind::AsContiguous
+    pub(crate) redirect_table: HashMap<usize, usize>,
 }
 
 /// Build a static execution plan for the subgraph rooted at `base_node`.
@@ -356,11 +418,17 @@ fn plan_cache_node<'a, T: Copy>(
 /// tells the executor whether to allocate a new buffer, reuse a freed one, or
 /// write in-place into an input.
 ///
-/// The returned `Vec<ComputeKind>` is in dependency order and includes the root
-/// node as its last element. See [doc/planner.md] for a full walkthrough of the
-/// algorithm.
+/// Returns a [`Plan`] containing the ordered step list and a redirect table. The
+/// redirect table maps deduplicated node IDs (e.g. a second [`OpKind::AsContiguous`]
+/// on the same input) to the canonical node whose buffer should be used instead.
+/// Duplicate nodes emit no plan step; the executor resolves their IDs via the
+/// redirect table without any extra allocation or computation.
+///
+/// The plan is in dependency order and includes the root node as its last element.
+/// See [doc/planner.md] for a full walkthrough of the algorithm.
 ///
 /// [doc/planner.md]: https://github.com/Fabioomega/candela/blob/main/doc/planner.md
+/// [`OpKind::AsContiguous`]: crate::tensor::ops::def_op::OpKind::AsContiguous
 // TODO: Add a planner that is very dumbed down and don't waste so much processing on planning
 // TODO: That is specially useful for small computations where this planning time is significant
 #[cfg_attr(
@@ -377,7 +445,7 @@ fn plan_cache_node<'a, T: Copy>(
         )
     )
 )]
-pub(crate) fn plan_computation<T: Copy>(base_node: &TensorGraphNode<T>) -> Vec<ComputeKind<'_, T>> {
+pub(crate) fn plan_computation<T: Copy>(base_node: &TensorGraphNode<T>) -> Plan<'_, T> {
     let dag_iter = topological_sort(base_node);
 
     let mut plan: Vec<ComputeKind<'_, T>> = Vec::with_capacity(32);
@@ -385,6 +453,7 @@ pub(crate) fn plan_computation<T: Copy>(base_node: &TensorGraphNode<T>) -> Vec<C
     let mut slots: Vec<Slot> = Vec::with_capacity(32);
     let mut id_op: HashMap<usize, usize> = HashMap::with_capacity(32);
     let mut id_slot_map: HashMap<usize, usize> = HashMap::with_capacity(32);
+    let mut id_redirect: HashMap<usize, usize> = HashMap::with_capacity(8);
     let mut ref_deallocs: Vec<(usize, Option<usize>)> = Vec::with_capacity(8);
 
     for node in dag_iter {
@@ -427,6 +496,7 @@ pub(crate) fn plan_computation<T: Copy>(base_node: &TensorGraphNode<T>) -> Vec<C
                     &mut slots,
                     &mut id_slot_map,
                     &mut ref_deallocs,
+                    &mut id_redirect,
                 );
             }
             NodeKind::Cache(arc_cache) => {
@@ -437,6 +507,7 @@ pub(crate) fn plan_computation<T: Copy>(base_node: &TensorGraphNode<T>) -> Vec<C
                     &mut slots,
                     &mut id_slot_map,
                     &mut ref_deallocs,
+                    &mut id_redirect,
                 );
             }
             NodeKind::Edge(_) => unreachable!(),
@@ -451,6 +522,7 @@ pub(crate) fn plan_computation<T: Copy>(base_node: &TensorGraphNode<T>) -> Vec<C
         &mut slots,
         &mut id_slot_map,
         &mut ref_deallocs,
+        &mut id_redirect,
     );
 
     #[cfg(feature = "tracing")]
@@ -480,5 +552,8 @@ pub(crate) fn plan_computation<T: Copy>(base_node: &TensorGraphNode<T>) -> Vec<C
         }
     }
 
-    plan
+    Plan {
+        plan,
+        redirect_table: id_redirect,
+    }
 }
