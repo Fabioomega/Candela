@@ -48,8 +48,14 @@ pub(crate) fn is_a_redirect<T: Copy>(
     id_redirect: &HashMap<usize, usize>,
 ) -> RedirectKind {
     match op {
-        // TODO: We should disregard redirect from a cache in AsContiguous case, when we make cache use a contiguous tensor.
         OpKind::AsContiguous => {
+            // The cache must be contiguous, so we should use that instead.
+            if let NodeKind::Cache(cache) = &inputs[0]
+                && cache.is_cache_filled()
+            {
+                return RedirectKind::AlreadyRedirectingTo(cache.get_node().id);
+            }
+
             let id = get_id(&inputs[0]);
             id_redirect
                 .get(&id)

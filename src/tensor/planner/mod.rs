@@ -1,5 +1,6 @@
 mod in_place;
 mod plan;
+mod redirect;
 mod reference;
 mod sort;
 

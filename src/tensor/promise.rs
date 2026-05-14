@@ -109,8 +109,13 @@ impl<T: TensorElement> TensorPromise<T> {
     /// let _ = (&cached + 1.0).materialize();
     /// ```
     pub fn cache(self) -> CachedTensorPromise<T> {
+        let base = unsafe {
+            TensorPromise::new(OpKind::AsContiguous, [NodeKind::Node(self.graph)].into())
+                .unwrap_unchecked()
+        };
+
         unsafe {
-            CachedTensorPromise::new(OpKind::NoOp, [NodeKind::Node(self.graph)].into())
+            CachedTensorPromise::new(OpKind::NoOp, [NodeKind::Node(base.graph)].into())
                 .unwrap_unchecked()
         }
     }

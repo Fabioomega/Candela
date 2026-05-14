@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 
 use crate::tensor::graph::{NodeKind, TensorGraphCacheNode, TensorGraphNode};
-use crate::tensor::iter::MutSliceIter;
 use crate::tensor::planner::get_id;
 use crate::tensor::planner::in_place::find_buffer_inplace;
 use crate::tensor::planner::redirect::{RedirectKind, is_a_redirect};
@@ -347,17 +346,6 @@ fn plan_cache_node<'a, T: Copy>(
             return;
         }
         ReferenceKind::NoRef => {}
-    }
-
-    match is_a_redirect(&node.op, &node.inputs, id_redirect) {
-        RedirectKind::RedirectFrom(id) => {
-            id_redirect.insert(id, node.id);
-        }
-        RedirectKind::AlreadyRedirectingTo(_) => {
-            // Duplicating cannot be avoided as the user is caching an AsContiguous op
-            // Even if it was already pre-computed.
-        }
-        RedirectKind::NoRedirect => {}
     }
 
     let slot = find_slot(slots, op_start, node.layout.len());
