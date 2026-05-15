@@ -18,6 +18,23 @@ pub struct SliceRange {
     end: SliceBounds,
 }
 
+impl From<i32> for SliceRange {
+    #[inline]
+    fn from(value: i32) -> Self {
+        if value >= 0 {
+            Self {
+                start: SliceBounds::Index(value as usize),
+                end: SliceBounds::Index((value + 1) as usize),
+            }
+        } else {
+            Self {
+                start: SliceBounds::ReverseIndex((-value) as usize),
+                end: SliceBounds::ReverseIndex((-(value + 1)) as usize),
+            }
+        }
+    }
+}
+
 impl From<RangeFrom<i32>> for SliceRange {
     #[inline]
     fn from(value: RangeFrom<i32>) -> Self {
@@ -92,7 +109,9 @@ pub struct SliceInfo {
 
 impl SliceInfo {
     pub(crate) fn from_range(layout: &Layout, range: &[SliceRange]) -> Result<Self, OpError> {
-        cfg_debug_assert!(layout.shape().len() >= range.len());
+        cfg_debug_only!(if range.len() > layout.shape().len() {
+            return Err(OpError::OutOfBoundAxes);
+        });
 
         let mut offset: i64 = layout.offset() as i64;
         let mut new_shape: Vec<usize> = layout.shape().into();
