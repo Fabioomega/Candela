@@ -1,10 +1,10 @@
+use std::iter::zip;
+
 use crate::tensor::{
     errors::OpError,
     internals::{calculate_adjacent_dim_stride, calculate_dim_stride},
     mem_formats::slice::{SliceInfo, SliceRange},
 };
-
-use crate::cfg_debug_only;
 
 #[derive(Clone, Debug)]
 pub struct Layout {
@@ -67,36 +67,24 @@ impl Layout {
     }
 
     pub fn view(&self, shape: &[usize]) -> Result<Self, OpError> {
-        cfg_debug_only!({
-            let size: usize = shape.iter().product();
-            if size != self.len() {
-                return Err(OpError::InvalidViewShape);
-            }
-
-            if !self.is_contiguous() {
-                return Err(OpError::NonContiguousView);
-            }
-        });
-
+        if shape.iter().product::<usize>() != self.len() {
+            return Err(OpError::InvalidViewShape);
+        }
+        if !self.is_contiguous() {
+            return Err(OpError::NonContiguousView);
+        }
         Ok(Layout::from_shape(shape, self.offset))
     }
 
     pub fn slice(&self, range: &[SliceRange]) -> Result<Self, OpError> {
-        let info = SliceInfo::from_range(self, range);
-
-        cfg_debug_only!(if let Err(err) = info {
-            return Err(err);
-        });
-
-        let unwrapped_info = unsafe { info.unwrap_unchecked() };
-
-        let len: usize = unwrapped_info.shape.iter().product();
+        let info = SliceInfo::from_range(self, range)?;
+        let len: usize = info.shape.iter().product();
 
         Ok(Self {
-            shape: unwrapped_info.shape,
+            shape: info.shape,
             stride: self.stride.clone(),
-            adj_stride: unwrapped_info.adj_stride,
-            offset: unwrapped_info.offset,
+            adj_stride: info.adj_stride,
+            offset: info.offset,
             len,
         })
     }
@@ -108,7 +96,7 @@ impl Layout {
         for i in 0..stride.len() / 2 {
             let last = stride.len() - i - 1;
 
-            let mut temp = stride[last];
+            let temp = stride[last];
             stride[last] = stride[i];
             stride[i] = temp;
 
@@ -129,17 +117,25 @@ impl Layout {
     }
 
     pub fn transpose_axes(&self, axes: &[usize]) -> Result<Self, OpError> {
-        cfg_debug_only!(if axes.len() != self.stride.len() {
+        if axes.len() != self.stride.len() {
             return Err(OpError::NotEnoughAxes(self.stride.len(), axes.len()));
-        });
+        }
+
+        for (i, axis) in axes.iter().enumerate() {
+            for axis_other in axes.iter().skip(i + 1) {
+                if axis == axis_other {
+                    return Err(OpError::OutOfBoundAxes);
+                }
+            }
+        }
 
         let mut stride: Vec<i32> = Vec::with_capacity(self.stride.len());
         let mut shape: Vec<usize> = Vec::with_capacity(self.stride.len());
 
         for &axis in axes.iter() {
-            cfg_debug_only!(if axis >= self.stride.len() {
+            if axis >= self.stride.len() {
                 return Err(OpError::OutOfBoundAxes);
-            });
+            }
 
             stride.push(self.stride[axis]);
             shape.push(self.shape[axis]);
@@ -156,14 +152,23 @@ impl Layout {
         })
     }
 
-    pub fn broadcast_to_shape(&self, shape: &[usize]) -> Result<Self, OpError> {
-        // Usually a check like this would be added to the cfg_debug_assert or the like.
-        // This is different because it checks if a shape can be broacastable, instead
-        // of only checking incorrect inputs.
-        if shape.len() < self.shape.len()
-            || (self.shape.len() == shape.len() && shape[0] % self.shape[0] != 0)
-        {
+    pub fn broadcast(&self, shape: &[usize]) -> Result<Self, OpError> {
+        if shape.len() < self.shape.len() {
             return Err(OpError::CannotBroadcast);
+        }
+
+        if shape.len() == self.shape.len() {
+            for (s1, s2) in zip(shape.iter(), self.shape.iter()) {
+                if *s1 % *s2 != 0 {
+                    return Err(OpError::CannotBroadcast);
+                }
+            }
+        }
+
+        for (s1, s2) in zip(shape.iter().rev(), self.shape.iter().rev()) {
+            if *s1 % *s2 != 0 {
+                return Err(OpError::CannotBroadcast);
+            }
         }
 
         let mut new_stride: Vec<i32> = Vec::with_capacity(shape.len());
@@ -194,6 +199,7 @@ impl Layout {
         })
     }
 
+    #[inline]
     pub fn shape_as_3d(&self) -> [usize; 3] {
         if self.shape.len() == 1 {
             [1, 1, self.shape[0]]
@@ -213,9 +219,9 @@ impl Layout {
 
     #[inline]
     pub fn to_dim_stride(&self, dim: usize) -> Result<Self, OpError> {
-        cfg_debug_only!(if dim >= self.shape().len() {
+        if dim >= self.shape().len() {
             return Err(OpError::OutOfBoundAxes);
-        });
+        }
 
         let mut axes = self.shape.to_vec();
         axes.remove(dim);
@@ -235,13 +241,13 @@ impl Layout {
             return false;
         }
 
-        self.adj_stride[axis] == 1
+        self.adj_stride[axis] == 1 && !self.stride[axis + 1..].contains(&0)
     }
 
     #[inline]
     pub fn is_transposed(&self) -> bool {
-        for &adj_stride in &self.adj_stride {
-            if adj_stride < 0 {
+        for (i, &adj_stride) in self.adj_stride.iter().enumerate() {
+            if adj_stride < 0 && self.stride[i] != 0 {
                 return true;
             }
         }
@@ -255,7 +261,27 @@ impl Layout {
             return false;
         }
 
-        self.adj_stride[axis] < 0
+        self.adj_stride[axis] < 0 && self.stride[axis] != 0
+    }
+
+    // This function is needed because the .is_transposed_at_axis just tells if a tensor is transposed in any way.
+    // We are checking for a specific case.
+    #[inline]
+    pub fn is_last_axes_transposed(&self) -> bool {
+        if self.shape.len() < 2 {
+            return false;
+        }
+
+        let rs = self.stride[self.stride.len() - 2];
+        let cs = self.stride[self.stride.len() - 1];
+
+        // Gives false on broadcasting
+        if rs == 0 || cs == 0 {
+            return false;
+        }
+
+        // cs must be > 1: a contiguous [m, 1] matrix has rs=cs=1 and is not transposed
+        rs == 1 && cs > 1
     }
 
     #[inline]
@@ -283,6 +309,10 @@ impl Layout {
         self.len
     }
 }
+
+#[cfg(test)]
+#[path = "layout_tests.rs"]
+mod tests;
 
 impl std::fmt::Display for Layout {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -1,15 +1,12 @@
-use cblas::daxpy;
-use cblas_sys::cblas_daxpy;
-use intel_mkl_sys::{vdAdd, vdExp, vdLn, vdLog10, vdLogb};
-
 use crate::branch_fast_iter;
 use crate::tensor::Dimension;
 use crate::tensor::definitions::{ChunkedIter, NumberLike};
 use crate::tensor::mem_formats::layout::Layout;
-use crate::tensor::mkl_extension::vdAddI;
 use crate::tensor::ops::def_op::OpKindScalar;
-use crate::tensor::storage::TensorData;
+use crate::tensor::storage::{Storage, TensorData};
 use crate::tensor::traits::{StreamingIterator, StreamingZip};
+use cblas_sys::CBLAS_LAYOUT::{self, CblasRowMajor};
+use cblas_sys::CBLAS_TRANSPOSE::{self, CblasNoTrans, CblasTrans};
 
 pub(crate) struct CommonBLASOps<T> {
     pub add: unsafe extern "C" fn(i32, *const T, i32, *const T, i32, *mut T, i32),
@@ -21,7 +18,7 @@ pub(crate) struct CommonBLASOps<T> {
 }
 
 #[inline]
-pub(crate) fn clone_to_buffer<T: NumberLike>(tensor: TensorData<T>, mut buffer: Vec<T>) -> Vec<T> {
+pub(crate) fn clone_to_buffer<T: Copy>(tensor: &TensorData<T>, mut buffer: Vec<T>) -> Vec<T> {
     branch_fast_iter!(tensor.copied_fast_iter() => iter, {
         for (i, el) in iter.enumerate() {
             buffer[i] = el;
@@ -309,6 +306,7 @@ pub(crate) fn compute_elementwise_tensor_tensor_inplace<T: Copy + Default>(
 ) -> TensorData<T> {
     let last_idx = inputs.len() - 1;
     inputs.swap(reuse_index, last_idx);
+    // TODO: unwrap can be removed after checking that the plan is sound
     let mut output = inputs.pop().unwrap();
     let output_ptr = output.as_mut_ptr().unwrap();
     let other_is_left = reuse_index != 0;
@@ -349,4 +347,109 @@ pub(crate) fn compute_elementwise_tensor_tensor_inplace<T: Copy + Default>(
     }
 
     output
+}
+
+// TODO: Add a variant for tensors contiguous at the second dimension.
+pub(crate) fn cpu_compute_matmul_sum_scaled<T: Copy>(
+    inputs: &[TensorData<T>],
+    alpha: T,
+    beta: T,
+    mut output_buffer: Vec<T>,
+    output_layout: &Layout,
+    fill_output_with_c: bool,
+    gemm_batch_strided: unsafe extern "C" fn(
+        CBLAS_LAYOUT,
+        CBLAS_TRANSPOSE,
+        CBLAS_TRANSPOSE,
+        i32,
+        i32,
+        i32,
+        T,
+        *const T,
+        i32,
+        i32,
+        *const T,
+        i32,
+        i32,
+        T,
+        *mut T,
+        i32,
+        i32,
+        i32,
+    ),
+) -> TensorData<T> {
+    let a = &inputs[0];
+    let b = &inputs[1];
+
+    let a_shape = a.layout().shape_as_3d();
+    let a_stride_len = a.stride().len();
+
+    // This check is necessary because a or b may be broadcasted.
+    let a_stride = if a.shape().len() >= 3 {
+        a.stride()[a_stride_len - 3]
+    } else {
+        (a_shape[1] * a_shape[2]) as i32
+    };
+
+    let b_shape = b.layout().shape_as_3d();
+    let b_stride_len = b.stride().len();
+
+    let b_stride = if b.shape().len() >= 3 {
+        b.stride()[b_stride_len - 3]
+    } else {
+        (b_shape[1] * b_shape[2]) as i32
+    };
+
+    // Check whether the tensor is transposed between the last 2 axis
+    let (transa, lda, m, k) = if a.layout().is_last_axes_transposed() {
+        (
+            CblasTrans,
+            a_shape[1] as i32,
+            a_shape[2] as i32,
+            a_shape[1] as i32,
+        )
+    } else {
+        (
+            CblasNoTrans,
+            a_shape[2] as i32,
+            a_shape[1] as i32,
+            a_shape[2] as i32,
+        )
+    };
+
+    let (transb, ldb, n) = if b.layout().is_last_axes_transposed() {
+        (CblasTrans, k, b_shape[1] as i32)
+    } else {
+        (CblasNoTrans, b_shape[2] as i32, b_shape[2] as i32)
+    };
+
+    if fill_output_with_c {
+        let c = &inputs[2];
+        output_buffer = clone_to_buffer(c, output_buffer);
+    }
+
+    unsafe {
+        gemm_batch_strided(
+            CblasRowMajor,
+            transa,
+            transb,
+            m,
+            n,
+            k,
+            alpha,
+            a.as_ptr(),
+            lda,
+            a_stride as i32,
+            b.as_ptr(),
+            ldb,
+            b_stride as i32,
+            beta,
+            output_buffer.as_mut_ptr(),
+            n,
+            m * n,
+            a_shape[0] as i32,
+        );
+    };
+
+    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
 }

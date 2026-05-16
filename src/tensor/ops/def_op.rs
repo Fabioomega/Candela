@@ -1,5 +1,11 @@
 use crate::tensor::mem_formats::layout::Layout;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Sign {
+    Plus,
+    Minus,
+}
+
 // TODO: Design some way to fuse arbitrary combinations of ops
 // without handling it at the runtime, because it would be annoying.
 // Maybe macros?
@@ -20,7 +26,9 @@ pub enum OpKind<T: Copy> {
     Slice(Layout),
     Transpose,
     TransposeAxes(Layout),
-    Matmul,
+    Broadcast(Layout),
+    MatMul(T),             // a*(A @ B)
+    MatMulSum(T, T, Sign), // a*(A @ B) +/- b * C
     AsContiguous,
     Add,
     Sub,
@@ -38,7 +46,9 @@ impl<T: Copy> OpKind<T> {
             OpKind::Slice(_) => "Slice",
             OpKind::Transpose => "Transpose",
             OpKind::TransposeAxes(_) => "TransposeAxes",
-            OpKind::Matmul => "Matmul",
+            OpKind::Broadcast(_) => "Broadcast",
+            OpKind::MatMul(_) => "MatMul",
+            OpKind::MatMulSum(_, _, _) => "MatMulSum",
             OpKind::AsContiguous => "AsContiguous",
             OpKind::Add => "Add",
             OpKind::Sub => "Sub",

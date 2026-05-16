@@ -4,7 +4,6 @@ use crate::tensor::mem_formats::layout::Layout;
 
 use crate::tensor::errors::OpError;
 use crate::tensor::internals::calculate_adjacent_dim_stride;
-use crate::{cfg_debug_assert, cfg_debug_only};
 
 enum SliceBounds {
     Beginning,
@@ -109,9 +108,9 @@ pub struct SliceInfo {
 
 impl SliceInfo {
     pub(crate) fn from_range(layout: &Layout, range: &[SliceRange]) -> Result<Self, OpError> {
-        cfg_debug_only!(if range.len() > layout.shape().len() {
+        if range.len() > layout.shape().len() {
             return Err(OpError::OutOfBoundAxes);
-        });
+        }
 
         let mut offset: i64 = layout.offset() as i64;
         let mut new_shape: Vec<usize> = layout.shape().into();
@@ -143,21 +142,17 @@ impl SliceInfo {
                 _ => unreachable!("a new variation of SliceBounds was implemented"),
             };
 
-            cfg_debug_only!(if end <= start {
+            if end <= start {
                 return Err(OpError::OutOfBoundSlice);
-            });
+            }
 
             new_shape[dim] = end - start;
         }
 
-        cfg_debug_only!({
-            let len: usize = new_shape.iter().product();
-            let len = len as usize;
-
-            if len + (offset as usize) > layout.len() {
-                return Err(OpError::InvalidSliceShape(layout.len(), len));
-            }
-        });
+        let len: usize = new_shape.iter().product();
+        if len + (offset as usize) > layout.len() {
+            return Err(OpError::InvalidSliceShape(layout.len(), len));
+        }
 
         let adj_stride = calculate_adjacent_dim_stride(layout.stride(), &new_shape);
 

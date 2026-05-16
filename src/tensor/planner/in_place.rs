@@ -1,6 +1,6 @@
 use crate::tensor::graph::NodeKind;
 use crate::tensor::mem_formats::layout::Layout;
-use crate::tensor::ops::def_op::{OpKind, OpKindScalar};
+use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::planner::get_id;
 use crate::tensor::planner::plan::Slot;
 use std::collections::HashMap;
@@ -11,6 +11,14 @@ fn slot_is_free(slot: &Slot, op_location: usize, required_len: usize) -> bool {
         .map_or(false, |e| e < op_location && slot.len == required_len)
 }
 
+/// Find an input whose buffer can be overwritten in-place for this op.
+///
+/// Returns `(Some(slot_idx), input_idx)` when an input's slot is free at `op_location`
+/// and has the same length as `output_layout`. The caller uses `slot_idx` to update the
+/// slot's owner and `input_idx` as the `InPlaceIdx` output kind.
+///
+/// Returns `(None, 0)` when no in-place reuse is possible — the caller falls through to
+/// redirect detection, buffer reuse, or fresh allocation.
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(
@@ -65,8 +73,9 @@ pub(crate) fn find_buffer_inplace<T: Copy>(
         }
         OpKind::Slice(_)
         | OpKind::View(_)
-        | OpKind::TransposeAxes(_)
         | OpKind::Transpose
+        | OpKind::TransposeAxes(_)
+        | OpKind::Broadcast(_)
         | OpKind::NoOp => (None, 0),
         _ => (None, 0),
     };

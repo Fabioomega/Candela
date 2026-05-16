@@ -1,66 +1,13 @@
 use crate::tensor::mem_formats::layout::Layout;
-use crate::tensor::mkl_extension::vdAddI;
-use crate::tensor::ops::def_op::OpKind;
+use crate::tensor::mkl_extension::{cblas_dgemm_batch_strided, vdAddI};
+use crate::tensor::ops::def_op::{OpKind, Sign};
 use crate::tensor::ops::impl_compute::cpu_compute_generic::{
     CommonBLASOps, compute_elementwise_tensor_tensor, compute_elementwise_tensor_tensor_inplace,
-    compute_scalar, compute_scalar_inplace,
+    compute_scalar, compute_scalar_inplace, cpu_compute_matmul_sum_scaled,
 };
 use crate::tensor::storage::{Storage, TensorData};
-use crate::tensor::traits::Dimension;
-use cblas_sys::{cblas_daxpy, cblas_dgemm, cblas_dscal};
+use cblas_sys::{cblas_daxpy, cblas_dscal};
 use intel_mkl_sys::{vdAdd, vdDiv, vdExp, vdLn, vdLog2, vdMul, vdSub};
-
-// TODO: Add custom kernel for non-contiguous tensors.
-// TODO: Add support for matmul
-fn cpu_compute_matmul_f64(
-    output_layout: &Layout,
-    mut inputs: Vec<TensorData<f64>>,
-) -> TensorData<f64> {
-    let out = vec![0.0; output_layout.len()];
-
-    let raw_a = inputs.pop().unwrap();
-    let raw_b = inputs.pop().unwrap();
-
-    let a_stride_len = raw_a.stride().len();
-    let b_stride_len = raw_b.stride().len();
-
-    let mut transa = cblas::Transpose::None;
-    let mut is_a_trans = false;
-    let mut transb = cblas::Transpose::None;
-    let mut is_b_trans = false;
-
-    // Check whether the tensor is transposed between the last 2 axis
-    // and if it would be contiguous if it was.
-    if raw_a.shape().len() >= 2
-        && raw_a.stride()[a_stride_len - 2] == 1
-        && raw_a.stride()[a_stride_len - 1] as usize == raw_a.shape()[a_stride_len - 1]
-    {
-        transa = cblas::Transpose::Ordinary;
-        is_a_trans = true;
-    }
-
-    if raw_b.shape().len() >= 2
-        && raw_b.stride()[b_stride_len - 2] == 1
-        && raw_b.stride()[b_stride_len - 1] as usize == raw_b.shape()[b_stride_len - 1]
-    {
-        transb = cblas::Transpose::Ordinary;
-        is_b_trans = true;
-    }
-
-    let a_tensor = if is_a_trans
-        || raw_a.is_contiguous()
-        || (raw_a.shape().len() >= 2 && raw_a.is_contiguous_at_axis(a_stride_len - 2))
-    {
-        raw_a
-    } else {
-        raw_a.as_contiguous()
-    };
-
-    // cblas_dgemm(cblas::Layout::RowMajor, , transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
-
-    let storage = Storage::from_vec(out);
-    TensorData::new(storage, output_layout.clone())
-}
 
 #[cfg_attr(
     feature = "tracing",
@@ -103,6 +50,36 @@ pub(crate) fn cpu_compute_op_f64(
         OpKind::Sub => compute_elementwise_tensor_tensor(inputs, output_buffer, vdSub),
         OpKind::Mul => compute_elementwise_tensor_tensor(inputs, output_buffer, vdMul),
         OpKind::Div => compute_elementwise_tensor_tensor(inputs, output_buffer, vdDiv),
+        OpKind::MatMul(a) => cpu_compute_matmul_sum_scaled(
+            inputs,
+            *a,
+            0.0,
+            output_buffer,
+            output_layout,
+            false,
+            cblas_dgemm_batch_strided,
+        ),
+        OpKind::MatMulSum(a, b, sign) => {
+            let beta = if *sign == Sign::Minus { -*b } else { *b };
+            cpu_compute_matmul_sum_scaled(
+                inputs,
+                *a,
+                beta,
+                output_buffer,
+                output_layout,
+                true,
+                cblas_dgemm_batch_strided,
+            )
+        }
+        OpKind::Slice(new_layout)
+        | OpKind::View(new_layout)
+        | OpKind::TransposeAxes(new_layout)
+        | OpKind::Broadcast(new_layout) => inputs[0].as_layout(new_layout.clone()),
+        OpKind::Transpose => {
+            let layout = inputs[0].layout().transpose();
+            inputs[0].as_layout(layout)
+        }
+        OpKind::NoOp => inputs[0].clone(),
         _ => todo!("not implemented {}", op.as_str()),
     }
 }
@@ -141,7 +118,8 @@ pub(crate) fn cpu_compute_op_f64_inplace(
         OpKind::Div => compute_elementwise_tensor_tensor_inplace(inputs, output_idx, vdDiv),
         OpKind::Slice(new_layout)
         | OpKind::View(new_layout)
-        | OpKind::TransposeAxes(new_layout) => {
+        | OpKind::TransposeAxes(new_layout)
+        | OpKind::Broadcast(new_layout) => {
             unsafe { inputs.pop().unwrap_unchecked() }.into_layout(new_layout.clone())
         }
         OpKind::Transpose => {

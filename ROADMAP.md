@@ -52,12 +52,12 @@ assert_eq!(result.data(), &[-1.0, 0.0, 1.0, 2.0]);
 
 ### Documentation (Done)
 - Document the execution plan struct and the liveness analysis algorithm
-- Add a doc comment to `TensorGrap
+- Add a doc comment to `TensorGrap`
 - hNode::compute` explaining the execution model
 
 ---
 
-## Phase 2 — Cleanup and Test Foundation
+## Phase 2 — Cleanup and Test Foundation (Done)
 
 **Why here:** Small, high-leverage housekeeping while the Phase 1 architecture is fresh.
 The test suite must exist before Phase 3 so regressions are caught as they are introduced,
@@ -74,12 +74,12 @@ not discovered later.
 - [kinda?] Replace remaining `unreachable!()` / `todo!()` in `graph.rs`, `impl_layout.rs`,
       and `impl_compute` with `Err(OpError::...)` or `unimplemented!()` with a clear
       message
-- [ ] Fix the three bugs in `Layout::broadcast_to_shape` before Phase 4 can use it:
+- [X] Fix the three bugs in `Layout::broadcast_to_shape` before Phase 4 can use it:
       the `cfg_debug_only!` guard predicate is inverted; stride is built from `shape`
       instead of `self.stride`; `len` is computed from `self.shape` instead of the
       target shape
-- [ ] Set up `tests/` directory with an integration test module
-- [fuck] Add a GitHub Actions workflow: `cargo fmt --check`, `cargo clippy -- -D warnings`,
+- [me in the future, good luck S2] Set up `tests/` directory with an integration test module
+- [fuck2] Add a GitHub Actions workflow: `cargo fmt --check`, `cargo clippy -- -D warnings`,
       `cargo test`
 
 ### Tests
@@ -103,10 +103,10 @@ assert_eq!(broadcast.len(), 12);      // total elements in broadcasted shape
 
 // One test per OpKindScalar arm (catches copy-paste regressions)
 let t = Tensor::from_scalar(3.0, &[4]);
-assert_eq!((t.as_promise() + 2.0).materialize().data(), &[5.0; 4]);
-assert_eq!((t.as_promise() - 2.0).materialize().data(), &[1.0; 4]);
-assert_eq!((t.as_promise() * 2.0).materialize().data(), &[6.0; 4]);
-assert_eq!((t.as_promise() / 2.0).materialize().data(), &[1.5; 4]);
+assert_eq!((t + 2.0).materialize().data(), &[5.0; 4]);
+assert_eq!((t - 2.0).materialize().data(), &[1.0; 4]);
+assert_eq!((t * 2.0).materialize().data(), &[6.0; 4]);
+assert_eq!((t / 2.0).materialize().data(), &[1.5; 4]);
 ```
 
 ### Documentation
@@ -117,7 +117,7 @@ assert_eq!((t.as_promise() / 2.0).materialize().data(), &[1.5; 4]);
 
 ---
 
-## Phase 3 — Complete Matmul
+## Phase 3 — Complete Matmul (Done)
 
 **Goal:** Make matrix multiplication actually compute the correct result.
 
@@ -164,7 +164,7 @@ assert!(a_3x4.matmul(&b_3x4).is_err());
 
 ---
 
-## Phase 4 — Broadcasting
+## Phase 4 — Broadcasting (Done)
 
 **Goal:** Allow ops to work on tensors with compatible but non-identical shapes by
 expanding dimensions implicitly rather than erroring.
@@ -736,6 +736,12 @@ Items that are not blocked on any phase but should be done incrementally.
       the caller must uphold
 - [ ] Add `# Panics` doc comments to every function that can panic, including the
       inline `+`, `-`, `*`, `/` operators
+- [ ] Add doc comments (with `# Examples`) to the method macros in
+      `src/tensor/ops/impl_op.rs`: `view`, `reshape`, `slice`, `transpose`,
+      `transpose_axes`, `as_contiguous`, `exp`, `ln`, `log2`, and the scalar
+      arithmetic operators. These are safe to place inside the macro body —
+      rustdoc picks them up for each expanded type (`Tensor`, `TensorPromise`,
+      `CachedTensorPromise`)
 - [ ] Create `examples/` directory with at minimum:
       - `lazy_eval.rs` — basic graph construction and materialization
       - `fusion.rs` — scalar fusion collapsing a 20-op chain

@@ -74,6 +74,14 @@ impl<T: ComputeWrapperSpec> Tensor<T> {
         }
     }
 
+    /// Create a tensor by copying `data` into a buffer with the given `shape`.
+    ///
+    /// Panics if `data.len()` does not equal the product of `shape`.
+    #[inline]
+    pub fn from_slice(data: &[T], shape: &[usize]) -> Self {
+        Self::from_vec(data.to_vec(), shape)
+    }
+
     /// Create a tensor by collecting `iter` into a buffer with the given `shape`.
     #[inline]
     pub fn from_iter<I>(iter: I, shape: &[usize]) -> Self
@@ -92,6 +100,9 @@ impl<T: ComputeWrapperSpec> Tensor<T> {
     }
 
     /// Return a reference to the underlying data buffer.
+    /// Slices, transposition, etc will change the layout of the tensor
+    /// so this is not guaranteed to be what you expect
+    /// the tensor to logically contain.
     #[inline]
     pub fn data(&self) -> &Vec<T> {
         self.graph.get().data()
@@ -120,6 +131,19 @@ impl<T: ComputeWrapperSpec> Tensor<T> {
         Self {
             graph: Arc::new(TensorGraphEdge::from_tensor_data(data.clone_deep())),
         }
+    }
+
+    #[inline]
+    pub fn eye(n: usize, m: usize) -> Self {
+        let mut data = vec![T::SUM_NEUTRAL; n * m];
+
+        let mut acc: usize = 0;
+        for _ in 0..n {
+            data[acc] = T::MUL_NEUTRAL;
+            acc += m + 1;
+        }
+
+        Self::from_vec(data, &[n, m])
     }
 
     /// Make a shallow copy of this tensor with a new graph identity.

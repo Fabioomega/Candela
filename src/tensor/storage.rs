@@ -8,7 +8,7 @@ use crate::tensor::iter::{
 };
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::traits::Dimension;
-use crate::{SliceRange, cfg_debug_assert, impl_display};
+use crate::{SliceRange, impl_display};
 
 pub enum IterImpl<C, N> {
     Contiguous(C),
@@ -117,7 +117,14 @@ impl<T: Copy> TensorData<T> {
 
     #[inline]
     pub fn from_vec(vector: Vec<T>, shape: &[usize], offset: usize) -> Self {
-        cfg_debug_assert!(vector.len() <= (shape.iter().product()));
+        let expected: usize = shape.iter().product();
+        assert!(
+            vector.len() == expected,
+            "buffer length {} does not match shape {:?} (product {})",
+            vector.len(),
+            shape,
+            expected
+        );
 
         Self {
             storage: Storage::from_vec(vector),
@@ -156,12 +163,14 @@ impl<T: Copy> TensorData<T> {
 
     #[inline]
     pub fn as_ptr(&self) -> *const T {
-        self.storage.as_ptr()
+        self.storage.as_ptr().wrapping_add(self.offset())
     }
 
     #[inline]
     pub fn as_mut_ptr(&mut self) -> Option<*mut T> {
-        self.storage.as_mut_ptr()
+        self.storage
+            .as_mut_ptr()
+            .map(|ptr| ptr.wrapping_add(self.offset()))
     }
 
     #[inline]
@@ -180,7 +189,7 @@ impl<T: Copy> TensorData<T> {
 
     #[inline]
     pub unsafe fn iter_as_layout<'a>(&'a self, layout: &'a Layout) -> SliceIter<'a, T> {
-        cfg_debug_assert!(self.layout().len() == layout.len());
+        debug_assert!(self.layout().len() == layout.len());
         SliceIter::new(&self.storage.buffer, layout.len(), layout)
     }
 

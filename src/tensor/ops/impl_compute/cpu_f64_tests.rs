@@ -1,5 +1,6 @@
 use super::*;
-use crate::tensor::ops::def_op::OpKindScalar;
+use crate::tensor::Dimension;
+use crate::tensor::ops::def_op::{OpKindScalar, Sign};
 
 fn td(data: Vec<f64>, shape: &[usize]) -> TensorData<f64> {
     TensorData::from_vec(data, shape, 0)
@@ -12,7 +13,7 @@ fn arange(n: usize, shape: &[usize]) -> TensorData<f64> {
 // ── cpu_compute_op_f64 ────────────────────────────────────────────────────────
 
 #[test]
-fn compute_as_contiguous_f64() {
+fn as_contiguous_non_contiguous_input() {
     let t = TensorData::from_scalar(1.0, &[7, 7]).slice(s![.., 1..2]);
     let buffer = vec![1.0; 7];
 
@@ -220,8 +221,12 @@ fn scalar_axby_inplace() {
 fn scalar_exp_inplace() {
     let input = td(vec![0.0], &[1]);
     let layout = Layout::from_shape(&[1], 0);
-    let output =
-        cpu_compute_op_f64_inplace(&OpKind::ScalarOp(OpKindScalar::Exp), &layout, vec![input], 0);
+    let output = cpu_compute_op_f64_inplace(
+        &OpKind::ScalarOp(OpKindScalar::Exp),
+        &layout,
+        vec![input],
+        0,
+    );
     assert_eq!(output.data(), &vec![1.0]);
 }
 
@@ -363,4 +368,200 @@ fn no_op_inplace() {
     let layout = Layout::from_shape(&[3], 0);
     let output = cpu_compute_op_f64_inplace(&OpKind::NoOp, &layout, vec![input], 0);
     assert_eq!(output.data(), &vec![1.0, 2.0, 3.0]);
+}
+
+// ── cpu_compute_op_f64 (matmul) ──────────────────────────────────────────────
+
+#[test]
+fn matmul_identity_2x2() {
+    // A @ I = A
+    let a = td(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+    let eye = td(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::MatMul(1.0),
+        vec![0.0; 4],
+        &Layout::from_shape(&[2, 2], 0),
+        &[a.clone(), eye],
+    );
+    assert_eq!(output.data(), a.data());
+}
+
+#[test]
+fn matmul_rectangular() {
+    // [2,3] @ [3,2] = [2,2]
+    // A = [[1,2,3],[4,5,6]], B = [[7,8],[9,10],[11,12]]
+    // C[0,0] = 1*7+2*9+3*11 = 58,  C[0,1] = 1*8+2*10+3*12 = 64
+    // C[1,0] = 4*7+5*9+6*11 = 139, C[1,1] = 4*8+5*10+6*12 = 154
+    let a = td(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+    let b = td(vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0], &[3, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::MatMul(1.0),
+        vec![0.0; 4],
+        &Layout::from_shape(&[2, 2], 0),
+        &[a, b],
+    );
+    assert_eq!(output.data(), &vec![58.0, 64.0, 139.0, 154.0]);
+}
+
+#[test]
+fn matmul_batched() {
+    // [2,2,2] @ [2,2,2] = [2,2,2]
+    // Both batches of A are all-ones; B batch 0 is I, B batch 1 is 2*I.
+    let a = TensorData::from_scalar(1.0_f64, &[2, 2, 2]);
+    let b = td(vec![1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 2.0], &[2, 2, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::MatMul(1.0),
+        vec![0.0; 8],
+        &Layout::from_shape(&[2, 2, 2], 0),
+        &[a, b],
+    );
+    // batch 0: [[1,1],[1,1]] @ I = [[1,1],[1,1]]
+    // batch 1: [[1,1],[1,1]] @ 2I = [[2,2],[2,2]]
+    assert_eq!(output.data(), &vec![1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0]);
+}
+
+// ── cpu_compute_op_f64 (matmul_sum) ──────────────────────────────────────────
+// MatMulSum(alpha, beta, sign) computes: alpha*(A@B) +/- beta*C
+// All tests use A = identity [[1,0],[0,1]], B = [[2,3],[4,5]], so A@B = [[2,3],[4,5]].
+
+#[test]
+fn matmul_sum_plus() {
+    let a = td(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]);
+    let b = td(vec![2.0, 3.0, 4.0, 5.0], &[2, 2]);
+    let c = td(vec![1.0, 1.0, 1.0, 1.0], &[2, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::MatMulSum(1.0, 1.0, Sign::Plus),
+        vec![0.0; 4],
+        &Layout::from_shape(&[2, 2], 0),
+        &[a, b, c],
+    );
+    // 1*(A@B) + 1*C = [[2,3],[4,5]] + [[1,1],[1,1]] = [[3,4],[5,6]]
+    assert_eq!(output.data(), &vec![3.0, 4.0, 5.0, 6.0]);
+}
+
+#[test]
+fn matmul_sum_minus() {
+    let a = td(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]);
+    let b = td(vec![2.0, 3.0, 4.0, 5.0], &[2, 2]);
+    let c = td(vec![1.0, 1.0, 1.0, 1.0], &[2, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::MatMulSum(1.0, 1.0, Sign::Minus),
+        vec![0.0; 4],
+        &Layout::from_shape(&[2, 2], 0),
+        &[a, b, c],
+    );
+    // 1*(A@B) - 1*C = [[2,3],[4,5]] - [[1,1],[1,1]] = [[1,2],[3,4]]
+    assert_eq!(output.data(), &vec![1.0, 2.0, 3.0, 4.0]);
+}
+
+#[test]
+fn matmul_sum_scaled_alpha() {
+    let a = td(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]);
+    let b = td(vec![2.0, 3.0, 4.0, 5.0], &[2, 2]);
+    let c = td(vec![1.0, 1.0, 1.0, 1.0], &[2, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::MatMulSum(2.0, 1.0, Sign::Plus),
+        vec![0.0; 4],
+        &Layout::from_shape(&[2, 2], 0),
+        &[a, b, c],
+    );
+    // 2*(A@B) + 1*C = 2*[[2,3],[4,5]] + [[1,1],[1,1]] = [[5,7],[9,11]]
+    assert_eq!(output.data(), &vec![5.0, 7.0, 9.0, 11.0]);
+}
+
+#[test]
+fn matmul_sum_scaled_beta() {
+    let a = td(vec![1.0, 0.0, 0.0, 1.0], &[2, 2]);
+    let b = td(vec![2.0, 3.0, 4.0, 5.0], &[2, 2]);
+    let c = td(vec![1.0, 1.0, 1.0, 1.0], &[2, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::MatMulSum(1.0, 2.0, Sign::Plus),
+        vec![0.0; 4],
+        &Layout::from_shape(&[2, 2], 0),
+        &[a, b, c],
+    );
+    // 1*(A@B) + 2*C = [[2,3],[4,5]] + 2*[[1,1],[1,1]] = [[4,5],[6,7]]
+    assert_eq!(output.data(), &vec![4.0, 5.0, 6.0, 7.0]);
+}
+
+// ── cpu_compute_op_f64 (broadcast) ───────────────────────────────────────────
+// Failure cases: Layout::broadcast rejects dimensions that are neither 1 nor equal.
+
+#[test]
+fn broadcast_non_one_dim_mismatch_returns_error() {
+    // [2] cannot broadcast to [3]: dim 2 is not 1 and 2 != 3
+    let layout = Layout::from_shape(&[2], 0);
+    assert!(layout.broadcast(&[3]).is_err());
+}
+
+#[test]
+fn broadcast_inner_dim_mismatch_returns_error() {
+    // [2, 3] cannot broadcast to [2, 4]: last dim 3 is not 1 and 3 != 4
+    let layout = Layout::from_shape(&[2, 3], 0);
+    assert!(layout.broadcast(&[2, 4]).is_err());
+}
+
+#[test]
+fn broadcast_smaller_rank_mismatch_returns_error() {
+    // [4] cannot broadcast to [2, 3]: dim 4 is not 1 and 4 != 3
+    let layout = Layout::from_shape(&[4], 0);
+    assert!(layout.broadcast(&[2, 3]).is_err());
+}
+
+#[test]
+fn broadcast_rank_reduction_returns_error() {
+    // Cannot broadcast to a shape with fewer dimensions: [3,4] → [4] shrinks rank
+    let layout = Layout::from_shape(&[3, 4], 0);
+    assert!(layout.broadcast(&[4]).is_err());
+}
+
+// Success cases
+
+#[test]
+fn broadcast_row_to_matrix() {
+    // [1,3] broadcast to [2,3]: the single row is accessible twice (stride[0]=0)
+    let input = td(vec![1.0, 2.0, 3.0], &[1, 3]);
+    let new_layout = input.layout().broadcast(&[2, 3]).unwrap();
+    let output = cpu_compute_op_f64(
+        &OpKind::Broadcast(new_layout.clone()),
+        vec![0.0; 6],
+        &new_layout,
+        &[input],
+    );
+    assert_eq!(output.shape(), &[2, 3]);
+    let logical: Vec<f64> = output.iter().copied().collect();
+    assert_eq!(logical, vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn broadcast_vector_to_matrix() {
+    // [3] broadcast to [2,3]: inserts a leading dim with stride 0
+    let input = td(vec![4.0, 5.0, 6.0], &[3]);
+    let new_layout = input.layout().broadcast(&[2, 3]).unwrap();
+    let output = cpu_compute_op_f64(
+        &OpKind::Broadcast(new_layout.clone()),
+        vec![0.0; 6],
+        &new_layout,
+        &[input],
+    );
+    assert_eq!(output.shape(), &[2, 3]);
+    let logical: Vec<f64> = output.iter().copied().collect();
+    assert_eq!(logical, vec![4.0, 5.0, 6.0, 4.0, 5.0, 6.0]);
+}
+
+// ── cpu_compute_op_f64_inplace (broadcast) ───────────────────────────────────
+
+#[test]
+fn broadcast_inplace_row_to_matrix() {
+    let input = td(vec![7.0, 8.0, 9.0], &[1, 3]);
+    let new_layout = input.layout().broadcast(&[2, 3]).unwrap();
+    let output = cpu_compute_op_f64_inplace(
+        &OpKind::Broadcast(new_layout.clone()),
+        &new_layout,
+        vec![input],
+        0,
+    );
+    assert_eq!(output.shape(), &[2, 3]);
+    let logical: Vec<f64> = output.iter().copied().collect();
+    assert_eq!(logical, vec![7.0, 8.0, 9.0, 7.0, 8.0, 9.0]);
 }

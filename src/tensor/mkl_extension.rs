@@ -5,10 +5,11 @@
     non_snake_case
 )]
 
-use std::ffi::{c_double, c_float, c_int};
+use std::ffi::{c_double, c_int};
+
+use cblas_sys::{CBLAS_LAYOUT, CBLAS_TRANSPOSE};
 
 unsafe extern "C" {
-    pub fn cblas_dscal(N: c_int, alpha: f64, X: *mut f64, incX: c_int);
     pub fn vdAddI(
         n: c_int,
         a: *const f64,
@@ -17,6 +18,27 @@ unsafe extern "C" {
         incb: c_int,
         y: *mut f64,
         incy: c_int,
+    );
+
+    pub fn cblas_dgemm_batch_strided(
+        layout: CBLAS_LAYOUT,
+        transa: CBLAS_TRANSPOSE,
+        transb: CBLAS_TRANSPOSE,
+        m: c_int,
+        n: c_int,
+        k: c_int,
+        alpha: c_double,
+        a: *const f64,
+        lda: c_int,
+        stridea: c_int,
+        b: *const f64,
+        ldb: c_int,
+        strideb: c_int,
+        beta: c_double,
+        c: *mut f64,
+        ldc: c_int,
+        stridec: c_int,
+        batch_size: c_int,
     );
 
 }

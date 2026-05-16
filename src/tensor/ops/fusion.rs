@@ -1,6 +1,7 @@
 use crate::tensor::definitions::NumberLike;
 use crate::tensor::graph::NodeKind;
-use crate::tensor::ops::def_op::{OpKind, OpKindScalar};
+use crate::tensor::ops::ComputeWrapperSpec;
+use crate::tensor::ops::def_op::{OpKind, OpKindScalar, Sign};
 use crate::tensor::traits::Promising;
 
 ///////////////////////////////////////////
@@ -12,7 +13,10 @@ pub(crate) struct Fusion<T: Copy> {
 }
 
 #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
-pub(crate) fn try_fuse<T: NumberLike>(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Fusion<T> {
+pub(crate) fn try_fuse<T: NumberLike + ComputeWrapperSpec>(
+    op: OpKind<T>,
+    inputs: Box<[NodeKind<T>]>,
+) -> Fusion<T> {
     let mut current_fusion: Fusion<T> = Fusion {
         op,
         inputs: inputs.clone(),
@@ -95,7 +99,11 @@ pub(crate) fn fuse_scalar_op<T: NumberLike>(
 }
 
 #[inline]
-pub(crate) fn fuse_scalar_ops<T>(op1: &OpKind<T>, inputs1: &[NodeKind<T>], op2: &OpKind<T>) -> Fusion<T>
+pub(crate) fn fuse_scalar_ops<T>(
+    op1: &OpKind<T>,
+    inputs1: &[NodeKind<T>],
+    op2: &OpKind<T>,
+) -> Fusion<T>
 where
     T: NumberLike,
 {
@@ -114,6 +122,117 @@ where
     }
 }
 
+#[inline]
+pub(crate) fn try_fuse_matmul_ops<T>(
+    op1: &OpKind<T>, // This is the father operand
+    inputs1: &[NodeKind<T>],
+    op2: &OpKind<T>, // This is the child operand
+    inputs2: &[NodeKind<T>],
+    skip_input_idx: usize, // Skips one of the inputs2 Nodes
+) -> Option<Fusion<T>>
+where
+    T: NumberLike + ComputeWrapperSpec,
+{
+    match (op1, op2) {
+        (OpKind::MatMul(a1), OpKind::ScalarOp(op)) => {
+            if let OpKindScalar::AxBy(a2, b2) = op
+                && *b2 == T::SUM_NEUTRAL
+            {
+                Some(Fusion {
+                    op: OpKind::MatMul(*a2 * *a1),
+                    inputs: inputs1.into(),
+                })
+            } else {
+                None
+            }
+        }
+        (OpKind::MatMulSum(a1, b1, sign), OpKind::ScalarOp(op)) => {
+            if let OpKindScalar::AxBy(a2, b2) = op
+                && *b2 == T::SUM_NEUTRAL
+            {
+                Some(Fusion {
+                    op: OpKind::MatMulSum(*a2 * *a1, *b1, sign.clone()),
+                    inputs: inputs1.into(),
+                })
+            } else {
+                None
+            }
+        }
+        (OpKind::MatMul(a1), OpKind::Add) => {
+            let other = 1 - skip_input_idx;
+            let other = &inputs2[other];
+            let node = match other {
+                NodeKind::Node(node) => Some(node.as_ref()),
+                NodeKind::Cache(cache) => Some(cache.get_node()),
+                _ => None,
+            };
+
+            let inputs: Box<[NodeKind<T>]> = inputs1
+                .iter()
+                .cloned()
+                .chain(std::iter::once(other.clone()))
+                .collect();
+
+            let mut b1 = T::MUL_NEUTRAL;
+
+            if let Some(node) = node {
+                if let OpKind::ScalarOp(scalar) = &node.op
+                    && let OpKindScalar::AxBy(a2, b2) = scalar
+                    && *b2 == T::SUM_NEUTRAL
+                {
+                    b1 = *a2;
+                }
+            }
+
+            Some(Fusion {
+                op: OpKind::MatMulSum(*a1, b1, Sign::Plus),
+                inputs,
+            })
+        }
+        (OpKind::MatMul(a1), OpKind::Sub) => {
+            // Only fuse when MatMul is the left operand: MatMul - C.
+            // C - MatMul cannot be expressed as MatMulSum.
+            if skip_input_idx != 0 {
+                return None;
+            }
+
+            let other = &inputs2[1];
+            let node = match other {
+                NodeKind::Node(node) => Some(node.as_ref()),
+                NodeKind::Cache(cache) => Some(cache.get_node()),
+                _ => None,
+            };
+
+            let inputs: Box<[NodeKind<T>]> = inputs1
+                .iter()
+                .cloned()
+                .chain(std::iter::once(other.clone()))
+                .collect();
+
+            let mut b1 = T::MUL_NEUTRAL;
+
+            if let Some(node) = node {
+                if let OpKind::ScalarOp(scalar) = &node.op
+                    && let OpKindScalar::AxBy(a2, b2) = scalar
+                    && *b2 == T::SUM_NEUTRAL
+                {
+                    b1 = *a2;
+                }
+            }
+
+            Some(Fusion {
+                op: OpKind::MatMulSum(*a1, b1, Sign::Minus),
+                inputs,
+            })
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+#[path = "fusion_tests.rs"]
+mod tests;
+
 #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
 pub(crate) fn compute_fusion<T>(
     op1: &OpKind<T>, // This is the father operand
@@ -123,7 +242,7 @@ pub(crate) fn compute_fusion<T>(
     skip_input_idx: usize, // Skips one of the inputs2 Nodes
 ) -> Option<Fusion<T>>
 where
-    T: NumberLike,
+    T: NumberLike + ComputeWrapperSpec,
 {
     match (op1, op2) {
         (OpKind::ScalarOp(_), OpKind::ScalarOp(_))
@@ -140,8 +259,11 @@ where
             op: op1.clone(),
             inputs: inputs1.into(),
         }),
+        (OpKind::MatMul(_), _) | (OpKind::MatMulSum(_, _, _), _) => {
+            try_fuse_matmul_ops(op1, inputs1, op2, inputs2, skip_input_idx)
+        }
         (_, OpKind::AsContiguous) => {
-            let is_contiguous = match &inputs1[0] {
+            let is_contiguous = match &inputs2[0] {
                 NodeKind::Node(node) => node.layout.is_contiguous(),
                 NodeKind::Edge(node) => node.layout().is_contiguous(),
                 NodeKind::Cache(cache) => cache.get_node().layout.is_contiguous(),

@@ -18,7 +18,7 @@ These projects provided massive inspiration throughout the development of Candel
 
 - **[Candle](https://github.com/huggingface/candle)** — Hugging Face's minimalist ML framework in Rust. A proof that you don't need Python to do serious ML.
 - **[Burn](https://github.com/tracel-ai/burn)** — A full-featured deep learning framework in Rust with a thoughtful design around backends and autodiff.
-- **[TensorKraken](https://github.com/richardanaya/tensorkraken)** — A key source of inspiration for thinking about tensor graphs and lazy execution.
+- **[Tensorken](https://github.com/kurtschelfthout/tensorken)** — A key source of inspiration for thinking about tensor graphs and lazy execution.
 
 ---
 
@@ -73,21 +73,48 @@ You pay the memory cost of keeping that tensor alive, which is why this is opt-i
 
 ---
 
+## From expression to result
+
+It helps to see how the three types connect before reading about any of them in
+isolation. Here is what happens when you write a simple computation:
+
+```rust
+let a = arange![12]; // Tensor<f64>, shape [12]
+
+let p = a + 1.0; // nothing runs — ops on Tensor<T> return TensorPromise<T>
+let p = p * 2.0; // still nothing
+
+let result = p.materialize(); // now it runs
+```
+
+**Build.** When `+ 1.0` runs, Candela wraps `a`'s data in a leaf node and creates a
+computation node linked to it. Before storing anything, it checks whether the new op and
+its parent can be collapsed — only one op exists so far, so no. `* 2.0` creates another
+node and runs the same check. This time it works: adjacent scalar ops fuse. The resulting
+graph has exactly two nodes — the leaf and a single fused node that computes `2x + 2` in
+one pass. The intermediate `+ 1.0` was absorbed before it was ever stored.
+
+**Plan.** `materialize()` hands the root node to the execution planner. The planner
+sorts the graph in dependency order, figures out how long each intermediate result is
+needed, and assigns each node a buffer strategy: allocate fresh memory, reuse a buffer
+that was just freed, or write directly into an input. All of this happens before a
+single element is touched.
+
+**Execute.** The executor walks the plan step by step, running each op, storing the
+result, and immediately dropping any buffer whose lifetime just ended. By the last step,
+every intermediate has been freed. Only the final result remains.
+
+The graph and the plan are invisible from the outside. You write expressions; Candela
+decides how to run them. For the full story on each half: [doc/graph.md](doc/graph.md)
+covers the graph, [doc/planner.md](doc/planner.md) covers the planner.
+
+---
+
 ## Lazy Evaluation and Operator Fusion
 
 Operations build a computation graph (a DAG) that runs when you call `.materialize()`. This makes **operator fusion** possible: Candela can inspect the graph and collapse compatible operations before executing anything.
 
-Currently, scalar operations are fused:
-
-```rust
-let t = arange![12];
-let mut p = t.as_promise();
-for i in 0..20 {
-    p = p + i as f64;
-}
-let result = (p * 2.0).materialize();
-// 21 scalar ops are fused into a single pass over the data
-```
+Currently, scalar operations are fused — a long chain of additions and multiplications collapses into a single pass over the data regardless of how many ops are chained. See [examples/fusion.rs](examples/fusion.rs) for a runnable demonstration.
 
 General tensor-level fusion is a future goal.
 
@@ -143,8 +170,6 @@ The rule is: if the failure is something you should handle at runtime (e.g., use
 ## Current Limitations
 
 - **Data types:** only `f64` is backed by a CPU implementation. The generic framework supports any `NumberLike` type — other types just need their backends.
-- **Matmul:** the graph and layout logic are complete. The `cblas_dgemm` call is stubbed and not yet fully wired.
-- **Broadcasting:** `broadcast_to_shape()` exists in the layout system but isn't yet integrated into element-wise tensor operations.
 - **GPU:** none yet.
 
 ---

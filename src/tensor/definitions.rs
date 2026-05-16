@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    ops::{Add, Div, Mul, Neg, Sub},
+    ops::{Add, Div, Mul, Sub},
 };
 
 use crate::tensor::iter::{ChunkedSliceIter, CopiedSliceIter};
@@ -14,7 +14,7 @@ pub trait NumberLike:
     + Sub<Output = Self>
     + Mul<Output = Self>
     + Div<Output = Self>
-    + Neg<Output = Self>
+    + PartialEq
     + Default
     + Debug
 {
@@ -26,7 +26,7 @@ impl<T> NumberLike for T where
         + Sub<Output = T>
         + Mul<Output = T>
         + Div<Output = T>
-        + Neg<Output = T>
+        + PartialEq
         + Default
         + Debug
 {

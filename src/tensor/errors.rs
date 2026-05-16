@@ -5,7 +5,7 @@ pub enum OpError {
     InvalidSliceShape(usize, usize),
     OutOfBoundSlice,
     OutOfBoundAxes,
-    CannotMatmul(usize, usize),
+    CannotMatMul(usize, usize),
     CannotBroadcast,
     NotEnoughAxes(usize, usize),
     NotSameShape(Box<[usize]>, Box<[usize]>),
@@ -35,7 +35,7 @@ impl std::fmt::Display for OpError {
             OpError::OutOfBoundAxes => {
                 write!(f, "cannot reference out of bounds axes")
             }
-            OpError::CannotMatmul(expected, got) => {
+            OpError::CannotMatMul(expected, got) => {
                 write!(
                     f,
                     "cannot matmul. expected the row of the second tensor to be {} found {}",
