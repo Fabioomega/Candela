@@ -1,4 +1,5 @@
 #![allow(private_bounds)]
+use crate::errors::OpError;
 use crate::impl_display;
 use crate::tensor::graph::{NodeKind, TensorGraphEdge};
 use crate::tensor::iter::{InformedSliceIter, SliceIter};
@@ -7,6 +8,7 @@ use crate::tensor::ops::{ComputeWrapperSpec, TensorElement};
 use crate::tensor::promise::TensorPromise;
 use crate::tensor::storage::TensorData;
 use crate::tensor::traits::{Dimension, Promising};
+use std::ops::Index;
 use std::sync::Arc;
 
 /// Allocated tensor data exposed through the public API.
@@ -196,6 +198,14 @@ impl<T: TensorElement> Tensor<T> {
             .unwrap_unchecked()
         }
     }
+
+    pub fn get(&self, index: &[usize]) -> Result<&T, OpError> {
+        self.graph.get().get(index)
+    }
+
+    pub fn item(&self) -> &T {
+        self.graph.get().item()
+    }
 }
 
 impl<T: ComputeWrapperSpec> Dimension for Tensor<T> {
@@ -220,6 +230,17 @@ impl<T: ComputeWrapperSpec> Clone for Tensor<T> {
         Self {
             graph: self.graph.clone(),
         }
+    }
+}
+
+impl<T> Index<&[usize]> for Tensor<T>
+where
+    T: Copy,
+{
+    type Output = T;
+
+    fn index(&self, index: &[usize]) -> &Self::Output {
+        &self.graph.get()[index]
     }
 }
 

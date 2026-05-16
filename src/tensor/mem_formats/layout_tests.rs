@@ -74,7 +74,7 @@ fn slice_too_many_ranges() {
     use crate::tensor::mem_formats::slice::SliceRange;
     let l = Layout::from_shape(&[5], 0); // 1D — only one axis
     let result = l.slice(&[SliceRange::from(..), SliceRange::from(..)]);
-    assert!(matches!(result, Err(OpError::OutOfBoundAxes)));
+    assert!(matches!(result, Err(OpError::AxesOutOfBounds)));
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn transpose_axes_out_of_bounds() {
     let l = Layout::from_shape(&[3, 4], 0);
     assert!(matches!(
         l.transpose_axes(&[0, 5]),
-        Err(OpError::OutOfBoundAxes)
+        Err(OpError::AxesOutOfBounds)
     ));
 }
 

@@ -3,8 +3,9 @@ pub enum OpError {
     InvalidViewShape,
     NonContiguousView,
     InvalidSliceShape(usize, usize),
-    OutOfBoundSlice,
-    OutOfBoundAxes,
+    SliceOutOfBounds,
+    IndexOutOfBounds,
+    AxesOutOfBounds,
     CannotMatMul(usize, usize),
     CannotBroadcast,
     NotEnoughAxes(usize, usize),
@@ -23,16 +24,17 @@ impl std::fmt::Display for OpError {
                 f,
                 "the view is non-contiguous. you probably want a reshape instead"
             ),
-            OpError::OutOfBoundSlice => write!(
+            OpError::SliceOutOfBounds => write!(
                 f,
                 "you cannot reference a slice that access out of bounds memory"
             ),
+            OpError::IndexOutOfBounds => write!(f, "you cannot reference out of bounds memory",),
             OpError::InvalidSliceShape(expected, got) => write!(
                 f,
                 "the slice shape is bigger than the original tensor it is slicing. expected {} found {}",
                 expected, got
             ),
-            OpError::OutOfBoundAxes => {
+            OpError::AxesOutOfBounds => {
                 write!(f, "cannot reference out of bounds axes")
             }
             OpError::CannotMatMul(expected, got) => {

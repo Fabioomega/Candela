@@ -109,7 +109,7 @@ pub struct SliceInfo {
 impl SliceInfo {
     pub(crate) fn from_range(layout: &Layout, range: &[SliceRange]) -> Result<Self, OpError> {
         if range.len() > layout.shape().len() {
-            return Err(OpError::OutOfBoundAxes);
+            return Err(OpError::AxesOutOfBounds);
         }
 
         let mut offset: i64 = layout.offset() as i64;
@@ -143,7 +143,7 @@ impl SliceInfo {
             };
 
             if end <= start {
-                return Err(OpError::OutOfBoundSlice);
+                return Err(OpError::SliceOutOfBounds);
             }
 
             new_shape[dim] = end - start;

@@ -124,7 +124,7 @@ impl Layout {
         for (i, axis) in axes.iter().enumerate() {
             for axis_other in axes.iter().skip(i + 1) {
                 if axis == axis_other {
-                    return Err(OpError::OutOfBoundAxes);
+                    return Err(OpError::AxesOutOfBounds);
                 }
             }
         }
@@ -134,7 +134,7 @@ impl Layout {
 
         for &axis in axes.iter() {
             if axis >= self.stride.len() {
-                return Err(OpError::OutOfBoundAxes);
+                return Err(OpError::AxesOutOfBounds);
             }
 
             stride.push(self.stride[axis]);
@@ -220,7 +220,7 @@ impl Layout {
     #[inline]
     pub fn to_dim_stride(&self, dim: usize) -> Result<Self, OpError> {
         if dim >= self.shape().len() {
-            return Err(OpError::OutOfBoundAxes);
+            return Err(OpError::AxesOutOfBounds);
         }
 
         let mut axes = self.shape.to_vec();

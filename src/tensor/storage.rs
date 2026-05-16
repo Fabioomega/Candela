@@ -1,7 +1,9 @@
 use std::fmt::Display;
 use std::iter::zip;
+use std::ops::Index;
 use std::sync::Arc;
 
+use crate::errors::OpError;
 use crate::tensor::iter::{
     ChunkedSliceIter, ContiguousIter, CopiedContiguousIter, CopiedSliceIter, InformedSliceIter,
     MutSliceIter, SliceIter,
@@ -245,6 +247,30 @@ impl<T: Copy> TensorData<T> {
     }
 
     #[inline]
+    pub fn get(&self, index: &[usize]) -> Result<&T, OpError> {
+        if self.layout.shape.len() != index.len() {
+            return Err(OpError::NotEnoughAxes(self.layout.shape.len(), index.len()));
+        }
+
+        let mut pos: i64 = 0;
+
+        for (i, (&stride, &step)) in zip(&self.layout.stride, index).enumerate() {
+            if step >= self.shape()[i] {
+                return Err(OpError::IndexOutOfBounds);
+            }
+
+            pos += stride as i64 * step as i64;
+        }
+
+        Ok(unsafe { &(*self.as_ptr().wrapping_add(pos as usize)) })
+    }
+
+    #[inline]
+    pub fn item(&self) -> &T {
+        unsafe { &(*self.as_ptr()) }
+    }
+
+    #[inline]
     pub fn as_contiguous(&self) -> Self {
         if !self.is_contiguous() {
             Self::from_iter(self.copied_iter(), self.shape())
@@ -298,6 +324,17 @@ where
         }
 
         true
+    }
+}
+
+impl<T> Index<&[usize]> for TensorData<T>
+where
+    T: Copy,
+{
+    type Output = T;
+
+    fn index(&self, index: &[usize]) -> &Self::Output {
+        self.get(index).expect("index is out of bounds, probably")
     }
 }
 
