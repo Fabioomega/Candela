@@ -565,3 +565,235 @@ fn broadcast_inplace_row_to_matrix() {
     let logical: Vec<f64> = output.iter().copied().collect();
     assert_eq!(logical, vec![7.0, 8.0, 9.0, 7.0, 8.0, 9.0]);
 }
+
+// ── Sum / SumAxis ─────────────────────────────────────────────────────────────
+
+#[test]
+fn sum_1d() {
+    // [0,1,2,3,4] → 10
+    let input = arange(5, &[5]);
+    let output = cpu_compute_op_f64(
+        &OpKind::Sum,
+        vec![0.0; 1],
+        &Layout::from_shape(&[1], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![10.0]);
+}
+
+#[test]
+fn sum_non_contiguous() {
+    // Column 0 of [[0,1,2],[3,4,5]] is [0,3] → sum = 3
+    let base = arange(6, &[2, 3]);
+    let input = base.slice(s![.., 0..1]);
+    let output = cpu_compute_op_f64(
+        &OpKind::Sum,
+        vec![0.0; 1],
+        &Layout::from_shape(&[1], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![3.0]);
+}
+
+#[test]
+fn sum_axis_0_2d() {
+    // [[0,1],[2,3],[4,5]] sum axis 0 → [6, 9]
+    let input = arange(6, &[3, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::SumAxis(0, false),
+        vec![0.0; 2],
+        &Layout::from_shape(&[2], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![6.0, 9.0]);
+}
+
+#[test]
+fn sum_axis_1_2d() {
+    // [[0,1],[2,3],[4,5]] sum axis 1 → [1, 5, 9]
+    let input = arange(6, &[3, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::SumAxis(1, false),
+        vec![0.0; 3],
+        &Layout::from_shape(&[3], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![1.0, 5.0, 9.0]);
+}
+
+#[test]
+fn sum_axis_negative() {
+    // axis=-1 on [3,2] resolves to axis 1: same result as sum_axis_1_2d
+    let input = arange(6, &[3, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::SumAxis(-1, false),
+        vec![0.0; 3],
+        &Layout::from_shape(&[3], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![1.0, 5.0, 9.0]);
+}
+
+#[test]
+fn sum_axis_0_3d() {
+    // [2,3,4] sum axis 0 → [3,4]; result[i] = i + (i+12)
+    let input = arange(24, &[2, 3, 4]);
+    let output = cpu_compute_op_f64(
+        &OpKind::SumAxis(0, false),
+        vec![0.0; 12],
+        &Layout::from_shape(&[3, 4], 0),
+        &[input],
+    );
+    let expected: Vec<f64> = (0..12).map(|i| i as f64 + (i + 12) as f64).collect();
+    assert_eq!(output.data(), &expected);
+}
+
+#[test]
+fn sum_axis_middle_3d() {
+    // [2,3,1] sum axis 1 → [2,1]
+    // data: [0,1,2, 3,4,5]; batch 0 sum = 0+1+2 = 3, batch 1 sum = 3+4+5 = 12
+    let input = arange(6, &[2, 3, 1]);
+    let output = cpu_compute_op_f64(
+        &OpKind::SumAxis(1, false),
+        vec![0.0; 2],
+        &Layout::from_shape(&[2, 1], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![3.0, 12.0]);
+}
+
+// ── Max / MaxAxis ─────────────────────────────────────────────────────────────
+
+#[test]
+fn max_1d() {
+    // max of [0,1,2,3,4] = 4
+    let input = arange(5, &[5]);
+    let output = cpu_compute_op_f64(
+        &OpKind::Max,
+        vec![0.0; 1],
+        &Layout::from_shape(&[1], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![4.0]);
+}
+
+#[test]
+fn max_non_contiguous() {
+    // Column 0 of [[0,1,2],[3,4,5]] is [0,3] → max = 3
+    let base = arange(6, &[2, 3]);
+    let input = base.slice(s![.., 0..1]);
+    let output = cpu_compute_op_f64(
+        &OpKind::Max,
+        vec![0.0; 1],
+        &Layout::from_shape(&[1], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![3.0]);
+}
+
+#[test]
+fn max_axis_0_2d() {
+    // [[0,1],[2,3],[4,5]] max axis 0 → [4, 5]
+    let input = arange(6, &[3, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::MaxAxis(0, false),
+        vec![0.0; 2],
+        &Layout::from_shape(&[2], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![4.0, 5.0]);
+}
+
+#[test]
+fn max_axis_1_2d() {
+    // [[0,1],[2,3],[4,5]] max axis 1 → [1, 3, 5]
+    let input = arange(6, &[3, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::MaxAxis(1, false),
+        vec![0.0; 3],
+        &Layout::from_shape(&[3], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![1.0, 3.0, 5.0]);
+}
+
+#[test]
+fn max_axis_negative() {
+    // axis=-1 on [3,2] resolves to axis 1: same result as max_axis_1_2d
+    let input = arange(6, &[3, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::MaxAxis(-1, false),
+        vec![0.0; 3],
+        &Layout::from_shape(&[3], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![1.0, 3.0, 5.0]);
+}
+
+// ── Mean / MeanAxis ───────────────────────────────────────────────────────────
+
+#[test]
+fn mean_1d() {
+    // mean of [0,1,2,3,4] = 2.0
+    let input = arange(5, &[5]);
+    let output = cpu_compute_op_f64(
+        &OpKind::Mean,
+        vec![0.0; 1],
+        &Layout::from_shape(&[1], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![2.0]);
+}
+
+#[test]
+fn mean_non_contiguous() {
+    // Column 0 of [[0,1,2],[3,4,5]] is [0,3] → mean = 1.5
+    let base = arange(6, &[2, 3]);
+    let input = base.slice(s![.., 0..1]);
+    let output = cpu_compute_op_f64(
+        &OpKind::Mean,
+        vec![0.0; 1],
+        &Layout::from_shape(&[1], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![1.5]);
+}
+
+#[test]
+fn mean_axis_0_2d() {
+    // [[0,1],[2,3],[4,5]] mean axis 0 → [2.0, 3.0]
+    let input = arange(6, &[3, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::MeanAxis(0, false),
+        vec![0.0; 2],
+        &Layout::from_shape(&[2], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![2.0, 3.0]);
+}
+
+#[test]
+fn mean_axis_1_2d() {
+    // [[0,1],[2,3],[4,5]] mean axis 1 → [0.5, 2.5, 4.5]
+    let input = arange(6, &[3, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::MeanAxis(1, false),
+        vec![0.0; 3],
+        &Layout::from_shape(&[3], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![0.5, 2.5, 4.5]);
+}
+
+#[test]
+fn mean_axis_negative() {
+    // axis=-1 on [3,2] resolves to axis 1: same result as mean_axis_1_2d
+    let input = arange(6, &[3, 2]);
+    let output = cpu_compute_op_f64(
+        &OpKind::MeanAxis(-1, false),
+        vec![0.0; 3],
+        &Layout::from_shape(&[3], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![0.5, 2.5, 4.5]);
+}

@@ -1,9 +1,12 @@
+use crate::Dimension;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::mkl_extension::{cblas_dgemm_batch_strided, vdAddI};
 use crate::tensor::ops::def_op::{OpKind, Sign};
 use crate::tensor::ops::impl_compute::cpu_compute_generic::{
     CommonBLASOps, compute_elementwise_tensor_tensor, compute_elementwise_tensor_tensor_inplace,
     compute_scalar, compute_scalar_inplace, cpu_compute_matmul_sum_scaled,
+    cpu_compute_max_axis_tensor, cpu_compute_max_tensor, cpu_compute_mean_axis_tensor,
+    cpu_compute_mean_tensor, cpu_compute_sum_axis_tensor, cpu_compute_sum_tensor, normalize_axis,
 };
 use crate::tensor::storage::{Storage, TensorData};
 use cblas_sys::{cblas_daxpy, cblas_dscal};
@@ -78,6 +81,34 @@ pub(crate) fn cpu_compute_op_f64(
         OpKind::Transpose => {
             let layout = inputs[0].layout().transpose();
             inputs[0].as_layout(layout)
+        }
+        OpKind::Sum => cpu_compute_sum_tensor(inputs, output_buffer, output_layout, 0.0),
+        OpKind::SumAxis(axis, _) => {
+            let axis = normalize_axis::<f64>(*axis, inputs[0].shape().len());
+
+            cpu_compute_sum_axis_tensor(inputs, axis, output_buffer, output_layout, 0.0)
+        }
+        OpKind::Max => {
+            cpu_compute_max_tensor(inputs, output_buffer, output_layout, 0.0, |a, b| a.max(b))
+        }
+        OpKind::MaxAxis(axis, _) => {
+            let axis = normalize_axis::<f64>(*axis, inputs[0].shape().len());
+
+            cpu_compute_max_axis_tensor(inputs, axis, output_buffer, output_layout, 0.0, |a, b| {
+                a.max(b)
+            })
+        }
+        OpKind::Mean => {
+            cpu_compute_mean_tensor(inputs, output_buffer, output_layout, 0.0, |a, b| {
+                a / (b as f64)
+            })
+        }
+        OpKind::MeanAxis(axis, _) => {
+            let axis = normalize_axis::<f64>(*axis, inputs[0].shape().len());
+
+            cpu_compute_mean_axis_tensor(inputs, axis, output_buffer, output_layout, 0.0, |a, b| {
+                a / (b as f64)
+            })
         }
         OpKind::NoOp => inputs[0].clone(),
         _ => todo!("not implemented {}", op.as_str()),

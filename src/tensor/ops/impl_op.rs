@@ -109,23 +109,6 @@ fn find_broadcast_target_until_batch(l1: &Layout, l2: &Layout) -> Option<(Vec<us
 }
 
 #[inline]
-fn is_transposed_2d(shape: &[usize], stride: &[i32]) -> bool {
-    if shape.len() < 2 {
-        return false;
-    }
-
-    let rs = stride[stride.len() - 2];
-    let cs = stride[stride.len() - 1];
-
-    // Gives false on broadcasting
-    if rs == 0 || cs == 0 {
-        return false;
-    }
-
-    rs == 1
-}
-
-#[inline]
 fn is_blas_ready<D>(source: &D) -> bool
 where
     D: ComputationDef,
@@ -574,6 +557,86 @@ where
 
 //////////////////////////////////////////////////////////////
 
+fn sum_impl<D>(source: &D) -> TensorPromise<D::Output>
+where
+    D: ComputationDef,
+    D::Output: NumberLike,
+{
+    let input = Box::new([source.create_node()]);
+
+    unsafe { TensorPromise::new(OpKind::Sum, input).unwrap_unchecked() }
+}
+
+fn sum_axis_impl<D>(
+    source: &D,
+    axis: isize,
+    keep_dims: bool,
+) -> Result<TensorPromise<D::Output>, OpError>
+where
+    D: ComputationDef,
+    D::Output: NumberLike,
+{
+    let input = Box::new([source.create_node()]);
+    let op = OpKind::<D::Output>::SumAxis(axis, keep_dims);
+    let layout = compute_layout(&op, &[source.layout()])?;
+
+    Ok(TensorPromise::with_layout(op, input, layout))
+}
+
+fn max_impl<D>(source: &D) -> TensorPromise<D::Output>
+where
+    D: ComputationDef,
+    D::Output: NumberLike,
+{
+    let input = Box::new([source.create_node()]);
+
+    unsafe { TensorPromise::new(OpKind::Max, input).unwrap_unchecked() }
+}
+
+fn max_axis_impl<D>(
+    source: &D,
+    axis: isize,
+    keep_dims: bool,
+) -> Result<TensorPromise<D::Output>, OpError>
+where
+    D: ComputationDef,
+    D::Output: NumberLike,
+{
+    let input = Box::new([source.create_node()]);
+    let op = OpKind::<D::Output>::MaxAxis(axis, keep_dims);
+    let layout = compute_layout(&op, &[source.layout()])?;
+
+    Ok(TensorPromise::with_layout(op, input, layout))
+}
+
+fn mean_impl<D>(source: &D) -> TensorPromise<D::Output>
+where
+    D: ComputationDef,
+    D::Output: NumberLike,
+{
+    let input = Box::new([source.create_node()]);
+
+    unsafe { TensorPromise::new(OpKind::Mean, input).unwrap_unchecked() }
+}
+
+fn mean_axis_impl<D>(
+    source: &D,
+    axis: isize,
+    keep_dims: bool,
+) -> Result<TensorPromise<D::Output>, OpError>
+where
+    D: ComputationDef,
+    D::Output: NumberLike,
+{
+    let input = Box::new([source.create_node()]);
+    let op = OpKind::<D::Output>::MeanAxis(axis, keep_dims);
+    let layout = compute_layout(&op, &[source.layout()])?;
+
+    Ok(TensorPromise::with_layout(op, input, layout))
+}
+
+//////////////////////////////////////////////////////////////
+
 macro_rules! impl_computation_def {
     ($ty:ident, $variant:ident) => {
         impl<T> ComputationDef for $ty<T>
@@ -997,6 +1060,8 @@ macro_rules! impl_tensor_ops {
     };
 }
 
+//////////////////////////////////////////////////////////////
+
 macro_rules! impl_matmul {
     ($ty:ident) => {
         impl<T> $ty<T>
@@ -1009,6 +1074,104 @@ macro_rules! impl_matmul {
                 D: ComputationDef<Output = T>,
             {
                 matmul_tensor_impl(self, rhs)
+            }
+        }
+    };
+}
+
+//////////////////////////////////////////////////////////////
+
+macro_rules! impl_sum {
+    ($ty:ident) => {
+        impl<T> $ty<T>
+        where
+            T: TensorElement,
+        {
+            #[inline]
+            pub fn sum(&self) -> TensorPromise<T> {
+                sum_impl(self)
+            }
+        }
+    };
+}
+
+macro_rules! impl_sum_axis {
+    ($ty:ident) => {
+        impl<T> $ty<T>
+        where
+            T: TensorElement,
+        {
+            #[inline]
+            pub fn sum_axis(
+                &self,
+                axis: isize,
+                keep_dims: bool,
+            ) -> Result<TensorPromise<T>, OpError> {
+                sum_axis_impl(self, axis, keep_dims)
+            }
+        }
+    };
+}
+
+macro_rules! impl_max {
+    ($ty:ident) => {
+        impl<T> $ty<T>
+        where
+            T: TensorElement,
+        {
+            #[inline]
+            pub fn max(&self) -> TensorPromise<T> {
+                max_impl(self)
+            }
+        }
+    };
+}
+
+macro_rules! impl_max_axis {
+    ($ty:ident) => {
+        impl<T> $ty<T>
+        where
+            T: TensorElement,
+        {
+            #[inline]
+            pub fn max_axis(
+                &self,
+                axis: isize,
+                keep_dims: bool,
+            ) -> Result<TensorPromise<T>, OpError> {
+                max_axis_impl(self, axis, keep_dims)
+            }
+        }
+    };
+}
+
+macro_rules! impl_mean {
+    ($ty:ident) => {
+        impl<T> $ty<T>
+        where
+            T: TensorElement,
+        {
+            #[inline]
+            pub fn mean(&self) -> TensorPromise<T> {
+                mean_impl(self)
+            }
+        }
+    };
+}
+
+macro_rules! impl_mean_axis {
+    ($ty:ident) => {
+        impl<T> $ty<T>
+        where
+            T: TensorElement,
+        {
+            #[inline]
+            pub fn mean_axis(
+                &self,
+                axis: isize,
+                keep_dims: bool,
+            ) -> Result<TensorPromise<T>, OpError> {
+                mean_axis_impl(self, axis, keep_dims)
             }
         }
     };
@@ -1088,3 +1251,27 @@ impl_op_assign_scalar!(TensorPromise);
 impl_tensor_assign_ops!(Tensor);
 impl_tensor_assign_ops!(TensorPromise);
 impl_tensor_assign_ops!(CachedTensorPromise);
+
+impl_sum!(Tensor);
+impl_sum!(TensorPromise);
+impl_sum!(CachedTensorPromise);
+
+impl_sum_axis!(Tensor);
+impl_sum_axis!(TensorPromise);
+impl_sum_axis!(CachedTensorPromise);
+
+impl_max!(Tensor);
+impl_max!(TensorPromise);
+impl_max!(CachedTensorPromise);
+
+impl_max_axis!(Tensor);
+impl_max_axis!(TensorPromise);
+impl_max_axis!(CachedTensorPromise);
+
+impl_mean!(Tensor);
+impl_mean!(TensorPromise);
+impl_mean!(CachedTensorPromise);
+
+impl_mean_axis!(Tensor);
+impl_mean_axis!(TensorPromise);
+impl_mean_axis!(CachedTensorPromise);

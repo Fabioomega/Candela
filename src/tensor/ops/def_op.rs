@@ -34,6 +34,12 @@ pub enum OpKind<T: Copy> {
     Sub,
     Mul,
     Div,
+    Sum,
+    SumAxis(isize, bool),
+    Mean,
+    MeanAxis(isize, bool),
+    Max,
+    MaxAxis(isize, bool),
 }
 
 impl<T: Copy> OpKind<T> {
@@ -54,6 +60,12 @@ impl<T: Copy> OpKind<T> {
             OpKind::Sub => "Sub",
             OpKind::Mul => "Mul",
             OpKind::Div => "Div",
+            OpKind::Sum => "Sum",
+            OpKind::SumAxis(_, _) => "SumAxis",
+            OpKind::Mean => "Mean",
+            OpKind::MeanAxis(_, _) => "MeanAxis",
+            OpKind::Max => "Max",
+            OpKind::MaxAxis(_, _) => "MaxAxis",
         }
     }
 }

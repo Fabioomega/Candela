@@ -87,6 +87,30 @@ pub fn compute_layout<T: Copy>(op: &OpKind<T>, inputs: &[&Layout]) -> Result<Lay
                 ))
             }
         }
+        OpKind::Sum | OpKind::Max | OpKind::Mean => Ok(Layout::from_shape(&[1], 0)),
+        OpKind::SumAxis(axis, keepdims)
+        | OpKind::MaxAxis(axis, keepdims)
+        | OpKind::MeanAxis(axis, keepdims) => {
+            let axis = if *axis < 0 {
+                inputs[0].shape().len() as isize + axis
+            } else {
+                *axis
+            } as usize;
+
+            if axis < inputs[0].shape().len() {
+                let mut shape = inputs[0].shape().to_vec();
+
+                if *keepdims {
+                    shape[axis] = 1;
+                } else {
+                    shape.remove(axis);
+                }
+
+                Ok(Layout::from_shape(&shape, 0))
+            } else {
+                Err(OpError::AxesOutOfBounds)
+            }
+        }
         _ => todo!("not implemented"),
     }
 }

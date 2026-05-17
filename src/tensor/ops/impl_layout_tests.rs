@@ -162,3 +162,148 @@ fn matmulsum_2d_bias_shape_mismatch() {
         result.unwrap().shape()
     );
 }
+
+// ── Sum / SumAxis layout ──────────────────────────────────────────────────────
+
+#[test]
+fn sum_scalar_output() {
+    // Any shape reduces to a single-element tensor
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::Sum, &[&input]).unwrap();
+    assert_eq!(result.shape(), &[1]);
+}
+
+#[test]
+fn sum_axis_0_no_keepdim() {
+    // [3,4] reduce axis 0 → [4]
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::SumAxis(0, false), &[&input]).unwrap();
+    assert_eq!(result.shape(), &[4]);
+}
+
+#[test]
+fn sum_axis_1_no_keepdim() {
+    // [3,4] reduce axis 1 → [3]
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::SumAxis(1, false), &[&input]).unwrap();
+    assert_eq!(result.shape(), &[3]);
+}
+
+#[test]
+fn sum_axis_keepdim() {
+    // [3,4] reduce axis 0, keepdim=true → [1,4]
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::SumAxis(0, true), &[&input]).unwrap();
+    assert_eq!(result.shape(), &[1, 4]);
+}
+
+#[test]
+fn sum_axis_negative() {
+    // axis=-1 on [3,4] resolves to axis 1 → [3]
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::SumAxis(-1, false), &[&input]).unwrap();
+    assert_eq!(result.shape(), &[3]);
+}
+
+#[test]
+fn sum_axis_out_of_bounds() {
+    let input = l(&[3, 4]);
+    let err = compute_layout::<f64>(&OpKind::SumAxis(5, false), &[&input]).unwrap_err();
+    assert!(matches!(err, OpError::AxesOutOfBounds));
+}
+
+// ── Max / MaxAxis layout ──────────────────────────────────────────────────────
+
+#[test]
+fn max_scalar_output() {
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::Max, &[&input]).unwrap();
+    assert_eq!(result.shape(), &[1]);
+}
+
+#[test]
+fn max_axis_0_no_keepdim() {
+    // [3,4] reduce axis 0 → [4]
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::MaxAxis(0, false), &[&input]).unwrap();
+    assert_eq!(result.shape(), &[4]);
+}
+
+#[test]
+fn max_axis_1_no_keepdim() {
+    // [3,4] reduce axis 1 → [3]
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::MaxAxis(1, false), &[&input]).unwrap();
+    assert_eq!(result.shape(), &[3]);
+}
+
+#[test]
+fn max_axis_keepdim() {
+    // [3,4] reduce axis 0, keepdim=true → [1,4]
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::MaxAxis(0, true), &[&input]).unwrap();
+    assert_eq!(result.shape(), &[1, 4]);
+}
+
+#[test]
+fn max_axis_negative() {
+    // axis=-1 on [3,4] resolves to axis 1 → [3]
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::MaxAxis(-1, false), &[&input]).unwrap();
+    assert_eq!(result.shape(), &[3]);
+}
+
+#[test]
+fn max_axis_out_of_bounds() {
+    let input = l(&[3, 4]);
+    let err = compute_layout::<f64>(&OpKind::MaxAxis(5, false), &[&input]).unwrap_err();
+    assert!(matches!(err, OpError::AxesOutOfBounds));
+}
+
+// ── Mean / MeanAxis layout ────────────────────────────────────────────────────
+
+#[test]
+fn mean_scalar_output() {
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::Mean, &[&input]).unwrap();
+    assert_eq!(result.shape(), &[1]);
+}
+
+#[test]
+fn mean_axis_0_no_keepdim() {
+    // [3,4] reduce axis 0 → [4]
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::MeanAxis(0, false), &[&input]).unwrap();
+    assert_eq!(result.shape(), &[4]);
+}
+
+#[test]
+fn mean_axis_1_no_keepdim() {
+    // [3,4] reduce axis 1 → [3]
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::MeanAxis(1, false), &[&input]).unwrap();
+    assert_eq!(result.shape(), &[3]);
+}
+
+#[test]
+fn mean_axis_keepdim() {
+    // [3,4] reduce axis 0, keepdim=true → [1,4]
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::MeanAxis(0, true), &[&input]).unwrap();
+    assert_eq!(result.shape(), &[1, 4]);
+}
+
+#[test]
+fn mean_axis_negative() {
+    // axis=-1 on [3,4] resolves to axis 1 → [3]
+    let input = l(&[3, 4]);
+    let result = compute_layout::<f64>(&OpKind::MeanAxis(-1, false), &[&input]).unwrap();
+    assert_eq!(result.shape(), &[3]);
+}
+
+#[test]
+fn mean_axis_out_of_bounds() {
+    let input = l(&[3, 4]);
+    let err = compute_layout::<f64>(&OpKind::MeanAxis(5, false), &[&input]).unwrap_err();
+    assert!(matches!(err, OpError::AxesOutOfBounds));
+}
