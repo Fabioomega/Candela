@@ -167,9 +167,31 @@ impl<P: Promising<Output: TensorElement>> RawTensorPromise<P> {
 
         Tensor::from_data(data)
     }
+
+    /// Execute the computation graph and return the result as a [`Tensor`].
+    ///
+    /// Same as [`.materialize()`] but does not consume self.
+    ///
+    /// [`.materialize()`]: CachedTensorPromise::materialize
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    ///
+    /// let t = Tensor::from_scalar(4.0_f64, &[3]).as_promise();
+    /// let result1 = t.clone_and_materialize();
+    /// let result2 = t.materialize(); // consumes t
+    /// assert_eq!(result1.data(), result2.data());
+    /// ```
+    pub fn clone_and_materialize(&self) -> Tensor<P::Output> {
+        let data = self.graph.compute();
+
+        Tensor::from_data(data)
+    }
 }
 
-impl<T: ComputeWrapperSpec> CachedTensorPromise<T> {
+impl<T: TensorElement> CachedTensorPromise<T> {
     /// Return the cached result if it has already been computed, or `None` if
     /// [`.materialize()`] has not been called yet.
     ///
@@ -192,6 +214,31 @@ impl<T: ComputeWrapperSpec> CachedTensorPromise<T> {
             Some(Tensor::from_data(tensor.clone()))
         } else {
             None
+        }
+    }
+
+    /// Return the cached result if it has already been computed, or calls
+    /// [`.materialize()`] and then returns the cached tensor if it was not.
+    ///
+    /// [`.materialize()`]: CachedTensorPromise::materialize
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    ///
+    /// let t = Tensor::from_scalar(1.0_f64, &[2]);
+    /// let cached = t.as_promise().cache();
+    ///
+    /// assert!(cached.get_cache().is_none());
+    /// assert_eq!(t.data(), cached.snapshot().data());
+    /// assert!(cached.get_cache().is_some());
+    /// ```
+    pub fn snapshot(&self) -> Tensor<T> {
+        if let Some(tensor) = self.graph.get_cache() {
+            Tensor::from_data(tensor.clone())
+        } else {
+            self.clone_and_materialize()
         }
     }
 }
