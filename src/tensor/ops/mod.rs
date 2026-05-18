@@ -1,5 +1,7 @@
 mod capabilities;
 pub mod def_op;
+
+pub(crate) use capabilities::{CanMatMul, FloatLike};
 pub mod fusion;
 pub mod impl_compute;
 mod impl_layout;
@@ -10,7 +12,9 @@ pub use impl_layout::compute_layout;
 use crate::tensor::definitions::NumberLike;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKind;
-use crate::tensor::ops::impl_compute::{cpu_compute_op_f64, cpu_compute_op_f64_inplace};
+use crate::tensor::ops::impl_compute::{
+    cpu_compute_op_f32, cpu_compute_op_f32_inplace, cpu_compute_op_f64, cpu_compute_op_f64_inplace,
+};
 use crate::tensor::storage::TensorData;
 
 pub(crate) trait ComputeWrapperSpec
@@ -57,6 +61,31 @@ impl ComputeWrapperSpec for f64 {
         output_idx: usize,
     ) -> TensorData<f64> {
         cpu_compute_op_f64_inplace(op, output_layout, inputs, output_idx)
+    }
+}
+
+impl ComputeWrapperSpec for f32 {
+    const MUL_NEUTRAL: Self = 1.0;
+    const SUM_NEUTRAL: Self = 0.0;
+
+    #[inline]
+    fn compute_for_type(
+        op: &OpKind<f32>,
+        output_buffer: Vec<f32>,
+        output_layout: &Layout,
+        inputs: &[TensorData<f32>],
+    ) -> TensorData<f32> {
+        cpu_compute_op_f32(op, output_buffer, output_layout, inputs)
+    }
+
+    #[inline]
+    fn compute_for_type_inplace(
+        op: &OpKind<f32>,
+        output_layout: &Layout,
+        inputs: Vec<TensorData<f32>>,
+        output_idx: usize,
+    ) -> TensorData<f32> {
+        cpu_compute_op_f32_inplace(op, output_layout, inputs, output_idx)
     }
 }
 

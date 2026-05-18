@@ -1,6 +1,20 @@
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::storage::TensorData;
 
+pub(crate) trait FromIndex {
+    fn from_index(i: usize) -> Self;
+}
+
+impl FromIndex for f64 {
+    #[inline]
+    fn from_index(i: usize) -> Self { i as f64 }
+}
+
+impl FromIndex for f32 {
+    #[inline]
+    fn from_index(i: usize) -> Self { i as f32 }
+}
+
 pub trait Dimension {
     fn layout(&self) -> &Layout;
 
