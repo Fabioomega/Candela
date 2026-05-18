@@ -1,3 +1,4 @@
+mod capabilities;
 pub mod def_op;
 pub mod fusion;
 pub mod impl_compute;
