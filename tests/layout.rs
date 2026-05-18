@@ -7,7 +7,7 @@ use common::assert_approx_eq;
 
 #[test]
 fn view_is_zero_copy() {
-    let t = arange!(12);
+    let t: Tensor<f64> = arange!(12);
     let viewed = t.view(&[3, 4]).unwrap().materialize();
     // The result shares the same underlying data buffer — no allocation
     assert_eq!(viewed.data().as_ptr(), t.data().as_ptr());
@@ -15,7 +15,7 @@ fn view_is_zero_copy() {
 
 #[test]
 fn transpose_is_zero_copy() {
-    let t = arange!(12);
+    let t: Tensor<f64> = arange!(12);
     let viewed = t.view(&[3, 4]).unwrap();
     let t2 = viewed.materialize();
     let transposed = t2.transpose().materialize();
@@ -25,7 +25,7 @@ fn transpose_is_zero_copy() {
 
 #[test]
 fn slice_is_zero_copy() {
-    let t = arange!(12);
+    let t: Tensor<f64> = arange!(12);
     let viewed = t.view(&[3, 4]).unwrap().materialize();
     let sliced = viewed.slice(s![0..2, ..]).unwrap().materialize();
     // Slice shares the same underlying buffer

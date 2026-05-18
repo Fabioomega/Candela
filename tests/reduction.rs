@@ -8,7 +8,7 @@ use candela::{Dimension, Tensor, srange};
 #[test]
 fn sum_1d() {
     // [0,1,2,3,4] → 10
-    let t = srange!(5, &[5]);
+    let t: Tensor<f64> = srange!(5, &[5]);
     assert_eq!(t.sum().materialize().data(), &vec![10.0]);
 }
 
@@ -31,7 +31,7 @@ fn sum_uniform() {
 #[test]
 fn sum_axis_0_1d() {
     // 1D: axis 0 collapses the only dimension → same as total sum
-    let t = srange!(5, &[5]); // [0,1,2,3,4]
+    let t: Tensor<f64> = srange!(5, &[5]); // [0,1,2,3,4]
     assert_eq!(
         t.sum_axis(0, false).unwrap().materialize().data(),
         &vec![10.0]
@@ -99,7 +99,7 @@ fn sum_axis_out_of_bounds() {
 #[test]
 fn max_1d() {
     // [0,1,2,3,4] → 4
-    let t = srange!(5, &[5]);
+    let t: Tensor<f64> = srange!(5, &[5]);
     assert_eq!(t.max().materialize().data(), &vec![4.0]);
 }
 
@@ -122,7 +122,7 @@ fn max_uniform() {
 #[test]
 fn max_axis_0_1d() {
     // 1D: axis 0 collapses the only dimension → same as total max
-    let t = srange!(5, &[5]); // [0,1,2,3,4]
+    let t: Tensor<f64> = srange!(5, &[5]); // [0,1,2,3,4]
     assert_eq!(
         t.max_axis(0, false).unwrap().materialize().data(),
         &vec![4.0]
@@ -190,7 +190,7 @@ fn max_axis_out_of_bounds() {
 #[test]
 fn mean_1d() {
     // [0,1,2,3,4] → 2.0
-    let t = srange!(5, &[5]);
+    let t: Tensor<f64> = srange!(5, &[5]);
     assert_eq!(t.mean().materialize().data(), &vec![2.0]);
 }
 
@@ -213,7 +213,7 @@ fn mean_uniform() {
 #[test]
 fn mean_axis_0_1d() {
     // 1D: axis 0 collapses the only dimension → same as total mean
-    let t = srange!(5, &[5]); // [0,1,2,3,4]
+    let t: Tensor<f64> = srange!(5, &[5]); // [0,1,2,3,4]
     assert_eq!(
         t.mean_axis(0, false).unwrap().materialize().data(),
         &vec![2.0]

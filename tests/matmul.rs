@@ -8,7 +8,7 @@ use common::assert_approx_eq;
 #[test]
 fn matmul_2x3_by_3x4() {
     // [2,3] @ [3,4] = [2,4]
-    let a = srange!(6, &[2, 3]); // [[0,1,2],[3,4,5]]
+    let a: Tensor<f64> = srange!(6, &[2, 3]); // [[0,1,2],[3,4,5]]
     let b = Tensor::eye(3, 4);
     let c = a.matmul(&b).unwrap().materialize();
     assert_eq!(c.shape(), &[2, 4]);
@@ -45,7 +45,7 @@ fn matmul_non_square() {
 #[test]
 fn matmul_transposed_rhs() {
     // A = [2,3], B^T means B is stored transposed in memory but matmul treats it as [3,4]
-    let a = srange!(6, &[2, 3]);
+    let a: Tensor<f64> = srange!(6, &[2, 3]);
     let b = srange!(12, &[4, 3]); // will be transposed → [3,4]
     let bt = b.transpose();
     let c = a.matmul(&bt).unwrap().materialize();

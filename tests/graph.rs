@@ -74,7 +74,7 @@ fn cached_promise_feeds_two_downstream_graphs() {
 #[test]
 fn clone_shared_buffer() {
     // Clone shares the same underlying buffer pointer
-    let a = arange!(4);
+    let a: Tensor<f64> = arange!(4);
     let b = a.clone();
     assert_eq!(a.data().as_ptr(), b.data().as_ptr());
 }
