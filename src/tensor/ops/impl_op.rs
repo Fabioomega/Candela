@@ -9,6 +9,7 @@ use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::mem_formats::slice::SliceRange;
 use crate::tensor::ops::ComputeWrapperSpec;
 use crate::tensor::ops::TensorElement;
+use crate::tensor::ops::capabilities::{CanMatMul, FloatLike, NumericOp};
 use crate::tensor::ops::compute_layout;
 use crate::tensor::ops::def_op::{OpKind, OpKindScalar};
 use crate::tensor::traits::Promising;
@@ -747,56 +748,6 @@ macro_rules! impl_broadcast {
     };
 }
 
-macro_rules! impl_exp {
-    ($ty:ident) => {
-        impl<T> $ty<T>
-        where
-            T: TensorElement,
-        {
-            #[inline]
-            pub fn exp(&self) -> TensorPromise<T> {
-                exp_impl(self)
-            }
-        }
-    };
-}
-
-macro_rules! impl_ln {
-    ($ty:ident) => {
-        impl<T> $ty<T>
-        where
-            T: TensorElement,
-        {
-            #[inline]
-            pub fn ln(&self) -> TensorPromise<T> {
-                ln_impl(self)
-            }
-        }
-    };
-}
-
-macro_rules! impl_log2 {
-    ($ty:ident) => {
-        impl<T> $ty<T>
-        where
-            T: TensorElement,
-        {
-            #[inline]
-            pub fn log2(&self) -> TensorPromise<T> {
-                log2_impl(self)
-            }
-        }
-    };
-}
-
-macro_rules! impl_unary_scalar_ops {
-    ($ty:ident) => {
-        impl_exp!($ty);
-        impl_ln!($ty);
-        impl_log2!($ty);
-    };
-}
-
 macro_rules! impl_reshape_like {
     ($ty:ident) => {
         impl_view!($ty);
@@ -813,7 +764,7 @@ macro_rules! impl_add_scalar {
     ($ty:ident) => {
         impl<T> Add<T> for &$ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             type Output = TensorPromise<T>;
 
@@ -825,7 +776,7 @@ macro_rules! impl_add_scalar {
 
         impl<T> Add<T> for $ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             type Output = TensorPromise<T>;
 
@@ -841,7 +792,7 @@ macro_rules! impl_sub_scalar {
     ($ty:ident) => {
         impl<T> Sub<T> for &$ty<T>
         where
-            T: TensorElement + Neg<Output = T>,
+            T: TensorElement + NumericOp + Neg<Output = T>,
         {
             type Output = TensorPromise<T>;
 
@@ -853,7 +804,7 @@ macro_rules! impl_sub_scalar {
 
         impl<T> Sub<T> for $ty<T>
         where
-            T: TensorElement + Neg<Output = T>,
+            T: TensorElement + NumericOp + Neg<Output = T>,
         {
             type Output = TensorPromise<T>;
 
@@ -869,7 +820,7 @@ macro_rules! impl_mul_scalar {
     ($ty:ident) => {
         impl<T> Mul<T> for &$ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             type Output = TensorPromise<T>;
 
@@ -881,7 +832,7 @@ macro_rules! impl_mul_scalar {
 
         impl<T> Mul<T> for $ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             type Output = TensorPromise<T>;
 
@@ -897,7 +848,7 @@ macro_rules! impl_div_scalar {
     ($ty:ident) => {
         impl<T> Div<T> for &$ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             type Output = TensorPromise<T>;
 
@@ -909,7 +860,7 @@ macro_rules! impl_div_scalar {
 
         impl<T> Div<T> for $ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             type Output = TensorPromise<T>;
 
@@ -918,6 +869,56 @@ macro_rules! impl_div_scalar {
                 (&self).div(rhs)
             }
         }
+    };
+}
+
+macro_rules! impl_exp {
+    ($ty:ident) => {
+        impl<T> $ty<T>
+        where
+            T: TensorElement + FloatLike,
+        {
+            #[inline]
+            pub fn exp(&self) -> TensorPromise<T> {
+                exp_impl(self)
+            }
+        }
+    };
+}
+
+macro_rules! impl_ln {
+    ($ty:ident) => {
+        impl<T> $ty<T>
+        where
+            T: TensorElement + FloatLike,
+        {
+            #[inline]
+            pub fn ln(&self) -> TensorPromise<T> {
+                ln_impl(self)
+            }
+        }
+    };
+}
+
+macro_rules! impl_log2 {
+    ($ty:ident) => {
+        impl<T> $ty<T>
+        where
+            T: TensorElement + FloatLike,
+        {
+            #[inline]
+            pub fn log2(&self) -> TensorPromise<T> {
+                log2_impl(self)
+            }
+        }
+    };
+}
+
+macro_rules! impl_unary_scalar_ops {
+    ($ty:ident) => {
+        impl_exp!($ty);
+        impl_ln!($ty);
+        impl_log2!($ty);
     };
 }
 
@@ -936,7 +937,7 @@ macro_rules! impl_add_assign_scalar {
     ($ty:ident) => {
         impl<T> AddAssign<T> for $ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             #[inline]
             fn add_assign(&mut self, rhs: T) {
@@ -950,7 +951,7 @@ macro_rules! impl_sub_assign_scalar {
     ($ty:ident) => {
         impl<T> SubAssign<T> for $ty<T>
         where
-            T: TensorElement + Neg<Output = T>,
+            T: TensorElement + NumericOp + Neg<Output = T>,
         {
             #[inline]
             fn sub_assign(&mut self, rhs: T) {
@@ -964,7 +965,7 @@ macro_rules! impl_mul_assign_scalar {
     ($ty:ident) => {
         impl<T> MulAssign<T> for $ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             #[inline]
             fn mul_assign(&mut self, rhs: T) {
@@ -978,7 +979,7 @@ macro_rules! impl_div_assign_scalar {
     ($ty:ident) => {
         impl<T> DivAssign<T> for $ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             #[inline]
             fn div_assign(&mut self, rhs: T) {
@@ -1003,7 +1004,7 @@ macro_rules! impl_tensor_binop {
     ($trait:ident, $method:ident, $impl_fn:ident, $lhs:ident, $rhs:ident) => {
         impl<T> $trait<&$rhs<T>> for &$lhs<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             type Output = TensorPromise<T>;
 
@@ -1015,7 +1016,7 @@ macro_rules! impl_tensor_binop {
 
         impl<T> $trait<$rhs<T>> for &$lhs<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             type Output = TensorPromise<T>;
 
@@ -1027,7 +1028,7 @@ macro_rules! impl_tensor_binop {
 
         impl<T> $trait<&$rhs<T>> for $lhs<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             type Output = TensorPromise<T>;
 
@@ -1039,7 +1040,7 @@ macro_rules! impl_tensor_binop {
 
         impl<T> $trait<$rhs<T>> for $lhs<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             type Output = TensorPromise<T>;
 
@@ -1066,7 +1067,7 @@ macro_rules! impl_matmul {
     ($ty:ident) => {
         impl<T> $ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + CanMatMul,
         {
             #[inline]
             pub fn matmul<D>(&self, rhs: &D) -> Result<TensorPromise<T>, OpError>
@@ -1085,7 +1086,7 @@ macro_rules! impl_sum {
     ($ty:ident) => {
         impl<T> $ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             #[inline]
             pub fn sum(&self) -> TensorPromise<T> {
@@ -1099,7 +1100,7 @@ macro_rules! impl_sum_axis {
     ($ty:ident) => {
         impl<T> $ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             #[inline]
             pub fn sum_axis(
@@ -1117,7 +1118,7 @@ macro_rules! impl_max {
     ($ty:ident) => {
         impl<T> $ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             #[inline]
             pub fn max(&self) -> TensorPromise<T> {
@@ -1131,7 +1132,7 @@ macro_rules! impl_max_axis {
     ($ty:ident) => {
         impl<T> $ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             #[inline]
             pub fn max_axis(
@@ -1149,7 +1150,7 @@ macro_rules! impl_mean {
     ($ty:ident) => {
         impl<T> $ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + FloatLike,
         {
             #[inline]
             pub fn mean(&self) -> TensorPromise<T> {
@@ -1163,7 +1164,7 @@ macro_rules! impl_mean_axis {
     ($ty:ident) => {
         impl<T> $ty<T>
         where
-            T: TensorElement,
+            T: TensorElement + FloatLike,
         {
             #[inline]
             pub fn mean_axis(
@@ -1183,7 +1184,7 @@ macro_rules! impl_tensor_assign_binop {
     ($trait:ident, $method:ident, $impl_fn:ident, $rhs:ident) => {
         impl<T> $trait<$rhs<T>> for TensorPromise<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             #[inline]
             fn $method(&mut self, rhs: $rhs<T>) {
@@ -1193,7 +1194,7 @@ macro_rules! impl_tensor_assign_binop {
 
         impl<T> $trait<&$rhs<T>> for TensorPromise<T>
         where
-            T: TensorElement,
+            T: TensorElement + NumericOp,
         {
             #[inline]
             fn $method(&mut self, rhs: &$rhs<T>) {
