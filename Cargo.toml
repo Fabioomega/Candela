@@ -11,6 +11,8 @@ tracing = []
 tracing-subscriber = "0.3.23"
 approx = "0.5"
 proptest = "1"
+rstest = "0.26.1"
+rstest_reuse = "0.7"
 
 [dependencies]
 tracing = "0.1.44"
