@@ -1,7 +1,8 @@
 mod common;
 
-use candela::{Dimension, Layout, Tensor, ones};
+use candela::{Dimension, FloatLikeTensorElement, Layout, Tensor, ones};
 use common::assert_approx_eq;
+use rstest::rstest;
 
 // ── Layout-level broadcast unit ───────────────────────────────────────────────
 
@@ -18,24 +19,27 @@ fn broadcast_layout_zero_stride_on_expanded_dim() {
 
 // ── Integration: binary ops auto-broadcast ────────────────────────────────────
 
-#[test]
-fn broadcast_col_plus_row() {
+#[rstest]
+#[case::f64(1.0f64, 2.0f64)]
+#[case::f32(1.0f32, 2.0f32)]
+fn broadcast_col_plus_row<T: FloatLikeTensorElement>(#[case] input1: T, #[case] input2: T) {
     // [3,1] + [1,4] = [3,4], every element = 1 + 2 = 3
-    let col = Tensor::from_scalar(1.0, &[3, 1]);
-    let row = Tensor::from_scalar(2.0, &[1, 4]);
+    let col = Tensor::from_scalar(input1, &[3, 1]);
+    let row = Tensor::from_scalar(input2, &[1, 4]);
     let result = (col + row).materialize();
     assert_eq!(result.shape(), &[3, 4]);
-    assert_approx_eq(result.data(), &vec![3.0; 12]);
+    assert_approx_eq(result.data(), &[3.0; 12]);
 }
 
-#[test]
-fn broadcast_1d_against_2d() {
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn broadcast_1d_against_2d<T: FloatLikeTensorElement>(#[case] _t: T) {
     // [4] + [3,4]: each row of result should be [1,2,3,4]
-    let v = Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0], &[4]);
-    let m = ones!(&[3, 4]);
+    let v = Tensor::from_slice(&[T::ZERO, T::ONE, T::ONE + T::ONE, T::ONE + T::ONE + T::ONE], &[4]);
+    let m = Tensor::from_scalar(T::ONE, &[3, 4]);
     let result = (v + m).materialize();
     assert_eq!(result.shape(), &[3, 4]);
-    // each row: [0+1, 1+1, 2+1, 3+1] = [1,2,3,4]
     let expected: Vec<f64> = [1.0, 2.0, 3.0, 4.0]
         .iter()
         .cycle()
@@ -45,22 +49,30 @@ fn broadcast_1d_against_2d() {
     assert_approx_eq(result.data(), &expected);
 }
 
-#[test]
-fn broadcast_scalar_tensor_against_matrix() {
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn broadcast_scalar_tensor_against_matrix<T: FloatLikeTensorElement>(#[case] _t: T) {
     // [1] * [3,3] = [3,3], all 5.0
-    let s = Tensor::from_scalar(5.0, &[1]);
-    let m = ones!(&[3, 3]);
+    let five = T::ONE + T::ONE + T::ONE + T::ONE + T::ONE;
+    let s = Tensor::from_scalar(five, &[1]);
+    let m = Tensor::from_scalar(T::ONE, &[3, 3]);
     let result = (s * m).materialize();
     assert_approx_eq(result.data(), &vec![5.0; 9]);
 }
 
-#[test]
-fn broadcast_size_one_dim_in_both() {
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn broadcast_size_one_dim_in_both<T: FloatLikeTensorElement>(#[case] _t: T) {
     // [3,1] + [1,4]: values differ
     // col: [[0],[1],[2]] + row: [[0,1,2,3]]
     // result[i][j] = i + j
-    let col = Tensor::from_slice(&[0.0, 1.0, 2.0], &[3, 1]);
-    let row = Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0], &[1, 4]);
+    let col = Tensor::from_slice(&[T::ZERO, T::ONE, T::ONE + T::ONE], &[3, 1]);
+    let row = Tensor::from_slice(
+        &[T::ZERO, T::ONE, T::ONE + T::ONE, T::ONE + T::ONE + T::ONE],
+        &[1, 4],
+    );
     let result = (col + row).materialize();
     assert_eq!(result.shape(), &[3, 4]);
     let expected = vec![
@@ -71,11 +83,13 @@ fn broadcast_size_one_dim_in_both() {
     assert_approx_eq(result.data(), &expected);
 }
 
-#[test]
-fn broadcast_mul_with_row_vector() {
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn broadcast_mul_with_row_vector<T: FloatLikeTensorElement>(#[case] _t: T) {
     // [3,1] * [1,3]: outer product style
-    let col = Tensor::from_slice(&[1.0, 2.0, 3.0], &[3, 1]);
-    let row = Tensor::from_slice(&[1.0, 2.0, 3.0], &[1, 3]);
+    let col = Tensor::from_slice(&[T::ONE, T::ONE + T::ONE, T::ONE + T::ONE + T::ONE], &[3, 1]);
+    let row = Tensor::from_slice(&[T::ONE, T::ONE + T::ONE, T::ONE + T::ONE + T::ONE], &[1, 3]);
     let result = (col * row).materialize();
     assert_eq!(result.shape(), &[3, 3]);
     let expected = vec![

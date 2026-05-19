@@ -1,29 +1,34 @@
 mod common;
 
-use candela::{Tensor, arange, ones};
+use candela::{FloatLikeTensorElement, Tensor, arange, ones};
 use common::assert_approx_eq;
+use rstest::rstest;
 
 // ── shared node (diamond graph) ───────────────────────────────────────────────
 
-#[test]
-fn shared_node_computed_once() {
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn shared_node_computed_once<T: FloatLikeTensorElement>(#[case] _t: T) {
     // t shared across two branches: t*2 - t = t
-    let t = arange!(4);
+    let t: Tensor<T> = arange!(4);
     let p = t.as_promise();
-    let lhs = &p * 2.0;
+    let lhs = &p * (T::ONE + T::ONE);
     let rhs = p.clone();
     let result = (lhs - rhs).materialize();
     // (2x - x) = x = [0, 1, 2, 3]
     assert_approx_eq(result.data(), &[0.0, 1.0, 2.0, 3.0]);
 }
 
-#[test]
-fn diamond_graph_correctness() {
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn diamond_graph_correctness<T: FloatLikeTensorElement>(#[case] _t: T) {
     // t shared: lhs = t * 2, rhs = t + 1, result = lhs - rhs = (2x) - (x+1) = x - 1
-    let t = arange!(4);
+    let t: Tensor<T> = arange!(4);
     let p = t.as_promise();
-    let lhs = &p * 2.0;
-    let rhs = &p + 1.0;
+    let lhs = &p * (T::ONE + T::ONE);
+    let rhs = &p + T::ONE;
     let result = (lhs - rhs).materialize();
     // [0,1,2,3] → [-1, 0, 1, 2]
     assert_approx_eq(result.data(), &[-1.0, 0.0, 1.0, 2.0]);
@@ -31,13 +36,15 @@ fn diamond_graph_correctness() {
 
 // ── CachedTensorPromise ───────────────────────────────────────────────────────
 
-#[test]
-fn cached_promise_stable_results() {
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn cached_promise_stable_results<T: FloatLikeTensorElement>(#[case] _t: T) {
     // Two separate materializations using the same cached node yield the same data
-    let t = arange!(4);
-    let cached = (t + 1.0).cache();
-    let r1 = (&cached * 2.0).materialize();
-    let r2 = (&cached * 2.0).materialize();
+    let t: Tensor<T> = arange!(4);
+    let cached = (t + T::ONE).cache();
+    let r1 = (&cached * (T::ONE + T::ONE)).materialize();
+    let r2 = (&cached * (T::ONE + T::ONE)).materialize();
     assert_eq!(r1.data(), r2.data());
 }
 
@@ -56,15 +63,18 @@ fn cached_promise_cache_filled_after_materialize() {
     assert!(cached.get_cache().is_some());
 }
 
-#[test]
-fn cached_promise_feeds_two_downstream_graphs() {
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn cached_promise_feeds_two_downstream_graphs<T: FloatLikeTensorElement>(#[case] _t: T) {
     // cached = arange(4) + 10 = [10,11,12,13]
     // r1 = cached * 2 = [20,22,24,26]
     // r2 = cached + 1 = [11,12,13,14]
-    let t = arange!(4);
-    let cached = (t + 10.0).cache();
-    let r1 = (&cached * 2.0).materialize();
-    let r2 = (&cached + 1.0).materialize();
+    let ten = T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE;
+    let t: Tensor<T> = arange!(4);
+    let cached = (t + ten).cache();
+    let r1 = (&cached * (T::ONE + T::ONE)).materialize();
+    let r2 = (&cached + T::ONE).materialize();
     assert_approx_eq(r1.data(), &[20.0, 22.0, 24.0, 26.0]);
     assert_approx_eq(r2.data(), &[11.0, 12.0, 13.0, 14.0]);
 }

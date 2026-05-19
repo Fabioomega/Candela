@@ -30,3 +30,4 @@ pub use mem_formats::slice::SliceRange;
 pub use promise::{CachedTensorPromise, TensorPromise};
 pub use tensor::Tensor;
 pub use traits::Dimension;
+pub(crate) use traits::FromIndex;
