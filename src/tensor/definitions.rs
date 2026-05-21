@@ -1,12 +1,12 @@
 use std::{
     fmt::Debug,
+    iter::Cloned,
     ops::{Add, Div, Mul, Sub},
 };
 
-use crate::tensor::iter::{ChunkedSliceIter, CopiedSliceIter};
+use crate::tensor::iter::{ChunkedSliceIter, SliceIter};
 
-pub(crate) type ChunkedIter<'a, T> =
-    ChunkedSliceIter<CopiedSliceIter<'a, T>, T, { crate::tensor::PACKING_BUFFER_SIZE }>;
+pub(crate) type ChunkedIter<'a, T> = ChunkedSliceIter<Cloned<SliceIter<'a, T>>, T>;
 
 pub trait NumberLike:
     Copy

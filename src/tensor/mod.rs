@@ -2,8 +2,6 @@ extern crate cblas;
 extern crate intel_mkl_src;
 extern crate intel_mkl_sys;
 
-pub(crate) const PACKING_BUFFER_SIZE: usize = 128;
-
 #[macro_use]
 mod convenience;
 

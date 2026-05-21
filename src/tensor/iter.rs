@@ -5,13 +5,13 @@ use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::traits::StreamingIterator;
 
 pub struct ContiguousIter<'a, T: Copy> {
-    data: &'a Arc<Vec<T>>,
+    data: &'a [T],
     offset: usize,
     left_over: usize,
 }
 
 impl<'a, T: Copy> ContiguousIter<'a, T> {
-    pub fn new(data: &'a Arc<Vec<T>>, offset: usize, len: usize) -> Self {
+    pub fn new(data: &'a [T], offset: usize, len: usize) -> Self {
         Self {
             data,
             offset,
@@ -86,52 +86,11 @@ impl<'a, T: Copy> FusedIterator for ContiguousIter<'a, T> {}
 //
 // impl<'a, T: Copy> FusedIterator for MutContiguousIter<'a, T> {}
 //
-///////////////////////////////////////////////////////////////
-// TODO: This version does not need to exist at all
-pub struct CopiedContiguousIter<'a, T: Copy> {
-    data: &'a Arc<Vec<T>>,
-    offset: usize,
-    left_over: usize,
-}
-
-impl<'a, T: Copy> CopiedContiguousIter<'a, T> {
-    pub fn new(data: &'a Arc<Vec<T>>, offset: usize, len: usize) -> Self {
-        Self {
-            data,
-            offset,
-            left_over: len,
-        }
-    }
-}
-
-impl<'a, T: Copy> Iterator for CopiedContiguousIter<'a, T> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.left_over == 0 {
-            return None;
-        }
-
-        let item = self.data[self.offset];
-        self.offset += 1;
-        self.left_over -= 1;
-
-        Some(item)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.left_over, Some(self.left_over))
-    }
-}
-
-impl<'a, T: Copy> ExactSizeIterator for CopiedContiguousIter<'a, T> {}
-
-impl<'a, T: Copy> FusedIterator for CopiedContiguousIter<'a, T> {}
 
 ///////////////////////////////////////////////////////////////
 
 pub struct SliceIter<'a, T: Copy> {
-    data: &'a Arc<Vec<T>>,
+    data: &'a [T],
     pos: isize,
     counter: Box<[usize]>,
     layout: &'a Layout,
@@ -140,7 +99,7 @@ pub struct SliceIter<'a, T: Copy> {
 
 impl<'a, T: Copy> SliceIter<'a, T> {
     // TODO: data_len is used anywhere? Like at all? If not, maybe just remove it.
-    pub fn new(data: &'a Arc<Vec<T>>, data_len: usize, layout: &'a Layout) -> Self {
+    pub fn new(data: &'a [T], data_len: usize, layout: &'a Layout) -> Self {
         let counter = vec![0; layout.shape().len()].into_boxed_slice();
 
         Self {
@@ -264,71 +223,6 @@ impl<'a, T: Copy> ExactSizeIterator for MutSliceIter<'a, T> {}
 impl<'a, T: Copy> FusedIterator for MutSliceIter<'a, T> {}
 
 ///////////////////////////////////////////////////////////////
-// TODO: This version does not need to exist at all
-pub struct CopiedSliceIter<'a, T: Copy> {
-    data: &'a Arc<Vec<T>>,
-    pos: isize,
-    counter: Box<[usize]>,
-    layout: &'a Layout,
-    left_over: usize,
-}
-
-impl<'a, T: Copy> CopiedSliceIter<'a, T> {
-    pub fn new(data: &'a Arc<Vec<T>>, data_len: usize, layout: &'a Layout) -> Self {
-        let counter = vec![0; layout.shape().len()].into_boxed_slice();
-
-        Self {
-            data,
-            pos: layout.offset() as isize,
-            layout,
-            counter,
-            left_over: data_len,
-        }
-    }
-}
-
-impl<'a, T: Copy> Iterator for CopiedSliceIter<'a, T> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.left_over == 0 {
-            return None;
-        }
-
-        let last = self.counter.len() - 1;
-        self.counter[last] += 1;
-        let mut step_dim = last;
-
-        for dim in (1..self.counter.len()).rev() {
-            if self.counter[dim] == self.layout.shape()[dim] {
-                self.counter[dim] = 0;
-                self.counter[dim - 1] += 1;
-
-                step_dim = dim - 1;
-                continue;
-            }
-            break;
-        }
-
-        let pos = self.pos as usize;
-
-        let item = self.data[pos];
-        self.pos += self.layout.adj_stride()[step_dim] as isize;
-        self.left_over -= 1;
-
-        Some(item)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.left_over, Some(self.left_over))
-    }
-}
-
-impl<'a, T: Copy> ExactSizeIterator for CopiedSliceIter<'a, T> {}
-
-impl<'a, T: Copy> FusedIterator for CopiedSliceIter<'a, T> {}
-
-///////////////////////////////////////////////////////////////
 
 pub enum StepInfo<T: Copy> {
     EnterDimension(usize),
@@ -338,7 +232,7 @@ pub enum StepInfo<T: Copy> {
 }
 
 pub struct InformedSliceIter<'a, T: Copy> {
-    buffer: &'a Arc<Vec<T>>,
+    buffer: &'a [T],
     layout: &'a Layout,
     next_state: StepInfo<T>,
     pos: i64,
@@ -346,7 +240,7 @@ pub struct InformedSliceIter<'a, T: Copy> {
 }
 
 impl<'a, T: Copy> InformedSliceIter<'a, T> {
-    pub fn new(data: &'a Arc<Vec<T>>, layout: &'a Layout) -> Self {
+    pub fn new(data: &'a [T], layout: &'a Layout) -> Self {
         let len = layout.shape().len();
 
         Self {
@@ -427,34 +321,34 @@ impl<'a, T: Copy> ExactSizeIterator for InformedSliceIter<'a, T> {}
 impl<'a, T: Copy> FusedIterator for InformedSliceIter<'a, T> {}
 
 /////////////////////////////////////////////////////////////
-pub struct PackedBuffer<'a, T: Copy> {
+pub struct PackedBuffer<'a, T: Clone> {
     pub packing_buffer: &'a [T],
     pub absolute_buffer_position: usize,
 }
 
-pub struct ChunkedSliceIter<I, T: Copy, const N: usize>
+pub struct ChunkedSliceIter<I, T: Clone>
 where
     I: IntoIterator<Item = T>,
 {
     iter: I::IntoIter,
-    packing_buffer: [T; N],
+    packing_buffer: Vec<T>,
     absolute_buffer_position: usize,
 }
 
-impl<I, T: Copy + Default, const N: usize> ChunkedSliceIter<I, T, N>
+impl<I, T: Clone + Default> ChunkedSliceIter<I, T>
 where
     I: Iterator<Item = T>,
 {
-    pub fn new(iter: I) -> Self {
+    pub fn new(iter: I, packing_buffer_size: usize) -> Self {
         Self {
             iter,
-            packing_buffer: [T::default(); N],
+            packing_buffer: vec![T::default(); packing_buffer_size],
             absolute_buffer_position: 0,
         }
     }
 }
 
-impl<I, T: Copy, const N: usize> StreamingIterator for ChunkedSliceIter<I, T, N>
+impl<I, T: Clone> StreamingIterator for ChunkedSliceIter<I, T>
 where
     I: IntoIterator<Item = T>,
 {
@@ -486,6 +380,45 @@ where
         Some(PackedBuffer {
             packing_buffer: &self.packing_buffer[..len],
             absolute_buffer_position: pos,
+        })
+    }
+}
+
+/////////////////////////////////////////////////////////////
+pub struct ChunkedContiguousIter<'a, T: Clone> {
+    data: &'a [T],
+    packing_buffer_size: usize,
+    absolute_buffer_position: usize,
+}
+
+impl<'a, T: Clone> ChunkedContiguousIter<'a, T> {
+    pub fn new(data: &'a [T], packing_buffer_size: usize) -> Self {
+        Self {
+            data,
+            packing_buffer_size: packing_buffer_size,
+            absolute_buffer_position: 0,
+        }
+    }
+}
+
+impl<'b, T: Copy> StreamingIterator for ChunkedContiguousIter<'b, T> {
+    type Item<'a>
+        = PackedBuffer<'a, T>
+    where
+        Self: 'a;
+
+    fn next<'a>(&'a mut self) -> Option<Self::Item<'a>> {
+        if self.absolute_buffer_position >= self.data.len() {
+            return None;
+        }
+
+        let start = self.absolute_buffer_position;
+        let end = (self.absolute_buffer_position + self.packing_buffer_size).min(self.data.len());
+        self.absolute_buffer_position = end;
+
+        Some(PackedBuffer {
+            packing_buffer: &self.data[start..end],
+            absolute_buffer_position: start,
         })
     }
 }

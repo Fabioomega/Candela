@@ -4,9 +4,10 @@ use std::ops::Index;
 use std::sync::Arc;
 
 use crate::errors::OpError;
+use crate::tensor::definitions::ChunkedIter;
 use crate::tensor::iter::{
-    ChunkedSliceIter, ContiguousIter, CopiedContiguousIter, CopiedSliceIter, InformedSliceIter,
-    MutSliceIter, SliceIter,
+    ChunkedContiguousIter, ChunkedSliceIter, ContiguousIter, InformedSliceIter, MutSliceIter,
+    SliceIter,
 };
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::traits::Dimension;
@@ -207,24 +208,6 @@ impl<T: Copy> TensorData<T> {
     }
 
     #[inline]
-    pub fn copied_iter(&self) -> CopiedSliceIter<'_, T> {
-        CopiedSliceIter::new(&self.storage.buffer, self.len(), self.layout())
-    }
-
-    #[inline]
-    pub fn copied_fast_iter(
-        &self,
-    ) -> IterImpl<CopiedContiguousIter<'_, T>, CopiedSliceIter<'_, T>> {
-        let buffer = &self.storage.buffer;
-
-        if self.is_contiguous() {
-            IterImpl::Contiguous(CopiedContiguousIter::new(buffer, self.offset(), self.len()))
-        } else {
-            IterImpl::NotContiguous(CopiedSliceIter::new(buffer, self.len(), self.layout()))
-        }
-    }
-
-    #[inline]
     pub fn informed_iter(&self) -> InformedSliceIter<'_, T> {
         InformedSliceIter::new(&self.storage.buffer, &self.layout)
     }
@@ -273,7 +256,7 @@ impl<T: Copy> TensorData<T> {
     #[inline]
     pub fn as_contiguous(&self) -> Self {
         if !self.is_contiguous() {
-            Self::from_iter(self.copied_iter(), self.shape())
+            Self::from_iter(self.iter().cloned(), self.shape())
         } else {
             self.clone_deep()
         }
@@ -287,8 +270,23 @@ impl<T: Copy> TensorData<T> {
 
 impl<T: Copy + Default> TensorData<T> {
     #[inline]
-    pub fn packed_iter(&self) -> crate::tensor::definitions::ChunkedIter<'_, T> {
-        ChunkedSliceIter::new(self.copied_iter())
+    pub fn packed_iter(&self, packing_buffer_size: usize) -> ChunkedIter<'_, T> {
+        ChunkedSliceIter::new(self.iter().cloned(), packing_buffer_size)
+    }
+
+    #[inline]
+    pub fn fast_packed_iter(
+        &self,
+        packing_buffer_size: usize,
+    ) -> IterImpl<ChunkedContiguousIter<'_, T>, ChunkedIter<'_, T>> {
+        if self.is_contiguous() {
+            IterImpl::Contiguous(ChunkedContiguousIter::new(self.data(), packing_buffer_size))
+        } else {
+            IterImpl::NotContiguous(ChunkedSliceIter::new(
+                self.iter().cloned(),
+                packing_buffer_size,
+            ))
+        }
     }
 }
 
