@@ -6,10 +6,12 @@ pub use tensor::{CachedTensorPromise, Dimension, Layout, SliceRange, Tensor, Ten
 
 use std::ops::Neg;
 
+use crate::tensor::FromIndex;
 use crate::tensor::ops::CanMatMul;
 use crate::tensor::ops::FloatLike;
 use crate::tensor::ops::TensorElement;
-use crate::tensor::FromIndex;
+
+const PACKING_BUFFER_SIZE: usize = 2048;
 
 /// Sealed marker for floating-point tensor element types: `f32` and `f64`.
 ///

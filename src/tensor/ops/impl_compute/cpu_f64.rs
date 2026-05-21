@@ -10,7 +10,18 @@ use crate::tensor::ops::impl_compute::cpu_compute_generic::{
 };
 use crate::tensor::storage::{Storage, TensorData};
 use cblas_sys::{cblas_daxpy, cblas_dscal};
-use intel_mkl_sys::{vdAdd, vdDiv, vdExp, vdLn, vdLog2, vdMul, vdSub};
+use intel_mkl_sys::{vdAdd, vdDiv, vdExp, vdFmax, vdInv, vdLn, vdLog2, vdMul, vdSub, vdTanh};
+
+const BLAS_OPS: CommonBLASOps<f64> = CommonBLASOps {
+    add: vdAddI,
+    scal: cblas_dscal,
+    axby: cblas_daxpy,
+    exp: vdExp,
+    ln: vdLn,
+    log2: vdLog2,
+    inv: vdInv,
+    tanh: vdTanh,
+};
 
 #[cfg_attr(
     feature = "tracing",
@@ -26,22 +37,25 @@ pub(crate) fn cpu_compute_op_f64(
     output_layout: &Layout,
     inputs: &[TensorData<f64>],
 ) -> TensorData<f64> {
-    const BLAS_OPS: CommonBLASOps<f64> = CommonBLASOps {
-        add: vdAddI,
-        scal: cblas_dscal,
-        axby: cblas_daxpy,
-        exp: vdExp,
-        ln: vdLn,
-        log2: vdLog2,
-    };
-
     match op {
-        OpKind::ScalarOp(s) => {
-            compute_scalar(&[s.clone()], output_buffer, output_layout, inputs, BLAS_OPS)
-        }
-        OpKind::FusedScalar(ss) => {
-            compute_scalar(ss, output_buffer, output_layout, inputs, BLAS_OPS)
-        }
+        OpKind::ScalarOp(s) => compute_scalar(
+            &[s.clone()],
+            output_buffer,
+            output_layout,
+            inputs,
+            BLAS_OPS,
+            0.0,
+            |x, y| x.max(y),
+        ),
+        OpKind::FusedScalar(ss) => compute_scalar(
+            ss,
+            output_buffer,
+            output_layout,
+            inputs,
+            BLAS_OPS,
+            0.0,
+            |x, y| x.max(y),
+        ),
         OpKind::AsContiguous => {
             for (i, el) in inputs[0].iter().enumerate() {
                 output_buffer[i] = *el;
@@ -138,20 +152,18 @@ pub(crate) fn cpu_compute_op_f64_inplace(
     mut inputs: Vec<TensorData<f64>>,
     output_idx: usize,
 ) -> TensorData<f64> {
-    const BLAS_OPS: CommonBLASOps<f64> = CommonBLASOps {
-        add: vdAddI,
-        scal: cblas_dscal,
-        axby: cblas_daxpy,
-        exp: vdExp,
-        ln: vdLn,
-        log2: vdLog2,
-    };
-
     match op {
-        OpKind::ScalarOp(s) => {
-            compute_scalar_inplace(&[s.clone()], output_layout, inputs, BLAS_OPS)
+        OpKind::ScalarOp(s) => compute_scalar_inplace(
+            &[s.clone()],
+            output_layout,
+            inputs,
+            BLAS_OPS,
+            0.0,
+            |x, y| x.max(y),
+        ),
+        OpKind::FusedScalar(ss) => {
+            compute_scalar_inplace(ss, output_layout, inputs, BLAS_OPS, 0.0, |x, y| x.max(y))
         }
-        OpKind::FusedScalar(ss) => compute_scalar_inplace(ss, output_layout, inputs, BLAS_OPS),
         OpKind::Add => compute_elementwise_tensor_tensor_inplace(inputs, output_idx, vdAdd),
         OpKind::Sub => compute_elementwise_tensor_tensor_inplace(inputs, output_idx, vdSub),
         OpKind::Mul => compute_elementwise_tensor_tensor_inplace(inputs, output_idx, vdMul),

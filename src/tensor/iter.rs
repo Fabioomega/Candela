@@ -395,7 +395,7 @@ impl<'a, T: Clone> ChunkedContiguousIter<'a, T> {
     pub fn new(data: &'a [T], packing_buffer_size: usize) -> Self {
         Self {
             data,
-            packing_buffer_size: packing_buffer_size,
+            packing_buffer_size,
             absolute_buffer_position: 0,
         }
     }
@@ -422,6 +422,27 @@ impl<'b, T: Copy> StreamingIterator for ChunkedContiguousIter<'b, T> {
         })
     }
 }
+
+impl<'a, T: Clone> Iterator for ChunkedContiguousIter<'a, T> {
+    type Item = PackedBuffer<'a, T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.absolute_buffer_position >= self.data.len() {
+            return None;
+        }
+
+        let start = self.absolute_buffer_position;
+        let end = (self.absolute_buffer_position + self.packing_buffer_size).min(self.data.len());
+        self.absolute_buffer_position = end;
+
+        Some(PackedBuffer {
+            packing_buffer: &self.data[start..end],
+            absolute_buffer_position: start,
+        })
+    }
+}
+
+impl<'a, T: Copy> FusedIterator for ChunkedContiguousIter<'a, T> {}
 
 /////////////////////////////////////////////////////////////
 pub struct SliceIterByLayout<'a, T: Copy> {

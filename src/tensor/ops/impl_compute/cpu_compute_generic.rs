@@ -1,13 +1,15 @@
+use core::slice;
 use std::iter::zip;
 use std::process::Output;
 
-use crate::branch_fast_iter;
 use crate::tensor::Dimension;
 use crate::tensor::definitions::{ChunkedIter, NumberLike};
+use crate::tensor::iter::ChunkedContiguousIter;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKindScalar;
 use crate::tensor::storage::{Storage, TensorData};
 use crate::tensor::traits::{StreamingIterator, StreamingZip};
+use crate::{PACKING_BUFFER_SIZE, branch_fast_iter};
 use cblas_sys::CBLAS_LAYOUT::{self, CblasRowMajor};
 use cblas_sys::CBLAS_TRANSPOSE::{self, CblasNoTrans, CblasTrans};
 
@@ -24,8 +26,8 @@ pub(crate) struct CommonBLASOps<T> {
 
 #[inline]
 pub(crate) fn clone_to_buffer<T: Copy>(tensor: &TensorData<T>, mut buffer: Vec<T>) -> Vec<T> {
-    branch_fast_iter!(tensor.copied_fast_iter() => iter, {
-        for (i, el) in iter.enumerate() {
+    branch_fast_iter!(tensor.fast_iter() => iter, {
+        for (i, el) in iter.cloned().enumerate() {
             buffer[i] = el;
         }
 
@@ -60,7 +62,7 @@ fn compute_blas_scalar_op<T: NumberLike, F: Fn(T, T) -> T>(
     output: *mut T,
     inplace: bool,
     blas: CommonBLASOps<T>,
-    relu_base: T,
+    zero: T,
     max: F,
 ) {
     let mut ops_iter = ops.iter();
@@ -93,10 +95,9 @@ fn compute_blas_scalar_op<T: NumberLike, F: Fn(T, T) -> T>(
                 let output = unsafe { std::slice::from_raw_parts_mut(output, n) };
 
                 for (&i_el, o_el) in zip(input, output) {
-                    *o_el = max(relu_base, i_el);
+                    *o_el = max(zero, i_el);
                 }
             }
-            OpKindScalar::Sigmoid => {}
         }
     }
 
@@ -123,7 +124,7 @@ fn compute_blas_scalar_op<T: NumberLike, F: Fn(T, T) -> T>(
                 let output = unsafe { std::slice::from_raw_parts_mut(output, n) };
 
                 for (&i_el, o_el) in zip(input, output) {
-                    *o_el = max(relu_base, i_el);
+                    *o_el = max(zero, i_el);
                 }
             }
         }
@@ -132,14 +133,16 @@ fn compute_blas_scalar_op<T: NumberLike, F: Fn(T, T) -> T>(
 
 // If the input is non-contiguous, the output buffer is always different than the input. Ths is guaranteed by the planner.
 #[inline]
-fn compute_non_cont_scalar_op<T: NumberLike>(
+fn compute_non_cont_scalar_op<T: NumberLike, F: Fn(T, T) -> T>(
     ops: &[OpKindScalar<T>],
     input: &TensorData<T>,
     output: *mut T,
     blas: CommonBLASOps<T>,
+    zero: T,
+    max: F,
 ) {
     // TODO: For big ops tensors rayon would be ideal.
-    let mut it: ChunkedIter<'_, T> = input.packed_iter();
+    let mut it: ChunkedIter<'_, T> = input.packed_iter(PACKING_BUFFER_SIZE);
     while let Some(chunk) = it.next() {
         let n = chunk.packing_buffer.len();
         let pos = unsafe { output.add(chunk.absolute_buffer_position) };
@@ -161,6 +164,19 @@ fn compute_non_cont_scalar_op<T: NumberLike>(
                 OpKindScalar::Log2 => {
                     unsafe { (blas.log2)(n as i32, chunk.packing_buffer.as_ptr(), pos) };
                 }
+                OpKindScalar::Inv => unsafe {
+                    (blas.inv)(n as i32, chunk.packing_buffer.as_ptr(), pos)
+                },
+                OpKindScalar::Tanh => unsafe {
+                    (blas.tanh)(n as i32, chunk.packing_buffer.as_ptr(), pos)
+                },
+                OpKindScalar::ReLU => {
+                    let output = unsafe { std::slice::from_raw_parts_mut(pos, n) };
+
+                    for (&i_el, o_el) in zip(chunk.packing_buffer.iter(), output) {
+                        *o_el = max(zero, i_el);
+                    }
+                }
             }
         }
 
@@ -180,38 +196,60 @@ fn compute_non_cont_scalar_op<T: NumberLike>(
                 OpKindScalar::Log2 => {
                     unsafe { (blas.log2)(n as i32, pos, pos) };
                 }
+                OpKindScalar::Inv => unsafe { (blas.inv)(n as i32, pos, pos) },
+                OpKindScalar::Tanh => unsafe { (blas.tanh)(n as i32, pos, pos) },
+                OpKindScalar::ReLU => {
+                    let output = unsafe { std::slice::from_raw_parts_mut(pos, n) };
+
+                    for o_el in output {
+                        *o_el = max(zero, *o_el);
+                    }
+                }
             }
         }
     }
 }
 
 #[inline]
-pub(crate) fn compute_scalar_inplace<T: NumberLike>(
+pub(crate) fn compute_scalar_inplace<T: NumberLike, F: Fn(T, T) -> T>(
     ops: &[OpKindScalar<T>],
     output_layout: &Layout,
     mut inputs: Vec<TensorData<T>>,
     blas: CommonBLASOps<T>,
+    zero: T,
+    max: F,
 ) -> TensorData<T> {
     // TODO: If the planner is sound this should be safe to unwrap unchecked.
     let mut tensor = inputs.pop().unwrap();
     let ptr = tensor.as_mut_ptr().unwrap();
 
     if tensor.is_contiguous() {
-        compute_blas_scalar_op(ops, output_layout.len(), tensor.as_ptr(), ptr, true, blas);
+        compute_blas_scalar_op(
+            ops,
+            output_layout.len(),
+            tensor.as_ptr(),
+            ptr,
+            true,
+            blas,
+            zero,
+            max,
+        );
     } else {
-        compute_non_cont_scalar_op(ops, &tensor, ptr, blas);
+        compute_non_cont_scalar_op(ops, &tensor, ptr, blas, zero, max);
     }
 
     tensor
 }
 
 #[inline]
-pub(crate) fn compute_scalar<T: NumberLike>(
+pub(crate) fn compute_scalar<T: NumberLike, F: Fn(T, T) -> T>(
     ops: &[OpKindScalar<T>],
     mut output_buffer: Vec<T>,
     output_layout: &Layout,
     inputs: &[TensorData<T>],
     blas: CommonBLASOps<T>,
+    zero: T,
+    max: F,
 ) -> TensorData<T> {
     if inputs[0].is_contiguous() {
         compute_blas_scalar_op(
@@ -221,9 +259,11 @@ pub(crate) fn compute_scalar<T: NumberLike>(
             output_buffer.as_mut_ptr(),
             false,
             blas,
+            zero,
+            max,
         );
     } else {
-        compute_non_cont_scalar_op(ops, &inputs[0], output_buffer.as_mut_ptr(), blas);
+        compute_non_cont_scalar_op(ops, &inputs[0], output_buffer.as_mut_ptr(), blas, zero, max);
     }
 
     TensorData::new(
@@ -252,7 +292,7 @@ pub(crate) fn compute_elementwise_tensor_tensor<T: Copy + Default>(
             }
         }
         (true, false) => {
-            let mut it: ChunkedIter<'_, T> = inputs[1].packed_iter();
+            let mut it: ChunkedIter<'_, T> = inputs[1].packed_iter(PACKING_BUFFER_SIZE);
 
             while let Some(chunk) = it.next() {
                 let n = chunk.packing_buffer.len();
@@ -280,7 +320,7 @@ pub(crate) fn compute_elementwise_tensor_tensor<T: Copy + Default>(
             }
         }
         (false, true) => {
-            let mut it: ChunkedIter<'_, T> = inputs[0].packed_iter();
+            let mut it: ChunkedIter<'_, T> = inputs[0].packed_iter(PACKING_BUFFER_SIZE);
 
             while let Some(chunk) = it.next() {
                 let n = chunk.packing_buffer.len();
@@ -309,8 +349,9 @@ pub(crate) fn compute_elementwise_tensor_tensor<T: Copy + Default>(
             }
         }
         (false, false) => {
-            let mut it: StreamingZip<ChunkedIter<'_, T>, ChunkedIter<'_, T>> =
-                inputs[0].packed_iter().zip(inputs[1].packed_iter());
+            let mut it: StreamingZip<ChunkedIter<'_, T>, ChunkedIter<'_, T>> = inputs[0]
+                .packed_iter(PACKING_BUFFER_SIZE)
+                .zip(inputs[1].packed_iter(PACKING_BUFFER_SIZE));
 
             while let Some((chunk1, chunk2)) = it.next() {
                 let n = chunk1.packing_buffer.len();
@@ -357,7 +398,7 @@ pub(crate) fn compute_elementwise_tensor_tensor_inplace<T: Copy + Default>(
             unsafe { operation(n, output_ptr as *const T, other_ptr, output_ptr) };
         }
     } else {
-        let mut it: ChunkedIter<'_, T> = inputs[0].packed_iter();
+        let mut it: ChunkedIter<'_, T> = inputs[0].packed_iter(PACKING_BUFFER_SIZE);
         while let Some(chunk) = it.next() {
             let n = chunk.packing_buffer.len() as i32;
             let out_ptr = unsafe { output_ptr.add(chunk.absolute_buffer_position) };
