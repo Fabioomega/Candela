@@ -1,3 +1,6 @@
+use std::iter::zip;
+use std::process::Output;
+
 use crate::branch_fast_iter;
 use crate::tensor::Dimension;
 use crate::tensor::definitions::{ChunkedIter, NumberLike};
@@ -15,6 +18,8 @@ pub(crate) struct CommonBLASOps<T> {
     pub exp: unsafe extern "C" fn(i32, *const T, *mut T),
     pub ln: unsafe extern "C" fn(i32, *const T, *mut T),
     pub log2: unsafe extern "C" fn(i32, *const T, *mut T),
+    pub inv: unsafe extern "C" fn(i32, *const T, *mut T),
+    pub tanh: unsafe extern "C" fn(i32, *const T, *mut T),
 }
 
 #[inline]
@@ -48,13 +53,15 @@ pub(crate) fn normalize_axis<T: Clone>(axis: isize, shape_len: usize) -> usize {
 
 // When inplace=true, input and output alias the same buffer.
 #[inline]
-fn compute_blas_scalar_op<T: NumberLike>(
+fn compute_blas_scalar_op<T: NumberLike, F: Fn(T, T) -> T>(
     ops: &[OpKindScalar<T>],
     n: usize,
     input: *const T,
     output: *mut T,
     inplace: bool,
     blas: CommonBLASOps<T>,
+    relu_base: T,
+    max: F,
 ) {
     let mut ops_iter = ops.iter();
 
@@ -79,6 +86,17 @@ fn compute_blas_scalar_op<T: NumberLike>(
             OpKindScalar::Log2 => {
                 unsafe { (blas.log2)(n as i32, input, output) };
             }
+            OpKindScalar::Inv => unsafe { (blas.inv)(n as i32, input, output) },
+            OpKindScalar::Tanh => unsafe { (blas.tanh)(n as i32, input, output) },
+            OpKindScalar::ReLU => {
+                let input = unsafe { std::slice::from_raw_parts(input, n) };
+                let output = unsafe { std::slice::from_raw_parts_mut(output, n) };
+
+                for (&i_el, o_el) in zip(input, output) {
+                    *o_el = max(relu_base, i_el);
+                }
+            }
+            OpKindScalar::Sigmoid => {}
         }
     }
 
@@ -97,6 +115,16 @@ fn compute_blas_scalar_op<T: NumberLike>(
             }
             OpKindScalar::Log2 => {
                 unsafe { (blas.log2)(n as i32, output, output) };
+            }
+            OpKindScalar::Inv => unsafe { (blas.inv)(n as i32, input, output) },
+            OpKindScalar::Tanh => unsafe { (blas.tanh)(n as i32, input, output) },
+            OpKindScalar::ReLU => {
+                let input = unsafe { std::slice::from_raw_parts(input, n) };
+                let output = unsafe { std::slice::from_raw_parts_mut(output, n) };
+
+                for (&i_el, o_el) in zip(input, output) {
+                    *o_el = max(relu_base, i_el);
+                }
             }
         }
     }

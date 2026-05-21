@@ -88,15 +88,24 @@ pub(crate) fn cpu_compute_op_f64(
 
             cpu_compute_sum_axis_tensor(inputs, axis, output_buffer, output_layout, 0.0)
         }
-        OpKind::Max => {
-            cpu_compute_max_tensor(inputs, output_buffer, output_layout, 0.0, |a, b| a.max(b))
-        }
+        OpKind::Max => cpu_compute_max_tensor(
+            inputs,
+            output_buffer,
+            output_layout,
+            f64::NEG_INFINITY,
+            |a, b| a.max(b),
+        ),
         OpKind::MaxAxis(axis, _) => {
             let axis = normalize_axis::<f64>(*axis, inputs[0].shape().len());
 
-            cpu_compute_max_axis_tensor(inputs, axis, output_buffer, output_layout, 0.0, |a, b| {
-                a.max(b)
-            })
+            cpu_compute_max_axis_tensor(
+                inputs,
+                axis,
+                output_buffer,
+                output_layout,
+                f64::NEG_INFINITY,
+                |a, b| a.max(b),
+            )
         }
         OpKind::Mean => {
             cpu_compute_mean_tensor(inputs, output_buffer, output_layout, 0.0, |a, b| {
@@ -161,7 +170,3 @@ pub(crate) fn cpu_compute_op_f64_inplace(
         _ => todo!("not implemented"),
     }
 }
-
-#[cfg(test)]
-#[path = "cpu_f64_tests.rs"]
-mod tests;

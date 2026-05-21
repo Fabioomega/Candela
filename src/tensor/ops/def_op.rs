@@ -15,6 +15,10 @@ pub enum OpKindScalar<T: Copy> {
     Exp,
     Ln,
     Log2,
+    Inv, // (1 / y)
+    ReLU,
+    Tanh,
+    Sigmoid,
 }
 
 #[derive(Clone, Debug)]
