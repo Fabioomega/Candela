@@ -9,6 +9,7 @@ pub(super) fn calculate_dim_stride(shape: &[usize]) -> Box<[i32]> {
 }
 
 pub(super) fn calculate_adjacent_dim_stride(stride: &[i32], slice_shape: &[usize]) -> Box<[i32]> {
+    debug_assert!(!stride.is_empty(), "stride must have rank >= 1");
     let mut v: Box<[i32]> = stride.into();
 
     let mut accum: i32 = 0;

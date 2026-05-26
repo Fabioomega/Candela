@@ -1,8 +1,9 @@
+use crate::tensor::backend::Backend;
 use crate::tensor::graph::NodeKind;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKind;
-use crate::tensor::planner::get_id;
 use crate::tensor::planner::plan::Slot;
+use crate::tensor::planner::{get_id, get_id};
 use std::collections::HashMap;
 
 #[inline]
@@ -28,9 +29,9 @@ fn slot_is_free(slot: &Slot, op_location: usize, required_len: usize) -> bool {
     )
 )]
 #[inline]
-pub(crate) fn find_buffer_inplace<T: Copy>(
+pub(crate) fn find_buffer_inplace<T, B: Backend>(
     op: &OpKind<T>,
-    inputs: &[NodeKind<T>],
+    inputs: &[NodeKind<T, B>],
     output_layout: &Layout,
     op_location: usize,
     slots: &[Slot],
@@ -39,6 +40,7 @@ pub(crate) fn find_buffer_inplace<T: Copy>(
     let result = match op {
         OpKind::ScalarOp(_) => {
             let id = get_id(&inputs[0]);
+
             let slot_idx = id_slot_map
                 .get(&id)
                 .filter(|&&s| slot_is_free(&slots[s], op_location, output_layout.len()))
@@ -49,6 +51,7 @@ pub(crate) fn find_buffer_inplace<T: Copy>(
         OpKind::FusedScalar(scalars) => match scalars[0] {
             _ => {
                 let id = get_id(&inputs[0]);
+
                 let slot_idx = id_slot_map
                     .get(&id)
                     .filter(|&&s| slot_is_free(&slots[s], op_location, output_layout.len()))

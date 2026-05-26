@@ -1,13 +1,12 @@
 #![allow(private_bounds)]
 use crate::errors::OpError;
-use crate::impl_display;
+use crate::tensor::backend::{Backend, ComputeFor, DefaultBackend};
 use crate::tensor::graph::{NodeKind, TensorGraphEdge};
-use crate::tensor::iter::{InformedSliceIter, SliceIter};
+use crate::tensor::iter::{InformedSliceIter, SliceIter, StepInfo};
 use crate::tensor::mem_formats::layout::Layout;
-use crate::tensor::ops::{ComputeWrapperSpec, TensorElement};
 use crate::tensor::promise::TensorPromise;
 use crate::tensor::storage::TensorData;
-use crate::tensor::traits::{Dimension, Promising};
+use crate::tensor::traits::{Dimension, Numeric};
 use std::ops::Index;
 use std::sync::Arc;
 
@@ -49,11 +48,11 @@ use std::sync::Arc;
 /// let result = (t * 2.0 + 1.0).materialize();
 /// assert_eq!(result.data(), &vec![7.0; 4]);
 /// ```
-pub struct Tensor<T: Copy> {
-    pub(crate) graph: Arc<TensorGraphEdge<T>>,
+pub struct Tensor<T, B: Backend = DefaultBackend> {
+    pub(crate) graph: Arc<TensorGraphEdge<T, B>>,
 }
 
-impl<T: ComputeWrapperSpec> Tensor<T> {
+impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     /// Create a tensor with every element set to `scalar`.
     #[inline]
     pub fn from_scalar(scalar: T, shape: &[usize]) -> Self {
@@ -95,6 +94,21 @@ impl<T: ComputeWrapperSpec> Tensor<T> {
     }
 
     #[inline]
+    pub fn eye(n: usize, m: usize) -> Self {
+        let mut data: Vec<T> = vec![T::ZERO; n * m];
+
+        let mut acc: usize = 0;
+        for _ in 0..n {
+            data[acc] = T::ONE;
+            acc += m + 1;
+        }
+
+        Self::from_vec(data, &[n, m])
+    }
+}
+
+impl<T: Copy, B: Backend> Tensor<T, B> {
+    #[inline]
     pub fn from_data(data: TensorData<T>) -> Self {
         Self {
             graph: Arc::new(TensorGraphEdge::from_tensor_data(data)),
@@ -135,19 +149,6 @@ impl<T: ComputeWrapperSpec> Tensor<T> {
         }
     }
 
-    #[inline]
-    pub fn eye(n: usize, m: usize) -> Self {
-        let mut data = vec![T::SUM_NEUTRAL; n * m];
-
-        let mut acc: usize = 0;
-        for _ in 0..n {
-            data[acc] = T::MUL_NEUTRAL;
-            acc += m + 1;
-        }
-
-        Self::from_vec(data, &[n, m])
-    }
-
     /// Make a shallow copy of this tensor with a new graph identity.
     ///
     /// The underlying buffer is shared with the original, but the new tensor carries a fresh
@@ -167,7 +168,7 @@ impl<T: ComputeWrapperSpec> Tensor<T> {
     }
 }
 
-impl<T: TensorElement> Tensor<T> {
+impl<T: Numeric, B: Backend> Tensor<T, B> {
     /// Wrap this tensor as a [`TensorPromise`] without applying any transformation.
     ///
     /// Creates a `NoOp` [`TensorGraphNode`] with the tensor's edge as its sole input.
@@ -189,7 +190,7 @@ impl<T: TensorElement> Tensor<T> {
     /// [`TensorPromise<T>`]: crate::tensor::promise::TensorPromise
     /// [`TensorGraphNode`]: crate::tensor::graph::TensorGraphNode
     #[inline]
-    pub fn as_promise(&self) -> TensorPromise<T> {
+    pub fn as_promise(&self) -> TensorPromise<T, B> {
         unsafe {
             TensorPromise::new(
                 super::ops::def_op::OpKind::NoOp,
@@ -208,14 +209,14 @@ impl<T: TensorElement> Tensor<T> {
     }
 }
 
-impl<T: ComputeWrapperSpec> Dimension for Tensor<T> {
+impl<T, B: Backend> Dimension for Tensor<T, B> {
     #[inline]
     fn layout(&self) -> &super::mem_formats::layout::Layout {
         self.graph.layout()
     }
 }
 
-impl<T: ComputeWrapperSpec> Clone for Tensor<T> {
+impl<T, B: Backend> Clone for Tensor<T, B> {
     /// Shallow copy sharing the same underlying buffer and graph identity.
     ///
     /// Equivalent to bumping an `Arc` reference count. The copy is connected to all promises
@@ -233,9 +234,10 @@ impl<T: ComputeWrapperSpec> Clone for Tensor<T> {
     }
 }
 
-impl<T> Index<&[usize]> for Tensor<T>
+impl<T, B> Index<&[usize]> for Tensor<T, B>
 where
     T: Copy,
+    B: Backend,
 {
     type Output = T;
 
@@ -244,4 +246,48 @@ where
     }
 }
 
-impl_display!(Tensor<T>);
+#[allow(private_bounds)]
+impl<T: std::fmt::Display + Copy, B: Backend> std::fmt::Display for Tensor<T, B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut indent = 0;
+        let mut in_seq = false;
+
+        debug_assert!(!self.shape().is_empty(), "Tensor rank must be >= 1");
+        let last = self.shape().len() - 1;
+
+        for step in self.informed_iter() {
+            match step {
+                StepInfo::EnterDimension(dim) => {
+                    write!(f, "{:indent$}[", "", indent = indent)?;
+                    indent += 2;
+
+                    if dim != last {
+                        write!(f, "\n")?;
+                    }
+                }
+                StepInfo::ExitDimension(dim) => {
+                    indent -= 2;
+                    in_seq = false;
+
+                    if dim != last {
+                        write!(f, "{:indent$}", "", indent = indent)?;
+                    }
+
+                    write!(f, "]\n")?;
+                }
+                StepInfo::Value(v) => {
+                    if in_seq {
+                        write!(f, ", ")?;
+                    }
+
+                    write!(f, "{:>4}", v)?;
+
+                    in_seq = true;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+}

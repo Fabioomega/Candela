@@ -7,12 +7,16 @@ pub(crate) trait FromIndex {
 
 impl FromIndex for f64 {
     #[inline]
-    fn from_index(i: usize) -> Self { i as f64 }
+    fn from_index(i: usize) -> Self {
+        i as f64
+    }
 }
 
 impl FromIndex for f32 {
     #[inline]
-    fn from_index(i: usize) -> Self { i as f32 }
+    fn from_index(i: usize) -> Self {
+        i as f32
+    }
 }
 
 pub trait Dimension {
@@ -68,7 +72,7 @@ pub trait StreamingIterator {
     where
         Self: 'a;
 
-    fn next<'a>(&'a mut self) -> Option<Self::Item<'a>>;
+    fn next_stream<'a>(&'a mut self) -> Option<Self::Item<'a>>;
 
     fn zip<Other>(self, other: Other) -> StreamingZip<Self, Other>
     where
@@ -97,9 +101,30 @@ where
     where
         Self: 'a;
 
-    fn next<'a>(&'a mut self) -> Option<Self::Item<'a>> {
-        let l = self.left.next()?;
-        let r = self.right.next()?;
+    fn next_stream<'a>(&'a mut self) -> Option<Self::Item<'a>> {
+        let l = self.left.next_stream()?;
+        let r = self.right.next_stream()?;
         Some((l, r))
     }
+}
+
+pub(crate) trait Numeric: crate::tensor::definitions::NumberLike {
+    const MUL_NEUTRAL: Self;
+    const SUM_NEUTRAL: Self;
+    const ONE: Self;
+    const ZERO: Self;
+}
+
+impl Numeric for f64 {
+    const MUL_NEUTRAL: Self = 1.0;
+    const SUM_NEUTRAL: Self = 0.0;
+    const ONE: Self = 1.0;
+    const ZERO: Self = 0.0;
+}
+
+impl Numeric for f32 {
+    const MUL_NEUTRAL: Self = 1.0;
+    const SUM_NEUTRAL: Self = 0.0;
+    const ONE: Self = 1.0;
+    const ZERO: Self = 0.0;
 }

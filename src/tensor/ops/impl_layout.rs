@@ -106,6 +106,12 @@ pub fn compute_layout<T: Copy>(op: &OpKind<T>, inputs: &[&Layout]) -> Result<Lay
                     shape.remove(axis);
                 }
 
+                // Preserve the rank >= 1 invariant: collapsing the last axis
+                // of a 1-D input with keepdims=false would produce [] (0-D).
+                if shape.is_empty() {
+                    shape.push(1);
+                }
+
                 Ok(Layout::from_shape(&shape, 0))
             } else {
                 Err(OpError::AxesOutOfBounds)

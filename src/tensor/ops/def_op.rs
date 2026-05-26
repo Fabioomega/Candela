@@ -10,7 +10,7 @@ pub enum Sign {
 // without handling it at the runtime, because it would be annoying.
 // Maybe macros?
 #[derive(Clone, Debug)]
-pub enum OpKindScalar<T: Copy> {
+pub enum OpKindScalar<T> {
     AxBy(T, T),
     Exp,
     Ln,
@@ -22,7 +22,7 @@ pub enum OpKindScalar<T: Copy> {
 }
 
 #[derive(Clone, Debug)]
-pub enum OpKind<T: Copy> {
+pub enum OpKind<T> {
     NoOp,
     ScalarOp(OpKindScalar<T>),
     FusedScalar(Box<[OpKindScalar<T>]>),

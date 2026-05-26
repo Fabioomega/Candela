@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
+use crate::tensor::backend::Backend;
 use crate::tensor::graph::NodeKind;
 use crate::tensor::ops::def_op::OpKind;
+use crate::tensor::planner::{get_id, get_red_id};
 
 /// Outcome of [`is_a_reference`] for a single node.
 ///
@@ -27,9 +29,9 @@ pub(crate) enum ReferenceKind {
 /// data (`View`, `Slice`, `Transpose`, `Broadcast`, `NoOp`). Returns `NoRef` for
 /// everything else.
 #[inline]
-pub(crate) fn is_a_reference<T: Copy>(
+pub(crate) fn is_a_reference<T, B: Backend>(
     op: &OpKind<T>,
-    inputs: &[NodeKind<T>],
+    inputs: &[NodeKind<T, B>],
     id_slot_map: &HashMap<usize, usize>,
 ) -> ReferenceKind {
     match op {
@@ -37,18 +39,16 @@ pub(crate) fn is_a_reference<T: Copy>(
         | OpKind::View(_)
         | OpKind::Transpose
         | OpKind::TransposeAxes(_)
-        | OpKind::Broadcast(_)
-        | OpKind::NoOp => match &inputs[0] {
-            NodeKind::Node(node) => id_slot_map
-                .get(&node.id)
-                .map_or(ReferenceKind::NoRef, |slot_idx| {
-                    ReferenceKind::Slot(*slot_idx, 0)
-                }),
-            NodeKind::Cache(cache) => id_slot_map
-                .get(&cache.get_node().id)
-                .map_or(ReferenceKind::NoRef, |slot_idx| {
-                    ReferenceKind::Slot(*slot_idx, 0)
-                }),
+        | OpKind::Broadcast(_) => match &inputs[0] {
+            NodeKind::Node(_) | NodeKind::Cache(_) => {
+                let id = get_id(&inputs[0]);
+
+                id_slot_map
+                    .get(&id)
+                    .map_or(ReferenceKind::NoRef, |slot_idx| {
+                        ReferenceKind::Slot(*slot_idx, 0)
+                    })
+            }
             NodeKind::Edge(_) => ReferenceKind::Edge(0),
         },
         _ => ReferenceKind::NoRef,

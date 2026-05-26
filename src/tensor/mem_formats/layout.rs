@@ -15,6 +15,14 @@ pub struct Layout {
     pub(crate) len: usize,
 }
 
+#[inline]
+pub(crate) fn validate_shape(shape: &[usize]) -> Result<(), OpError> {
+    if shape.is_empty() {
+        return Err(OpError::ZeroRankShape);
+    }
+    Ok(())
+}
+
 impl Layout {
     pub fn new(
         shape: Box<[usize]>,
@@ -43,6 +51,7 @@ impl Layout {
     }
 
     pub fn from_shape(shape: &[usize], offset: usize) -> Self {
+        validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
         let len: usize = shape.iter().product();
 
         Self {
@@ -55,6 +64,7 @@ impl Layout {
     }
 
     pub fn from_slice(shape: &[usize], stride: &[i32], offset: usize) -> Self {
+        validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
         let len: usize = shape.iter().product();
 
         Self {
@@ -201,6 +211,7 @@ impl Layout {
 
     #[inline]
     pub fn shape_as_3d(&self) -> [usize; 3] {
+        debug_assert!(!self.shape.is_empty(), "shape_as_3d requires rank >= 1");
         if self.shape.len() == 1 {
             [1, 1, self.shape[0]]
         } else if self.shape.len() == 2 {
@@ -264,11 +275,13 @@ impl Layout {
         self.adj_stride[axis] < 0 && self.stride[axis] != 0
     }
 
-    // This function is needed because the .is_transposed_at_axis just tells if a tensor is transposed in any way.
-    // We are checking for a specific case.
+    // Restricted to 2D on purpose: the matmul kernel uses this to pick the BLAS
+    // trans-flag, and its batch-stride handling assumes there is no batch dim.
+    // Higher-rank tensors whose last two strides happen to match this pattern
+    // would silently feed an incoherent batch stride to GEMM.
     #[inline]
     pub fn is_last_axes_transposed(&self) -> bool {
-        if self.shape.len() < 2 {
+        if self.shape.len() != 2 {
             return false;
         }
 

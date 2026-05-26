@@ -1,23 +1,21 @@
-use crate::tensor::definitions::NumberLike;
+use crate::tensor::backend::Backend;
 use crate::tensor::graph::NodeKind;
-use crate::tensor::ops::ComputeWrapperSpec;
 use crate::tensor::ops::def_op::{OpKind, OpKindScalar, Sign};
-use crate::tensor::traits::Promising;
+use crate::tensor::traits::Numeric;
 
 ///////////////////////////////////////////
 
-#[derive(Debug)]
-pub(crate) struct Fusion<T: Copy> {
+pub(crate) struct Fusion<T, B: Backend> {
     pub(crate) op: OpKind<T>,
-    pub(crate) inputs: Box<[NodeKind<T>]>,
+    pub(crate) inputs: Box<[NodeKind<T, B>]>,
 }
 
 #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
-pub(crate) fn try_fuse<T: NumberLike + ComputeWrapperSpec>(
+pub(crate) fn try_fuse<T: Numeric, B: Backend>(
     op: OpKind<T>,
-    inputs: Box<[NodeKind<T>]>,
-) -> Fusion<T> {
-    let mut current_fusion: Fusion<T> = Fusion {
+    inputs: Box<[NodeKind<T, B>]>,
+) -> Fusion<T, B> {
+    let mut current_fusion: Fusion<T, B> = Fusion {
         op,
         inputs: inputs.clone(),
     };
@@ -60,11 +58,11 @@ pub(crate) fn try_fuse<T: NumberLike + ComputeWrapperSpec>(
 }
 
 #[inline]
-pub(crate) fn fuse_scalar_op<T: NumberLike>(
+pub(crate) fn fuse_scalar_op<T: Numeric, B: Backend>(
     op1: &[OpKindScalar<T>],
-    inputs1: &[NodeKind<T>],
+    inputs1: &[NodeKind<T, B>],
     op2: &[OpKindScalar<T>],
-) -> Fusion<T> {
+) -> Fusion<T, B> {
     let op1_last = &op1[op1.len() - 1];
     let op2_first = &op2[0];
 
@@ -99,13 +97,14 @@ pub(crate) fn fuse_scalar_op<T: NumberLike>(
 }
 
 #[inline]
-pub(crate) fn fuse_scalar_ops<T>(
+pub(crate) fn fuse_scalar_ops<T, B>(
     op1: &OpKind<T>,
-    inputs1: &[NodeKind<T>],
+    inputs1: &[NodeKind<T, B>],
     op2: &OpKind<T>,
-) -> Fusion<T>
+) -> Fusion<T, B>
 where
-    T: NumberLike,
+    T: Numeric,
+    B: Backend,
 {
     match (op1, op2) {
         (OpKind::ScalarOp(s1), OpKind::ScalarOp(s2)) => {
@@ -123,15 +122,16 @@ where
 }
 
 #[inline]
-pub(crate) fn try_fuse_matmul_ops<T>(
+pub(crate) fn try_fuse_matmul_ops<T, B>(
     op1: &OpKind<T>, // This is the father operand
-    inputs1: &[NodeKind<T>],
+    inputs1: &[NodeKind<T, B>],
     op2: &OpKind<T>, // This is the child operand
-    inputs2: &[NodeKind<T>],
+    inputs2: &[NodeKind<T, B>],
     skip_input_idx: usize, // Skips one of the inputs2 Nodes
-) -> Option<Fusion<T>>
+) -> Option<Fusion<T, B>>
 where
-    T: NumberLike + ComputeWrapperSpec,
+    T: Numeric,
+    B: Backend,
 {
     match (op1, op2) {
         (OpKind::MatMul(a1), OpKind::ScalarOp(op)) => {
@@ -167,7 +167,7 @@ where
                 _ => None,
             };
 
-            let inputs: Box<[NodeKind<T>]> = inputs1
+            let inputs: Box<[NodeKind<T, B>]> = inputs1
                 .iter()
                 .cloned()
                 .chain(std::iter::once(other.clone()))
@@ -203,7 +203,7 @@ where
                 _ => None,
             };
 
-            let inputs: Box<[NodeKind<T>]> = inputs1
+            let inputs: Box<[NodeKind<T, B>]> = inputs1
                 .iter()
                 .cloned()
                 .chain(std::iter::once(other.clone()))
@@ -234,15 +234,16 @@ where
 mod tests;
 
 #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
-pub(crate) fn compute_fusion<T>(
+pub(crate) fn compute_fusion<T, B>(
     op1: &OpKind<T>, // This is the father operand
-    inputs1: &[NodeKind<T>],
+    inputs1: &[NodeKind<T, B>],
     op2: &OpKind<T>, // This is the child operand
-    inputs2: &[NodeKind<T>],
+    inputs2: &[NodeKind<T, B>],
     skip_input_idx: usize, // Skips one of the inputs2 Nodes
-) -> Option<Fusion<T>>
+) -> Option<Fusion<T, B>>
 where
-    T: NumberLike + ComputeWrapperSpec,
+    T: Numeric,
+    B: Backend,
 {
     match (op1, op2) {
         (OpKind::ScalarOp(_), OpKind::ScalarOp(_))

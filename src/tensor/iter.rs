@@ -4,13 +4,13 @@ use std::sync::Arc;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::traits::StreamingIterator;
 
-pub struct ContiguousIter<'a, T: Copy> {
+pub struct ContiguousIter<'a, T: Clone> {
     data: &'a [T],
     offset: usize,
     left_over: usize,
 }
 
-impl<'a, T: Copy> ContiguousIter<'a, T> {
+impl<'a, T: Clone> ContiguousIter<'a, T> {
     pub fn new(data: &'a [T], offset: usize, len: usize) -> Self {
         Self {
             data,
@@ -20,7 +20,7 @@ impl<'a, T: Copy> ContiguousIter<'a, T> {
     }
 }
 
-impl<'a, T: Copy> Iterator for ContiguousIter<'a, T> {
+impl<'a, T: Clone> Iterator for ContiguousIter<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -40,28 +40,28 @@ impl<'a, T: Copy> Iterator for ContiguousIter<'a, T> {
     }
 }
 
-impl<'a, T: Copy> ExactSizeIterator for ContiguousIter<'a, T> {}
+impl<'a, T: Clone> ExactSizeIterator for ContiguousIter<'a, T> {}
 
-impl<'a, T: Copy> FusedIterator for ContiguousIter<'a, T> {}
+impl<'a, T: Clone> FusedIterator for ContiguousIter<'a, T> {}
 
 ///////////////////////////////////////////////////////////////
 
 // TODO: This impl is not correct anymore. If used please fix it like
 // the non-mut one.
 
-// pub struct MutContiguousIter<'a, T: Copy> {
+// pub struct MutContiguousIter<'a, T: Clone> {
 //     data: RwLockWriteGuard<'a, Vec<T>>,
 //     index: usize,
 // }
 //
-// impl<'a, T: Copy> MutContiguousIter<'a, T> {
+// impl<'a, T: Clone> MutContiguousIter<'a, T> {
 //     pub fn new(lock: &'a RwLock<Vec<T>>) -> Self {
 //         let data: RwLockWriteGuard<'_, Vec<T>> = lock.write();
 //         Self { data, index: 0 }
 //     }
 // }
 //
-// impl<'a, T: Copy> Iterator for MutContiguousIter<'a, T> {
+// impl<'a, T: Clone> Iterator for MutContiguousIter<'a, T> {
 //     type Item = &'a mut T;
 //
 //     fn next(&mut self) -> Option<Self::Item> {
@@ -82,14 +82,14 @@ impl<'a, T: Copy> FusedIterator for ContiguousIter<'a, T> {}
 //     }
 // }
 //
-// impl<'a, T: Copy> ExactSizeIterator for MutContiguousIter<'a, T> {}
+// impl<'a, T: Clone> ExactSizeIterator for MutContiguousIter<'a, T> {}
 //
-// impl<'a, T: Copy> FusedIterator for MutContiguousIter<'a, T> {}
+// impl<'a, T: Clone> FusedIterator for MutContiguousIter<'a, T> {}
 //
 
 ///////////////////////////////////////////////////////////////
 
-pub struct SliceIter<'a, T: Copy> {
+pub struct SliceIter<'a, T> {
     data: &'a [T],
     pos: isize,
     counter: Box<[usize]>,
@@ -97,7 +97,7 @@ pub struct SliceIter<'a, T: Copy> {
     left_over: usize,
 }
 
-impl<'a, T: Copy> SliceIter<'a, T> {
+impl<'a, T: Clone> SliceIter<'a, T> {
     // TODO: data_len is used anywhere? Like at all? If not, maybe just remove it.
     pub fn new(data: &'a [T], data_len: usize, layout: &'a Layout) -> Self {
         let counter = vec![0; layout.shape().len()].into_boxed_slice();
@@ -112,7 +112,7 @@ impl<'a, T: Copy> SliceIter<'a, T> {
     }
 }
 
-impl<'a, T: Copy> Iterator for SliceIter<'a, T> {
+impl<'a, T: Clone> Iterator for SliceIter<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -151,13 +151,13 @@ impl<'a, T: Copy> Iterator for SliceIter<'a, T> {
     }
 }
 
-impl<'a, T: Copy> ExactSizeIterator for SliceIter<'a, T> {}
+impl<'a, T: Clone> ExactSizeIterator for SliceIter<'a, T> {}
 
-impl<'a, T: Copy> FusedIterator for SliceIter<'a, T> {}
+impl<'a, T: Clone> FusedIterator for SliceIter<'a, T> {}
 
 ///////////////////////////////////////////////////////////////
 
-pub struct MutSliceIter<'a, T: Copy> {
+pub struct MutSliceIter<'a, T> {
     data: &'a mut Vec<T>,
     pos: isize,
     counter: Box<[usize]>,
@@ -165,7 +165,7 @@ pub struct MutSliceIter<'a, T: Copy> {
     left_over: usize,
 }
 
-impl<'a, T: Copy> MutSliceIter<'a, T> {
+impl<'a, T: Clone> MutSliceIter<'a, T> {
     pub fn new(data: &'a mut Vec<T>, data_len: usize, layout: &'a Layout) -> Self {
         let counter = vec![0; layout.shape().len()].into_boxed_slice();
 
@@ -179,7 +179,7 @@ impl<'a, T: Copy> MutSliceIter<'a, T> {
     }
 }
 
-impl<'a, T: Copy> Iterator for MutSliceIter<'a, T> {
+impl<'a, T: Clone> Iterator for MutSliceIter<'a, T> {
     type Item = &'a mut T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -218,20 +218,20 @@ impl<'a, T: Copy> Iterator for MutSliceIter<'a, T> {
     }
 }
 
-impl<'a, T: Copy> ExactSizeIterator for MutSliceIter<'a, T> {}
+impl<'a, T: Clone> ExactSizeIterator for MutSliceIter<'a, T> {}
 
-impl<'a, T: Copy> FusedIterator for MutSliceIter<'a, T> {}
+impl<'a, T: Clone> FusedIterator for MutSliceIter<'a, T> {}
 
 ///////////////////////////////////////////////////////////////
 
-pub enum StepInfo<T: Copy> {
+pub enum StepInfo<T: Clone> {
     EnterDimension(usize),
     ExitDimension(usize),
     Value(T),
     End,
 }
 
-pub struct InformedSliceIter<'a, T: Copy> {
+pub struct InformedSliceIter<'a, T: Clone> {
     buffer: &'a [T],
     layout: &'a Layout,
     next_state: StepInfo<T>,
@@ -239,7 +239,7 @@ pub struct InformedSliceIter<'a, T: Copy> {
     counter: Vec<usize>,
 }
 
-impl<'a, T: Copy> InformedSliceIter<'a, T> {
+impl<'a, T: Clone> InformedSliceIter<'a, T> {
     pub fn new(data: &'a [T], layout: &'a Layout) -> Self {
         let len = layout.shape().len();
 
@@ -357,7 +357,7 @@ where
     where
         Self: 'a;
 
-    fn next<'a>(&'a mut self) -> Option<Self::Item<'a>> {
+    fn next_stream<'a>(&'a mut self) -> Option<Self::Item<'a>> {
         let mut len = 0;
 
         for slot in &mut self.packing_buffer {
@@ -401,13 +401,13 @@ impl<'a, T: Clone> ChunkedContiguousIter<'a, T> {
     }
 }
 
-impl<'b, T: Copy> StreamingIterator for ChunkedContiguousIter<'b, T> {
+impl<'b, T: Clone> StreamingIterator for ChunkedContiguousIter<'b, T> {
     type Item<'a>
         = PackedBuffer<'a, T>
     where
         Self: 'a;
 
-    fn next<'a>(&'a mut self) -> Option<Self::Item<'a>> {
+    fn next_stream<'a>(&'a mut self) -> Option<Self::Item<'a>> {
         if self.absolute_buffer_position >= self.data.len() {
             return None;
         }
@@ -442,17 +442,17 @@ impl<'a, T: Clone> Iterator for ChunkedContiguousIter<'a, T> {
     }
 }
 
-impl<'a, T: Copy> FusedIterator for ChunkedContiguousIter<'a, T> {}
+impl<'a, T: Clone> FusedIterator for ChunkedContiguousIter<'a, T> {}
 
 /////////////////////////////////////////////////////////////
-pub struct SliceIterByLayout<'a, T: Copy> {
+pub struct SliceIterByLayout<'a, T: Clone> {
     data: &'a Arc<Vec<T>>,
     pos: isize,
     counter: Box<[usize]>,
     layout: Layout,
 }
 
-impl<'a, T: Copy> SliceIterByLayout<'a, T> {
+impl<'a, T: Clone> SliceIterByLayout<'a, T> {
     pub fn new(data: &'a Arc<Vec<T>>, layout: Layout) -> Self {
         let counter = vec![0; layout.shape().len()].into_boxed_slice();
 
@@ -465,7 +465,7 @@ impl<'a, T: Copy> SliceIterByLayout<'a, T> {
     }
 }
 
-impl<'a, T: Copy> Iterator for SliceIterByLayout<'a, T> {
+impl<'a, T: Clone> Iterator for SliceIterByLayout<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -504,6 +504,6 @@ impl<'a, T: Copy> Iterator for SliceIterByLayout<'a, T> {
     }
 }
 
-impl<'a, T: Copy> ExactSizeIterator for SliceIterByLayout<'a, T> {}
+impl<'a, T: Clone> ExactSizeIterator for SliceIterByLayout<'a, T> {}
 
-impl<'a, T: Copy> FusedIterator for SliceIterByLayout<'a, T> {}
+impl<'a, T: Clone> FusedIterator for SliceIterByLayout<'a, T> {}

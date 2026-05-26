@@ -1,7 +1,7 @@
 mod common;
 
 use candela::{Dimension, FloatLikeTensorElement, Tensor, arange, ones};
-use common::assert_approx_eq;
+use common::{assert_approx_eq, tensor_of};
 use rstest::rstest;
 
 // Bug: OpKindScalar::Sub was doing addition (copy-pasted from Add arm).
@@ -9,10 +9,8 @@ use rstest::rstest;
 #[case::f64(0.0f64)]
 #[case::f32(0.0f32)]
 fn regression_scalar_sub_was_adding<T: FloatLikeTensorElement>(#[case] _t: T) {
-    let ten = T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE;
-    let three = T::ONE + T::ONE + T::ONE;
-    let t = Tensor::from_scalar(ten, &[4]);
-    assert_approx_eq((t - three).materialize().data(), &[7.0; 4]);
+    let t = Tensor::from_scalar(T::from_f64(10.0), &[4]);
+    assert_approx_eq((t - T::from_f64(3.0)).materialize().data(), &[7.0; 4]);
 }
 
 // Bug: Sub with scalar on a tensor starting from ones should not add.
@@ -39,12 +37,10 @@ fn regression_not_same_shape_error_shows_both_shapes() {
 #[case::f32(0.0f32)]
 fn regression_sub_ordering_with_reusable_rhs<T: FloatLikeTensorElement>(#[case] _t: T) {
     // a - b must be a - b, not b - a
-    let ten = T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE;
-    let three = T::ONE + T::ONE + T::ONE;
-    let a = Tensor::from_scalar(ten, &[4]);
-    let b = Tensor::from_scalar(three, &[4]);
+    let a = Tensor::from_scalar(T::from_f64(10.0), &[4]);
+    let b = Tensor::from_scalar(T::from_f64(3.0), &[4]);
     // Adding 0 makes b go through a scalar op node (potentially reusable)
-    let b_node = b + T::ZERO;
+    let b_node = b + T::from_f64(0.0);
     let result = (a - b_node).materialize();
     assert_approx_eq(result.data(), &[7.0; 4]); // not [-7.0; 4]
 }
@@ -57,14 +53,10 @@ fn regression_sub_ordering_with_reusable_rhs<T: FloatLikeTensorElement>(#[case] 
 #[case::f64(0.0f64)]
 #[case::f32(0.0f32)]
 fn bug_redirect_timing_independent_consumer_before_as_contiguous<T: FloatLikeTensorElement>(#[case] _t: T) {
-    let one = T::ONE;
-    let two = one + one;
-    let three = two + one;
-    let four = three + one;
-    let t = Tensor::from_slice(&[one, two, three, four], &[2, 2]);
+    let t = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
     let transposed = t.transpose(); // node_1
     let contiguous = transposed.as_contiguous(); // node_2
-    let shifted = &transposed + one; // node_3, independent of node_2
+    let shifted = &transposed + T::from_f64(1.0); // node_3, independent of node_2
 
     // root.inputs = [node_2, node_3] → sort yields node_3 before node_2
     let result = (&contiguous + &shifted).materialize();
@@ -80,12 +72,8 @@ fn bug_redirect_timing_independent_consumer_before_as_contiguous<T: FloatLikeTen
 #[case::f32(0.0f32)]
 fn regression_matmul_input_order<T: FloatLikeTensorElement>(#[case] _t: T) {
     // identity @ B == B, not B^T
-    let one = T::ONE;
-    let two = one + one;
-    let three = two + one;
-    let four = three + one;
     let identity = Tensor::<T>::eye(2, 2);
-    let b = Tensor::from_slice(&[one, two, three, four], &[2, 2]);
+    let b = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
     let result = identity.matmul(&b).unwrap().materialize();
     assert_eq!(result.data(), b.data());
 }
@@ -97,7 +85,7 @@ fn regression_matmul_input_order<T: FloatLikeTensorElement>(#[case] _t: T) {
 fn regression_buffer_reuse_chain_correctness<T: FloatLikeTensorElement>(#[case] _t: T) {
     // arange(6) * 2 - 1 = [-1, 1, 3, 5, 7, 9]
     let t: Tensor<T> = arange!(6);
-    let result = (t * (T::ONE + T::ONE) - T::ONE).materialize();
+    let result = (t * T::from_f64(2.0) - T::from_f64(1.0)).materialize();
     assert_approx_eq(result.data(), &[-1.0, 1.0, 3.0, 5.0, 7.0, 9.0]);
 }
 
@@ -108,15 +96,45 @@ fn regression_buffer_reuse_chain_correctness<T: FloatLikeTensorElement>(#[case] 
 #[case::f64(0.0f64)]
 #[case::f32(0.0f32)]
 fn regression_matmul_rhs_single_column<T: FloatLikeTensorElement>(#[case] _t: T) {
-    let one = T::ONE;
-    let two = one + one;
-    let three = two + one;
-    let four = three + one;
-    let a = Tensor::from_slice(&[one, two], &[1, 2]);
-    let b = Tensor::from_slice(&[three, four], &[2, 1]);
+    let a = tensor_of::<T>(&[1.0, 2.0], &[1, 2]);
+    let b = tensor_of::<T>(&[3.0, 4.0], &[2, 1]);
     let c = a.matmul(&b).unwrap().materialize();
     assert_eq!(c.shape(), &[1, 1]);
     // 1*3 + 2*4 = 11
-    let eleven = T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE;
-    assert_eq!(c.data(), &[eleven]);
+    assert_eq!(c.data(), &[T::from_f64(11.0)]);
+}
+
+// Bug: matmul of mismatched 1-D vs 2-D shapes panicked deep in the broadcast
+// helper (subtract overflow) instead of returning a clean CannotMatMul error.
+// Root cause: the helper compared element counts, not ranks, when picking
+// largest/smallest, then subtracted ranks.
+#[test]
+fn regression_matmul_1d_2d_shape_mismatch() {
+    let a = Tensor::from_slice(&[3.0_f64, 4.0], &[2]);
+    let b = Tensor::from_slice(&[1.0_f64, 2.0], &[1, 2]);
+    let result = a.matmul(&b);
+    assert!(matches!(
+        result,
+        Err(candela::errors::OpError::CannotMatMul(_, _))
+    ));
+}
+
+// ── 0-D construction is rejected ─────────────────────────────────────────────
+
+#[test]
+#[should_panic(expected = "rank >= 1")]
+fn tensor_from_slice_empty_shape_panics() {
+    let _ = Tensor::from_slice(&[1.0_f64], &[]);
+}
+
+#[test]
+#[should_panic(expected = "rank >= 1")]
+fn tensor_from_scalar_empty_shape_panics() {
+    let _ = Tensor::from_scalar(0.0_f32, &[]);
+}
+
+#[test]
+#[should_panic(expected = "rank >= 1")]
+fn layout_from_shape_empty_panics() {
+    let _ = candela::Layout::from_shape(&[], 0);
 }

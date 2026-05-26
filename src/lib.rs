@@ -1,3 +1,4 @@
+#![allow(private_bounds)]
 pub mod tensor;
 
 pub use tensor::arange;
@@ -7,26 +8,28 @@ pub use tensor::{CachedTensorPromise, Dimension, Layout, SliceRange, Tensor, Ten
 use std::ops::Neg;
 
 use crate::tensor::FromIndex;
+use crate::tensor::backend::ComputeFor;
+use crate::tensor::backend::DefaultBackend;
+use crate::tensor::definitions::NumberLike;
 use crate::tensor::ops::CanMatMul;
 use crate::tensor::ops::FloatLike;
-use crate::tensor::ops::TensorElement;
+use crate::tensor::traits::Numeric;
 
 const PACKING_BUFFER_SIZE: usize = 2048;
 
 /// Sealed marker for floating-point tensor element types: `f32` and `f64`.
 ///
-/// Bundles the bounds required for full tensor operation support: computation
-/// dispatch (`TensorElement`, `ComputeWrapperSpec`), floating-point ops
-/// (`FloatLike`, `Neg`), matrix multiplication (`CanMatMul`), index-based
-/// construction (`FromIndex`), and a lossless `Into<f64>` conversion used by
-/// comparison utilities such as `assert_approx_eq`.
+/// Bundles the bounds required for full tensor operation support: arithmetic
+/// (`NumberLike`), floating-point ops (`FloatLike`, `Neg`), matrix
+/// multiplication (`CanMatMul`), index-based construction (`FromIndex`), and a
+/// lossless `Into<f64>` conversion used by comparison utilities such as
+/// `assert_approx_eq`. The inverse, [`from_f64`](Self::from_f64), lets generic
+/// code construct typed values from float literals (precision is lost when `T`
+/// is `f32` and the source does not fit).
 ///
-/// `ZERO` and `ONE` expose the additive and multiplicative identities as typed
-/// values. Both are `0.0` and `1.0` respectively for `f32` and `f64`.
-///
-/// The trait is sealed: the `pub(crate)` supertraits (`ComputeWrapperSpec`,
-/// `CanMatMul`, `FromIndex`) cannot be named outside this crate, so no external
-/// implementation is possible.
+/// The trait is sealed: the `pub(crate)` supertraits (`CanMatMul`, `FromIndex`)
+/// cannot be named outside this crate, so no external implementation is
+/// possible.
 ///
 /// # Examples
 ///
@@ -34,7 +37,7 @@ const PACKING_BUFFER_SIZE: usize = 2048;
 /// use candela::{FloatLikeTensorElement, Tensor};
 ///
 /// fn scaled_identity<T: FloatLikeTensorElement>(n: usize, factor: T) -> Tensor<T> {
-///     (Tensor::from_scalar(T::ONE, &[n]) * factor).materialize()
+///     (Tensor::from_scalar(T::from_f64(1.0), &[n]) * factor).materialize()
 /// }
 ///
 /// let f64_result: Tensor<f64> = scaled_identity(4, 3.0);
@@ -43,19 +46,29 @@ const PACKING_BUFFER_SIZE: usize = 2048;
 /// assert_eq!(f32_result.data(), &vec![3.0f32; 4]);
 /// ```
 pub trait FloatLikeTensorElement:
-    TensorElement + FloatLike + Into<f64> + Neg<Output = Self> + CanMatMul + FromIndex
+    NumberLike
+    + Numeric
+    + FloatLike
+    + Into<f64>
+    + Neg<Output = Self>
+    + CanMatMul
+    + FromIndex
+    + ComputeFor<DefaultBackend>
 {
-    /// The additive identity — `0.0` for both `f32` and `f64`.
-    const ZERO: Self;
-    /// The multiplicative identity — `1.0` for both `f32` and `f64`.
-    const ONE: Self;
+    /// Construct a typed value from an `f64` literal. Lossless for `f64`; for
+    /// `f32` the value is narrowed via `as f32`.
+    fn from_f64(v: f64) -> Self;
 }
 
 impl FloatLikeTensorElement for f64 {
-    const ZERO: Self = 0.0;
-    const ONE: Self = 1.0;
+    #[inline]
+    fn from_f64(v: f64) -> Self {
+        v
+    }
 }
 impl FloatLikeTensorElement for f32 {
-    const ZERO: Self = 0.0;
-    const ONE: Self = 1.0;
+    #[inline]
+    fn from_f64(v: f64) -> Self {
+        v as f32
+    }
 }

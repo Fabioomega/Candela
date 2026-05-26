@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 
+use crate::tensor::backend::Backend;
 use crate::tensor::graph::{NodeKind, TensorGraphNode};
 use crate::tensor::planner::get_id;
 
@@ -12,13 +13,13 @@ use crate::tensor::planner::get_id;
 ///
 /// Built by [`topological_sort`]. Uses an explicit stack so arbitrarily deep
 /// graphs don't overflow the call stack.
-pub(crate) struct TopologicalSortIter<'a, T: Copy> {
-    stack: Vec<(&'a NodeKind<T>, bool)>,
+pub(crate) struct TopologicalSortIter<'a, T, B: Backend> {
+    stack: Vec<(&'a NodeKind<T, B>, bool)>,
     visited: HashSet<usize>,
 }
 
-impl<'a, T: Copy> TopologicalSortIter<'a, T> {
-    pub(crate) fn new(base_node: &'a TensorGraphNode<T>) -> Self {
+impl<'a, T, B: Backend> TopologicalSortIter<'a, T, B> {
+    pub(crate) fn new(base_node: &'a TensorGraphNode<T, B>) -> Self {
         let mut stack = Vec::new();
         stack.extend(base_node.inputs.iter().map(|i| (i, false)));
         Self {
@@ -28,8 +29,8 @@ impl<'a, T: Copy> TopologicalSortIter<'a, T> {
     }
 }
 
-impl<'a, T: Copy> Iterator for TopologicalSortIter<'a, T> {
-    type Item = &'a NodeKind<T>;
+impl<'a, T, B: Backend> Iterator for TopologicalSortIter<'a, T, B> {
+    type Item = &'a NodeKind<T, B>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -86,6 +87,8 @@ impl<'a, T: Copy> Iterator for TopologicalSortIter<'a, T> {
         fields(node_id = base_node.id, inputs_count = base_node.inputs.len())
     )
 )]
-pub(crate) fn topological_sort<T: Copy>(base_node: &TensorGraphNode<T>) -> TopologicalSortIter<'_, T> {
+pub(crate) fn topological_sort<T, B: Backend>(
+    base_node: &TensorGraphNode<T, B>,
+) -> TopologicalSortIter<'_, T, B> {
     TopologicalSortIter::new(base_node)
 }

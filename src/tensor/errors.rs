@@ -11,6 +11,7 @@ pub enum OpError {
     NotEnoughAxes(usize, usize),
     NotSameShape(Box<[usize]>, Box<[usize]>),
     NotSameBatch(usize, usize),
+    ZeroRankShape,
 }
 
 impl std::fmt::Display for OpError {
@@ -62,6 +63,12 @@ impl std::fmt::Display for OpError {
                     f,
                     "tensors do not have the same batch dimension. expected {} found {}. use broadcasting if necessary",
                     expected, got
+                )
+            }
+            OpError::ZeroRankShape => {
+                write!(
+                    f,
+                    "tensor shape must have rank >= 1 (empty shape `&[]` / 0-D tensors are not supported)"
                 )
             }
         }

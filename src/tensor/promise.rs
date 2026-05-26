@@ -8,13 +8,14 @@
 #![allow(private_bounds)]
 use std::sync::Arc;
 
+use crate::tensor::backend::{Backend, ComputeFor};
+use crate::tensor::definitions::NumberLike;
 use crate::tensor::errors::OpError;
 use crate::tensor::graph::{NodeKind, TensorGraphCacheNode, TensorGraphNode};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKind;
-use crate::tensor::ops::{ComputeWrapperSpec, TensorElement};
 use crate::tensor::tensor::Tensor;
-use crate::tensor::traits::{Dimension, Promising};
+use crate::tensor::traits::{Dimension, Numeric, Promising};
 
 /// A lazy computation that runs when you call [`.materialize()`].
 ///
@@ -33,7 +34,7 @@ use crate::tensor::traits::{Dimension, Promising};
 /// let result = (t * 2.0 + 1.0).materialize();
 /// assert_eq!(result.data(), &vec![7.0; 4]);
 /// ```
-pub type TensorPromise<T> = RawTensorPromise<TensorGraphNode<T>>;
+pub type TensorPromise<T, B> = RawTensorPromise<TensorGraphNode<T, B>>;
 
 /// A lazy computation whose result is kept alive after the first evaluation.
 ///
@@ -61,7 +62,7 @@ pub type TensorPromise<T> = RawTensorPromise<TensorGraphNode<T>>;
 /// assert_eq!(r1.data(), &vec![6.0; 4]);
 /// assert_eq!(r2.data(), &vec![13.0; 4]);
 /// ```
-pub type CachedTensorPromise<T> = RawTensorPromise<TensorGraphCacheNode<T>>;
+pub type CachedTensorPromise<T, B> = RawTensorPromise<TensorGraphCacheNode<T, B>>;
 
 /// The underlying generic promise struct, parameterised over the graph node type.
 ///
@@ -71,8 +72,8 @@ pub struct RawTensorPromise<P> {
     pub(crate) graph: Arc<P>,
 }
 
-impl<T: TensorElement> TensorPromise<T> {
-    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Result<Self, OpError> {
+impl<T: Numeric, B: Backend> TensorPromise<T, B> {
+    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>) -> Result<Self, OpError> {
         let node = TensorGraphNode::new(op, inputs);
 
         match node {
@@ -83,7 +84,7 @@ impl<T: TensorElement> TensorPromise<T> {
         }
     }
 
-    pub fn with_layout(op: OpKind<T>, inputs: Box<[NodeKind<T>]>, layout: Layout) -> Self {
+    pub fn with_layout(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>, layout: Layout) -> Self {
         Self {
             graph: Arc::new(TensorGraphNode::with_layout(op, inputs, layout)),
         }
@@ -108,7 +109,7 @@ impl<T: TensorElement> TensorPromise<T> {
     /// let _ = (&cached * 2.0).materialize();
     /// let _ = (&cached + 1.0).materialize();
     /// ```
-    pub fn cache(self) -> CachedTensorPromise<T> {
+    pub fn cache(self) -> CachedTensorPromise<T, B> {
         let base = unsafe {
             TensorPromise::new(OpKind::AsContiguous, [NodeKind::Node(self.graph)].into())
                 .unwrap_unchecked()
@@ -121,8 +122,8 @@ impl<T: TensorElement> TensorPromise<T> {
     }
 }
 
-impl<T: TensorElement> CachedTensorPromise<T> {
-    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T>]>) -> Result<Self, OpError> {
+impl<T: Numeric, B: Backend> CachedTensorPromise<T, B> {
+    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>) -> Result<Self, OpError> {
         let node = TensorGraphCacheNode::new(op, inputs);
 
         match node {
@@ -133,20 +134,20 @@ impl<T: TensorElement> CachedTensorPromise<T> {
         }
     }
 
-    pub fn with_layout(op: OpKind<T>, inputs: Box<[NodeKind<T>]>, layout: Layout) -> Self {
+    pub fn with_layout(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>, layout: Layout) -> Self {
         Self {
             graph: Arc::new(TensorGraphCacheNode::with_layout(op, inputs, layout)),
         }
     }
 
-    pub fn from_node(node: TensorGraphCacheNode<T>) -> Self {
+    pub fn from_node(node: TensorGraphCacheNode<T, B>) -> Self {
         Self {
             graph: Arc::new(node),
         }
     }
 }
 
-impl<P: Promising<Output: TensorElement>> RawTensorPromise<P> {
+impl<P: Promising<Output: NumberLike>> RawTensorPromise<P> {
     /// Execute the computation graph and return the result as a [`Tensor`].
     ///
     /// This is where the work actually happens. The planner analyses the graph,
@@ -191,7 +192,7 @@ impl<P: Promising<Output: TensorElement>> RawTensorPromise<P> {
     }
 }
 
-impl<T: TensorElement> CachedTensorPromise<T> {
+impl<T: Numeric + ComputeFor<B>, B: Backend> CachedTensorPromise<T, B> {
     /// Return the cached result if it has already been computed, or `None` if
     /// [`.materialize()`] has not been called yet.
     ///

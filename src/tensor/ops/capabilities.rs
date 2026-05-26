@@ -1,4 +1,4 @@
-pub(crate) trait NumericOp {}
+pub(crate) trait NumericOp: crate::tensor::traits::Numeric {}
 
 pub(crate) trait FloatLike: NumericOp {}
 

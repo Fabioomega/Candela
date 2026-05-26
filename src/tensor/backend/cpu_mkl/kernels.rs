@@ -1,10 +1,8 @@
-use core::slice;
 use std::iter::zip;
-use std::process::Output;
 
 use crate::tensor::Dimension;
+use crate::tensor::backend::common::clone_to_buffer;
 use crate::tensor::definitions::{ChunkedIter, NumberLike};
-use crate::tensor::iter::ChunkedContiguousIter;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKindScalar;
 use crate::tensor::storage::{Storage, TensorData};
@@ -23,18 +21,6 @@ pub(crate) struct CommonBLASOps<T> {
     pub inv: unsafe extern "C" fn(i32, *const T, *mut T),
     pub tanh: unsafe extern "C" fn(i32, *const T, *mut T),
 }
-
-#[inline]
-pub(crate) fn clone_to_buffer<T: Copy>(tensor: &TensorData<T>, mut buffer: Vec<T>) -> Vec<T> {
-    branch_fast_iter!(tensor.fast_iter() => iter, {
-        for (i, el) in iter.cloned().enumerate() {
-            buffer[i] = el;
-        }
-
-        buffer
-    })
-}
-
 #[inline]
 pub(crate) fn fill_buffer<T: Clone>(buffer: *mut T, len: usize, value: T) {
     let mut i = buffer;
@@ -143,7 +129,7 @@ fn compute_non_cont_scalar_op<T: NumberLike, F: Fn(T, T) -> T>(
 ) {
     // TODO: For big ops tensors rayon would be ideal.
     let mut it: ChunkedIter<'_, T> = input.packed_iter(PACKING_BUFFER_SIZE);
-    while let Some(chunk) = it.next() {
+    while let Some(chunk) = it.next_stream() {
         let n = chunk.packing_buffer.len();
         let pos = unsafe { output.add(chunk.absolute_buffer_position) };
         let mut ops_iter = ops.iter();
@@ -294,7 +280,7 @@ pub(crate) fn compute_elementwise_tensor_tensor<T: Copy + Default>(
         (true, false) => {
             let mut it: ChunkedIter<'_, T> = inputs[1].packed_iter(PACKING_BUFFER_SIZE);
 
-            while let Some(chunk) = it.next() {
+            while let Some(chunk) = it.next_stream() {
                 let n = chunk.packing_buffer.len();
                 let input_ptr = unsafe {
                     inputs[0]
@@ -322,7 +308,7 @@ pub(crate) fn compute_elementwise_tensor_tensor<T: Copy + Default>(
         (false, true) => {
             let mut it: ChunkedIter<'_, T> = inputs[0].packed_iter(PACKING_BUFFER_SIZE);
 
-            while let Some(chunk) = it.next() {
+            while let Some(chunk) = it.next_stream() {
                 let n = chunk.packing_buffer.len();
                 let input_ptr = unsafe {
                     inputs[1]
@@ -353,7 +339,7 @@ pub(crate) fn compute_elementwise_tensor_tensor<T: Copy + Default>(
                 .packed_iter(PACKING_BUFFER_SIZE)
                 .zip(inputs[1].packed_iter(PACKING_BUFFER_SIZE));
 
-            while let Some((chunk1, chunk2)) = it.next() {
+            while let Some((chunk1, chunk2)) = it.next_stream() {
                 let n = chunk1.packing_buffer.len();
                 let output_ptr = unsafe {
                     output_buffer
@@ -399,7 +385,7 @@ pub(crate) fn compute_elementwise_tensor_tensor_inplace<T: Copy + Default>(
         }
     } else {
         let mut it: ChunkedIter<'_, T> = inputs[0].packed_iter(PACKING_BUFFER_SIZE);
-        while let Some(chunk) = it.next() {
+        while let Some(chunk) = it.next_stream() {
             let n = chunk.packing_buffer.len() as i32;
             let out_ptr = unsafe { output_ptr.add(chunk.absolute_buffer_position) };
             if other_is_left {
@@ -428,7 +414,7 @@ pub(crate) fn compute_elementwise_tensor_tensor_inplace<T: Copy + Default>(
 }
 
 // TODO: Add a variant for tensors contiguous at the second dimension.
-pub(crate) fn cpu_compute_matmul_sum_scaled<T: Copy>(
+pub(crate) fn compute_matmul_sum<T: Copy>(
     inputs: &[TensorData<T>],
     alpha: T,
     beta: T,
@@ -533,7 +519,7 @@ pub(crate) fn cpu_compute_matmul_sum_scaled<T: Copy>(
 }
 
 #[inline]
-fn cpu_compute_op_tensor<T: NumberLike, F: Fn(T, T) -> T>(
+fn compute_op_tensor<T: NumberLike, F: Fn(T, T) -> T>(
     inputs: &[TensorData<T>],
     output_buffer: &mut Vec<T>,
     start_value: T,
@@ -549,39 +535,39 @@ fn cpu_compute_op_tensor<T: NumberLike, F: Fn(T, T) -> T>(
 }
 
 #[inline]
-pub(crate) fn cpu_compute_sum_tensor<T: NumberLike>(
+pub(crate) fn compute_sum_tensor<T: NumberLike>(
     inputs: &[TensorData<T>],
     mut output_buffer: Vec<T>,
     output_layout: &Layout,
     start_value: T,
 ) -> TensorData<T> {
-    cpu_compute_op_tensor(inputs, &mut output_buffer, start_value, |a, b| a + b);
+    compute_op_tensor(inputs, &mut output_buffer, start_value, |a, b| a + b);
 
     TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
 }
 
 #[inline]
-pub(crate) fn cpu_compute_max_tensor<T: NumberLike, F: Fn(T, T) -> T>(
+pub(crate) fn compute_max_tensor<T: NumberLike, F: Fn(T, T) -> T>(
     inputs: &[TensorData<T>],
     mut output_buffer: Vec<T>,
     output_layout: &Layout,
     start_value: T,
     max: F,
 ) -> TensorData<T> {
-    cpu_compute_op_tensor(inputs, &mut output_buffer, start_value, max);
+    compute_op_tensor(inputs, &mut output_buffer, start_value, max);
 
     TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
 }
 
 #[inline]
-pub(crate) fn cpu_compute_mean_tensor<T: NumberLike, F: FnOnce(T, usize) -> T>(
+pub(crate) fn compute_mean_tensor<T: NumberLike, F: FnOnce(T, usize) -> T>(
     inputs: &[TensorData<T>],
     mut output_buffer: Vec<T>,
     output_layout: &Layout,
     start_value: T,
     div: F,
 ) -> TensorData<T> {
-    cpu_compute_op_tensor(inputs, &mut output_buffer, start_value, |a, b| a + b);
+    compute_op_tensor(inputs, &mut output_buffer, start_value, |a, b| a + b);
     output_buffer[0] = div(output_buffer[0], inputs[0].layout().len());
 
     TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
@@ -589,7 +575,7 @@ pub(crate) fn cpu_compute_mean_tensor<T: NumberLike, F: FnOnce(T, usize) -> T>(
 
 // TODO: Confirm that the contiguous path can vectorize
 // TODO: Benchmark if the contiguous path can be made faster by reducing striding code
-fn cpu_compute_op_axis_tensor<T: NumberLike, F: Fn(T, T) -> T>(
+fn compute_op_axis_tensor<T: NumberLike, F: Fn(T, T) -> T>(
     inputs: &[TensorData<T>],
     axis: usize,
     output_buffer: &mut Vec<T>,
@@ -625,20 +611,20 @@ fn cpu_compute_op_axis_tensor<T: NumberLike, F: Fn(T, T) -> T>(
 }
 
 #[inline]
-pub(crate) fn cpu_compute_sum_axis_tensor<T: NumberLike>(
+pub(crate) fn compute_sum_axis_tensor<T: NumberLike>(
     inputs: &[TensorData<T>],
     axis: usize,
     mut output_buffer: Vec<T>,
     output_layout: &Layout,
     start_value: T,
 ) -> TensorData<T> {
-    cpu_compute_op_axis_tensor(inputs, axis, &mut output_buffer, start_value, |a, b| a + b);
+    compute_op_axis_tensor(inputs, axis, &mut output_buffer, start_value, |a, b| a + b);
 
     TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
 }
 
 #[inline]
-pub(crate) fn cpu_compute_max_axis_tensor<T: NumberLike, F: Fn(T, T) -> T>(
+pub(crate) fn compute_max_axis_tensor<T: NumberLike, F: Fn(T, T) -> T>(
     inputs: &[TensorData<T>],
     axis: usize,
     mut output_buffer: Vec<T>,
@@ -646,13 +632,13 @@ pub(crate) fn cpu_compute_max_axis_tensor<T: NumberLike, F: Fn(T, T) -> T>(
     start_value: T,
     max: F,
 ) -> TensorData<T> {
-    cpu_compute_op_axis_tensor(inputs, axis, &mut output_buffer, start_value, max);
+    compute_op_axis_tensor(inputs, axis, &mut output_buffer, start_value, max);
 
     TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
 }
 
 #[inline]
-pub(crate) fn cpu_compute_mean_axis_tensor<T: NumberLike, F: Fn(T, usize) -> T>(
+pub(crate) fn compute_mean_axis_tensor<T: NumberLike, F: Fn(T, usize) -> T>(
     inputs: &[TensorData<T>],
     axis: usize,
     mut output_buffer: Vec<T>,
@@ -660,7 +646,7 @@ pub(crate) fn cpu_compute_mean_axis_tensor<T: NumberLike, F: Fn(T, usize) -> T>(
     start_value: T,
     div: F,
 ) -> TensorData<T> {
-    cpu_compute_op_axis_tensor(inputs, axis, &mut output_buffer, start_value, |a, b| a + b);
+    compute_op_axis_tensor(inputs, axis, &mut output_buffer, start_value, |a, b| a + b);
 
     let n = inputs[0].shape()[axis];
     for el in output_buffer.iter_mut() {

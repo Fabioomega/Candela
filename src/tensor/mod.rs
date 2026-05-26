@@ -5,17 +5,16 @@ extern crate intel_mkl_sys;
 #[macro_use]
 mod convenience;
 
-mod definitions;
+pub(crate) mod backend;
+pub(crate) mod definitions;
 pub mod errors;
-mod impl_generics;
 mod internals;
 mod iter;
 mod macros;
 mod mem_formats;
-mod mkl_extension;
 mod planner;
 mod storage;
-mod traits;
+pub(crate) mod traits;
 
 pub(crate) mod graph;
 pub(crate) mod ops;

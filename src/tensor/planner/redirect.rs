@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 
+use crate::tensor::backend::Backend;
 use crate::tensor::graph::NodeKind;
 use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::planner::get_id;
@@ -42,9 +43,9 @@ pub(crate) enum RedirectKind {
 /// seen for its input, [`RedirectKind::AlreadyRedirectingTo`] if a canonical redirect
 /// for the same input already exists, or [`RedirectKind::NoRedirect`] otherwise.
 #[inline]
-pub(crate) fn is_a_redirect<T: Copy>(
+pub(crate) fn is_a_redirect<T, B: Backend>(
     op: &OpKind<T>,
-    inputs: &[NodeKind<T>],
+    inputs: &[NodeKind<T, B>],
     id_redirect: &HashMap<usize, usize>,
 ) -> RedirectKind {
     match op {
@@ -62,6 +63,13 @@ pub(crate) fn is_a_redirect<T: Copy>(
                 .map_or(RedirectKind::RedirectFrom(id), |id| {
                     RedirectKind::AlreadyRedirectingTo(*id)
                 })
+        }
+        // Skips the NoOp computation as it makes the op redirect to the father.
+        // The compute pathways for NoOp still exists as a safeguard.
+        OpKind::NoOp => {
+            let id = get_id(&inputs[0]);
+            let target = id_redirect.get(&id).copied().unwrap_or(id);
+            RedirectKind::AlreadyRedirectingTo(target)
         }
         _ => RedirectKind::NoRedirect,
     }

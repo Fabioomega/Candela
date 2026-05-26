@@ -1,10 +1,11 @@
 use super::*;
+use crate::tensor::backend::DefaultBackend;
 use crate::tensor::graph::TensorGraphEdge;
 use crate::tensor::ops::def_op::Sign;
 use crate::tensor::storage::TensorData;
 use std::sync::Arc;
 
-fn edge(val: f64, shape: &[usize]) -> NodeKind<f64> {
+fn edge(val: f64, shape: &[usize]) -> NodeKind<f64, DefaultBackend> {
     NodeKind::Edge(Arc::new(TensorGraphEdge::from_tensor_data(
         TensorData::from_scalar(val, shape),
     )))
@@ -27,8 +28,14 @@ fn assert_fused_scalar<'a>(op: &'a OpKind<f64>, expected_len: usize) -> &'a [OpK
 fn assert_axby(op: &OpKindScalar<f64>, expected_a: f64, expected_b: f64) {
     match op {
         OpKindScalar::AxBy(a, b) => {
-            assert!((*a - expected_a).abs() < 1e-12, "a: expected {expected_a}, got {a}");
-            assert!((*b - expected_b).abs() < 1e-12, "b: expected {expected_b}, got {b}");
+            assert!(
+                (*a - expected_a).abs() < 1e-12,
+                "a: expected {expected_a}, got {a}"
+            );
+            assert!(
+                (*b - expected_b).abs() < 1e-12,
+                "b: expected {expected_b}, got {b}"
+            );
         }
         _ => panic!("expected AxBy"),
     }

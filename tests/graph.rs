@@ -13,7 +13,7 @@ fn shared_node_computed_once<T: FloatLikeTensorElement>(#[case] _t: T) {
     // t shared across two branches: t*2 - t = t
     let t: Tensor<T> = arange!(4);
     let p = t.as_promise();
-    let lhs = &p * (T::ONE + T::ONE);
+    let lhs = &p * T::from_f64(2.0);
     let rhs = p.clone();
     let result = (lhs - rhs).materialize();
     // (2x - x) = x = [0, 1, 2, 3]
@@ -27,8 +27,8 @@ fn diamond_graph_correctness<T: FloatLikeTensorElement>(#[case] _t: T) {
     // t shared: lhs = t * 2, rhs = t + 1, result = lhs - rhs = (2x) - (x+1) = x - 1
     let t: Tensor<T> = arange!(4);
     let p = t.as_promise();
-    let lhs = &p * (T::ONE + T::ONE);
-    let rhs = &p + T::ONE;
+    let lhs = &p * T::from_f64(2.0);
+    let rhs = &p + T::from_f64(1.0);
     let result = (lhs - rhs).materialize();
     // [0,1,2,3] → [-1, 0, 1, 2]
     assert_approx_eq(result.data(), &[-1.0, 0.0, 1.0, 2.0]);
@@ -42,9 +42,9 @@ fn diamond_graph_correctness<T: FloatLikeTensorElement>(#[case] _t: T) {
 fn cached_promise_stable_results<T: FloatLikeTensorElement>(#[case] _t: T) {
     // Two separate materializations using the same cached node yield the same data
     let t: Tensor<T> = arange!(4);
-    let cached = (t + T::ONE).cache();
-    let r1 = (&cached * (T::ONE + T::ONE)).materialize();
-    let r2 = (&cached * (T::ONE + T::ONE)).materialize();
+    let cached = (t + T::from_f64(1.0)).cache();
+    let r1 = (&cached * T::from_f64(2.0)).materialize();
+    let r2 = (&cached * T::from_f64(2.0)).materialize();
     assert_eq!(r1.data(), r2.data());
 }
 
@@ -70,11 +70,10 @@ fn cached_promise_feeds_two_downstream_graphs<T: FloatLikeTensorElement>(#[case]
     // cached = arange(4) + 10 = [10,11,12,13]
     // r1 = cached * 2 = [20,22,24,26]
     // r2 = cached + 1 = [11,12,13,14]
-    let ten = T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE + T::ONE;
     let t: Tensor<T> = arange!(4);
-    let cached = (t + ten).cache();
-    let r1 = (&cached * (T::ONE + T::ONE)).materialize();
-    let r2 = (&cached + T::ONE).materialize();
+    let cached = (t + T::from_f64(10.0)).cache();
+    let r1 = (&cached * T::from_f64(2.0)).materialize();
+    let r2 = (&cached + T::from_f64(1.0)).materialize();
     assert_approx_eq(r1.data(), &[20.0, 22.0, 24.0, 26.0]);
     assert_approx_eq(r2.data(), &[11.0, 12.0, 13.0, 14.0]);
 }

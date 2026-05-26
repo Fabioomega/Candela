@@ -21,9 +21,9 @@ macro_rules! ones {
 
 #[allow(private_bounds)]
 pub mod arange {
-    use crate::tensor::ops::ComputeWrapperSpec;
-    use crate::tensor::traits::FromIndex;
     use crate::tensor::Tensor;
+    use crate::tensor::backend::{ComputeFor, DefaultBackend};
+    use crate::tensor::traits::FromIndex;
 
     #[macro_export]
     macro_rules! arange {
@@ -40,22 +40,18 @@ pub mod arange {
         };
     }
 
-    pub fn _arange_default<T: FromIndex + ComputeWrapperSpec>(size: usize) -> Tensor<T> {
+    pub fn _arange_default<T: FromIndex + ComputeFor<DefaultBackend>>(size: usize) -> Tensor<T> {
         let v: Vec<T> = (0..size).map(T::from_index).collect();
         Tensor::from_vec(v, &[size])
     }
 
-    pub fn _arange_start<T: FromIndex + ComputeWrapperSpec>(start: usize, end: usize) -> Tensor<T> {
+    pub fn _arange_start<T: FromIndex + ComputeFor<DefaultBackend>>(start: usize, end: usize) -> Tensor<T> {
         let v: Vec<T> = (start..end).map(T::from_index).collect();
         let size = v.len();
         Tensor::from_vec(v, &[1, size])
     }
 
-    pub fn _arange_step<T: FromIndex + ComputeWrapperSpec>(
-        start: usize,
-        end: usize,
-        step: usize,
-    ) -> Tensor<T> {
+    pub fn _arange_step<T: FromIndex + ComputeFor<DefaultBackend>>(start: usize, end: usize, step: usize) -> Tensor<T> {
         let v: Vec<T> = (start..end).step_by(step).map(T::from_index).collect();
         let size = v.len();
         Tensor::from_vec(v, &[size])
@@ -76,15 +72,12 @@ pub mod arange {
         };
     }
 
-    pub fn _arange_default_shape<T: FromIndex + ComputeWrapperSpec>(
-        size: usize,
-        shape: &[usize],
-    ) -> Tensor<T> {
+    pub fn _arange_default_shape<T: FromIndex + ComputeFor<DefaultBackend>>(size: usize, shape: &[usize]) -> Tensor<T> {
         let v: Vec<T> = (0..size).map(T::from_index).collect();
         Tensor::from_vec(v, shape)
     }
 
-    pub fn _arange_start_shape<T: FromIndex + ComputeWrapperSpec>(
+    pub fn _arange_start_shape<T: FromIndex + ComputeFor<DefaultBackend>>(
         start: usize,
         end: usize,
         shape: &[usize],
@@ -93,7 +86,7 @@ pub mod arange {
         Tensor::from_vec(v, shape)
     }
 
-    pub fn _arange_step_shape<T: FromIndex + ComputeWrapperSpec>(
+    pub fn _arange_step_shape<T: FromIndex + ComputeFor<DefaultBackend>>(
         start: usize,
         end: usize,
         step: usize,

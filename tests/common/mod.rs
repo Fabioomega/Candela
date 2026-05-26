@@ -16,3 +16,16 @@ pub fn assert_shape<D: Dimension>(t: &D, expected: &[usize]) {
 pub fn tensor_data<T: FloatLikeTensorElement>(t: &Tensor<T>) -> Vec<T> {
     t.data().clone()
 }
+
+/// Cast an `f64` slice to a typed `Vec<T>` via `T::from_f64`. Loses precision
+/// for `T = f32` if values don't fit, which is fine for the small literals
+/// used throughout the test suite.
+pub fn cast<T: FloatLikeTensorElement>(values: &[f64]) -> Vec<T> {
+    values.iter().copied().map(T::from_f64).collect()
+}
+
+/// Build a `Tensor<T>` from an `f64` slice and shape — the typed equivalent
+/// of writing `Tensor::from_slice(&[T::from_f64(...), ...], shape)`.
+pub fn tensor_of<T: FloatLikeTensorElement>(values: &[f64], shape: &[usize]) -> Tensor<T> {
+    Tensor::from_slice(&cast::<T>(values), shape)
+}

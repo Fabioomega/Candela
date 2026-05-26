@@ -3,15 +3,15 @@ use std::iter::zip;
 use std::ops::Index;
 use std::sync::Arc;
 
+use crate::SliceRange;
 use crate::errors::OpError;
 use crate::tensor::definitions::ChunkedIter;
 use crate::tensor::iter::{
     ChunkedContiguousIter, ChunkedSliceIter, ContiguousIter, InformedSliceIter, MutSliceIter,
-    SliceIter,
+    SliceIter, StepInfo,
 };
-use crate::tensor::mem_formats::layout::Layout;
+use crate::tensor::mem_formats::layout::{Layout, validate_shape};
 use crate::tensor::traits::Dimension;
-use crate::{SliceRange, impl_display};
 
 pub enum IterImpl<C, N> {
     Contiguous(C),
@@ -21,11 +21,11 @@ pub enum IterImpl<C, N> {
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct Storage<T: Copy> {
+pub struct Storage<T> {
     pub(crate) buffer: Arc<Vec<T>>,
 }
 
-impl<T: Copy> Storage<T> {
+impl<T: Clone> Storage<T> {
     #[inline]
     pub fn from_scalar(scalar: T, len: usize) -> Self {
         Self {
@@ -80,7 +80,7 @@ impl<T: Copy> Storage<T> {
     }
 }
 
-impl<T: Copy> Clone for Storage<T> {
+impl<T: Clone> Clone for Storage<T> {
     fn clone(&self) -> Self {
         Storage::from_arc(self.buffer.clone())
     }
@@ -89,12 +89,12 @@ impl<T: Copy> Clone for Storage<T> {
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
-pub struct TensorData<T: Copy> {
+pub struct TensorData<T> {
     pub(crate) storage: Storage<T>,
     layout: Layout,
 }
 
-impl<T: Copy> TensorData<T> {
+impl<T: Clone> TensorData<T> {
     #[inline]
     pub fn new(storage: Storage<T>, layout: Layout) -> Self {
         Self { storage, layout }
@@ -102,6 +102,7 @@ impl<T: Copy> TensorData<T> {
 
     #[inline]
     pub fn from_scalar(scalar: T, shape: &[usize]) -> Self {
+        validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
         let len: usize = shape.iter().product();
 
         Self {
@@ -112,6 +113,7 @@ impl<T: Copy> TensorData<T> {
 
     #[inline]
     pub fn from_arc(buffer: Arc<Vec<T>>, shape: &[usize]) -> Self {
+        validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
         Self {
             storage: Storage::from_arc(buffer),
             layout: Layout::from_shape(shape, 0),
@@ -120,6 +122,7 @@ impl<T: Copy> TensorData<T> {
 
     #[inline]
     pub fn from_vec(vector: Vec<T>, shape: &[usize], offset: usize) -> Self {
+        validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
         let expected: usize = shape.iter().product();
         assert!(
             vector.len() == expected,
@@ -140,6 +143,7 @@ impl<T: Copy> TensorData<T> {
     where
         I: IntoIterator<Item = T>,
     {
+        validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
         let vector = std::vec::Vec::from_iter(iter);
         Self::from_vec(vector, shape, 0)
     }
@@ -192,7 +196,11 @@ impl<T: Copy> TensorData<T> {
 
     #[inline]
     pub unsafe fn iter_as_layout<'a>(&'a self, layout: &'a Layout) -> SliceIter<'a, T> {
-        debug_assert!(self.layout().len() == layout.len());
+        // This is a rough check. It does a rough guard on the layout that is being iterated over.
+        // The correct way to use this is my transmuting the layout the tensor already have, otherwise UB may happen.
+        debug_assert!(
+            self.layout().len() >= layout.len() && self.layout.offset() >= layout.offset()
+        );
         SliceIter::new(&self.storage.buffer, layout.len(), layout)
     }
 
@@ -268,7 +276,7 @@ impl<T: Copy> TensorData<T> {
     }
 }
 
-impl<T: Copy + Default> TensorData<T> {
+impl<T: Clone + Default> TensorData<T> {
     #[inline]
     pub fn packed_iter(&self, packing_buffer_size: usize) -> ChunkedIter<'_, T> {
         ChunkedSliceIter::new(self.iter().cloned(), packing_buffer_size)
@@ -290,7 +298,7 @@ impl<T: Copy + Default> TensorData<T> {
     }
 }
 
-impl<T: Copy> Clone for TensorData<T> {
+impl<T: Clone> Clone for TensorData<T> {
     fn clone(&self) -> Self {
         Self {
             storage: self.storage.clone(),
@@ -299,7 +307,7 @@ impl<T: Copy> Clone for TensorData<T> {
     }
 }
 
-impl<T: Copy> Dimension for TensorData<T> {
+impl<T> Dimension for TensorData<T> {
     #[inline]
     fn layout(&self) -> &Layout {
         &self.layout
@@ -336,4 +344,47 @@ where
     }
 }
 
-impl_display!(TensorData<T>);
+impl<T: std::fmt::Display + Copy> std::fmt::Display for TensorData<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut indent = 0;
+        let mut in_seq = false;
+
+        debug_assert!(!self.shape().is_empty(), "TensorData rank must be >= 1");
+        let last = self.shape().len() - 1;
+
+        for step in self.informed_iter() {
+            match step {
+                StepInfo::EnterDimension(dim) => {
+                    write!(f, "{:indent$}[", "", indent = indent)?;
+                    indent += 2;
+
+                    if dim != last {
+                        write!(f, "\n")?;
+                    }
+                }
+                StepInfo::ExitDimension(dim) => {
+                    indent -= 2;
+                    in_seq = false;
+
+                    if dim != last {
+                        write!(f, "{:indent$}", "", indent = indent)?;
+                    }
+
+                    write!(f, "]\n")?;
+                }
+                StepInfo::Value(v) => {
+                    if in_seq {
+                        write!(f, ", ")?;
+                    }
+
+                    write!(f, "{:>4}", v)?;
+
+                    in_seq = true;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
+    }
+}

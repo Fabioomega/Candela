@@ -2,37 +2,37 @@
 use std::iter::zip;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
-use crate::tensor::definitions::NumberLike;
+use crate::tensor::backend::Backend;
 use crate::tensor::errors::OpError;
 use crate::tensor::graph::NodeKind;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::mem_formats::slice::SliceRange;
-use crate::tensor::ops::ComputeWrapperSpec;
-use crate::tensor::ops::TensorElement;
 use crate::tensor::ops::capabilities::{CanMatMul, FloatLike, NumericOp};
 use crate::tensor::ops::compute_layout;
 use crate::tensor::ops::def_op::{OpKind, OpKindScalar};
-use crate::tensor::traits::Promising;
+use crate::tensor::traits::Numeric;
 use crate::tensor::{CachedTensorPromise, Tensor, TensorPromise};
 
 //////////////////////////////////////////////////////////////
 
 trait ComputationDef {
-    type Output: TensorElement;
+    type Output: Numeric;
+    type Back: Backend;
 
-    fn create_node(&self) -> NodeKind<Self::Output>;
+    fn create_node(&self) -> NodeKind<Self::Output, Self::Back>;
     fn layout(&self) -> &Layout;
 }
 
-struct NodeWithLayout<T: TensorElement> {
-    node: NodeKind<T>,
+struct NodeWithLayout<T: Numeric, B: Backend> {
+    node: NodeKind<T, B>,
     layout: Layout,
 }
 
-impl<T: TensorElement> ComputationDef for NodeWithLayout<T> {
+impl<T: Numeric, B: Backend> ComputationDef for NodeWithLayout<T, B> {
     type Output = T;
+    type Back = B;
 
-    fn create_node(&self) -> NodeKind<T> {
+    fn create_node(&self) -> NodeKind<T, B> {
         self.node.clone()
     }
 
@@ -47,12 +47,16 @@ impl<T: TensorElement> ComputationDef for NodeWithLayout<T> {
 // More specific check are done after the broadcast tries to happen.
 #[inline]
 fn find_broadcast_target(l1: &Layout, l2: &Layout) -> Vec<usize> {
-    let (largest, smallest) = if l1.len() >= l2.len() {
+    let (largest, smallest) = if l1.shape().len() >= l2.shape().len() {
         (l1, l2)
     } else {
         (l2, l1)
     };
     let largest_size = largest.shape().len();
+    debug_assert!(
+        largest.shape().len() >= smallest.shape().len(),
+        "broadcast helper precondition violated"
+    );
     let diff = largest.shape().len() - smallest.shape().len();
 
     let mut new_shape = vec![0_usize; largest_size];
@@ -70,12 +74,16 @@ fn find_broadcast_target(l1: &Layout, l2: &Layout) -> Vec<usize> {
 
 #[inline]
 fn find_broadcast_target_until_batch(l1: &Layout, l2: &Layout) -> Option<(Vec<usize>, Vec<usize>)> {
-    let (largest, smallest) = if l1.len() >= l2.len() {
+    let (largest, smallest) = if l1.shape().len() >= l2.shape().len() {
         (l1, l2)
     } else {
         (l2, l1)
     };
     let largest_size = largest.shape().len();
+    debug_assert!(
+        largest.shape().len() >= smallest.shape().len(),
+        "matmul-batch broadcast helper precondition violated"
+    );
     let diff = largest.shape().len() - smallest.shape().len();
     let smallest_diff: usize = 2.min(smallest.shape().len());
 
@@ -113,10 +121,17 @@ fn find_broadcast_target_until_batch(l1: &Layout, l2: &Layout) -> Option<(Vec<us
 fn is_blas_ready<D>(source: &D) -> bool
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let layout = source.layout();
-    layout.is_last_axes_transposed() || layout.is_contiguous()
+    if D::Back::SUPPORTS_NON_CONTIGUOUS_MATMUL {
+        let last_axis = layout.stride().len() - 1;
+        return layout.stride()[last_axis] != 0 && layout.stride()[last_axis - 1] != 0;
+    }
+
+    // We don't have to check if the tensor is contiguous because, if they are, the AsContiguous node will not be added.
+    // See `impl_as_contiguous` for details.
+    // layout.is_contiguous() ||
+    D::Back::SUPPORTS_2D_TRANSPOSED_MATMUL && layout.is_last_axes_transposed()
 }
 
 #[inline]
@@ -129,18 +144,18 @@ fn apply_transform_to_pair<D1, D2, F, N1, N2, L>(
     compute_output_layout: L,
 ) -> Result<
     (
-        NodeWithLayout<D1::Output>,
-        NodeWithLayout<D1::Output>,
+        NodeWithLayout<D1::Output, D1::Back>,
+        NodeWithLayout<D1::Output, D1::Back>,
         Layout,
     ),
     OpError,
 >
 where
     D1: ComputationDef,
-    D2: ComputationDef<Output = D1::Output>,
+    D2: ComputationDef<Output = D1::Output, Back = D1::Back>,
     F: FnOnce(&D1, &D2) -> (bool, bool),
-    N1: FnOnce(&D1) -> Result<TensorPromise<D1::Output>, OpError>,
-    N2: FnOnce(&D2) -> Result<TensorPromise<D1::Output>, OpError>,
+    N1: FnOnce(&D1) -> Result<TensorPromise<D1::Output, D1::Back>, OpError>,
+    N2: FnOnce(&D2) -> Result<TensorPromise<D1::Output, D1::Back>, OpError>,
     L: FnOnce(&Layout, &Layout) -> Result<Layout, OpError>,
 {
     let (apply_l, apply_r) = filter(lhs, rhs);
@@ -202,10 +217,9 @@ where
 
 //////////////////////////////////////////////////////////////
 
-fn view_impl<D>(source: &D, shape: &[usize]) -> Result<TensorPromise<D::Output>, OpError>
+fn view_impl<D>(source: &D, shape: &[usize]) -> Result<TensorPromise<D::Output, D::Back>, OpError>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let input = Box::new([source.create_node()]);
     let layout = source.layout().view(shape)?;
@@ -217,10 +231,12 @@ where
     ))
 }
 
-fn broadcast_impl<D>(source: &D, shape: &[usize]) -> Result<TensorPromise<D::Output>, OpError>
+fn broadcast_impl<D>(
+    source: &D,
+    shape: &[usize],
+) -> Result<TensorPromise<D::Output, D::Back>, OpError>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let input = Box::new([source.create_node()]);
     let layout = source.layout().broadcast(shape)?;
@@ -232,12 +248,14 @@ where
     ))
 }
 
-fn reshape_impl<D>(source: &D, shape: &[usize]) -> Result<TensorPromise<D::Output>, OpError>
+fn reshape_impl<D>(
+    source: &D,
+    shape: &[usize],
+) -> Result<TensorPromise<D::Output, D::Back>, OpError>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
-    let cont: TensorPromise<D::Output> = as_contiguous_impl(source);
+    let cont: TensorPromise<D::Output, D::Back> = as_contiguous_impl(source);
     let layout = cont.graph.layout.view(shape)?;
     let input = Box::new([NodeKind::Node(cont.graph)]);
 
@@ -248,10 +266,12 @@ where
     ))
 }
 
-fn slice_impl<D>(source: &D, range: &[SliceRange]) -> Result<TensorPromise<D::Output>, OpError>
+fn slice_impl<D>(
+    source: &D,
+    range: &[SliceRange],
+) -> Result<TensorPromise<D::Output, D::Back>, OpError>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let input = Box::new([source.create_node()]);
     let layout = source.layout().slice(range)?;
@@ -263,20 +283,21 @@ where
     ))
 }
 
-fn transpose_impl<D>(source: &D) -> TensorPromise<D::Output>
+fn transpose_impl<D>(source: &D) -> TensorPromise<D::Output, D::Back>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let input = Box::new([source.create_node()]);
 
     unsafe { TensorPromise::new(OpKind::Transpose, input).unwrap_unchecked() }
 }
 
-fn transpose_axes_impl<D>(source: &D, axes: &[usize]) -> Result<TensorPromise<D::Output>, OpError>
+fn transpose_axes_impl<D>(
+    source: &D,
+    axes: &[usize],
+) -> Result<TensorPromise<D::Output, D::Back>, OpError>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let input = Box::new([source.create_node()]);
     let layout = source.layout().transpose_axes(axes)?;
@@ -288,22 +309,24 @@ where
     ))
 }
 
-fn as_contiguous_impl<D>(source: &D) -> TensorPromise<D::Output>
+fn as_contiguous_impl<D>(source: &D) -> TensorPromise<D::Output, D::Back>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let node = source.create_node();
+    if source.layout().is_contiguous() {
+        return unsafe { TensorPromise::new(OpKind::NoOp, Box::new([node])).unwrap_unchecked() };
+    }
 
     unsafe { TensorPromise::new(OpKind::AsContiguous, Box::new([node])).unwrap_unchecked() }
 }
 
 //////////////////////////////////////////////////////////////
 
-fn add_scalar_impl<D>(lhs: &D, rhs: D::Output) -> TensorPromise<D::Output>
+fn add_scalar_impl<D>(lhs: &D, rhs: D::Output) -> TensorPromise<D::Output, D::Back>
 where
     D: ComputationDef,
-    D::Output: ComputeWrapperSpec,
+    D::Output: Numeric,
 {
     unsafe {
         TensorPromise::new(
@@ -314,10 +337,10 @@ where
     }
 }
 
-fn sub_scalar_impl<D>(lhs: &D, rhs: D::Output) -> TensorPromise<D::Output>
+fn sub_scalar_impl<D>(lhs: &D, rhs: D::Output) -> TensorPromise<D::Output, D::Back>
 where
     D: ComputationDef,
-    D::Output: ComputeWrapperSpec + Neg<Output = D::Output>,
+    D::Output: Numeric + Neg<Output = D::Output>,
 {
     unsafe {
         TensorPromise::new(
@@ -328,10 +351,10 @@ where
     }
 }
 
-fn mul_scalar_impl<D>(lhs: &D, rhs: D::Output) -> TensorPromise<D::Output>
+fn mul_scalar_impl<D>(lhs: &D, rhs: D::Output) -> TensorPromise<D::Output, D::Back>
 where
     D: ComputationDef,
-    D::Output: ComputeWrapperSpec,
+    D::Output: Numeric,
 {
     unsafe {
         TensorPromise::new(
@@ -342,11 +365,15 @@ where
     }
 }
 
-fn div_scalar_impl<D>(lhs: &D, rhs: D::Output) -> TensorPromise<D::Output>
+fn div_scalar_impl<D>(lhs: &D, rhs: D::Output) -> TensorPromise<D::Output, D::Back>
 where
     D: ComputationDef,
-    D::Output: ComputeWrapperSpec,
+    D::Output: Numeric,
 {
+    if rhs == D::Output::SUM_NEUTRAL {
+        panic!("cannot divide by zero. stop.")
+    }
+
     unsafe {
         TensorPromise::new(
             OpKind::ScalarOp(OpKindScalar::AxBy(
@@ -359,30 +386,27 @@ where
     }
 }
 
-fn exp_impl<D>(source: &D) -> TensorPromise<D::Output>
+fn exp_impl<D>(source: &D) -> TensorPromise<D::Output, D::Back>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let input = Box::new([source.create_node()]);
 
     unsafe { TensorPromise::new(OpKind::ScalarOp(OpKindScalar::Exp), input).unwrap_unchecked() }
 }
 
-fn ln_impl<D>(source: &D) -> TensorPromise<D::Output>
+fn ln_impl<D>(source: &D) -> TensorPromise<D::Output, D::Back>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let input = Box::new([source.create_node()]);
 
     unsafe { TensorPromise::new(OpKind::ScalarOp(OpKindScalar::Ln), input).unwrap_unchecked() }
 }
 
-fn log2_impl<D>(source: &D) -> TensorPromise<D::Output>
+fn log2_impl<D>(source: &D) -> TensorPromise<D::Output, D::Back>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let input = Box::new([source.create_node()]);
 
@@ -391,11 +415,11 @@ where
 
 //////////////////////////////////////////////////////////////
 
-fn add_tensor_impl<D1, D2>(lhs: &D1, rhs: &D2) -> TensorPromise<D1::Output>
+fn add_tensor_impl<D1, D2>(lhs: &D1, rhs: &D2) -> TensorPromise<D1::Output, D1::Back>
 where
     D1: ComputationDef,
-    D2: ComputationDef<Output = D1::Output>,
-    D1::Output: ComputeWrapperSpec,
+    D2: ComputationDef<Output = D1::Output, Back = D1::Back>,
+    D1::Output: Numeric,
 {
     let target = find_broadcast_target(lhs.layout(), rhs.layout());
 
@@ -420,11 +444,11 @@ where
     )
 }
 
-fn sub_tensor_impl<D1, D2>(lhs: &D1, rhs: &D2) -> TensorPromise<D1::Output>
+fn sub_tensor_impl<D1, D2>(lhs: &D1, rhs: &D2) -> TensorPromise<D1::Output, D1::Back>
 where
     D1: ComputationDef,
-    D2: ComputationDef<Output = D1::Output>,
-    D1::Output: ComputeWrapperSpec,
+    D2: ComputationDef<Output = D1::Output, Back = D1::Back>,
+    D1::Output: Numeric,
 {
     let target = find_broadcast_target(lhs.layout(), rhs.layout());
 
@@ -449,11 +473,11 @@ where
     )
 }
 
-fn mul_tensor_impl<D1, D2>(lhs: &D1, rhs: &D2) -> TensorPromise<D1::Output>
+fn mul_tensor_impl<D1, D2>(lhs: &D1, rhs: &D2) -> TensorPromise<D1::Output, D1::Back>
 where
     D1: ComputationDef,
-    D2: ComputationDef<Output = D1::Output>,
-    D1::Output: ComputeWrapperSpec,
+    D2: ComputationDef<Output = D1::Output, Back = D1::Back>,
+    D1::Output: Numeric,
 {
     let target = find_broadcast_target(lhs.layout(), rhs.layout());
 
@@ -478,11 +502,11 @@ where
     )
 }
 
-fn div_tensor_impl<D1, D2>(lhs: &D1, rhs: &D2) -> TensorPromise<D1::Output>
+fn div_tensor_impl<D1, D2>(lhs: &D1, rhs: &D2) -> TensorPromise<D1::Output, D1::Back>
 where
     D1: ComputationDef,
-    D2: ComputationDef<Output = D1::Output>,
-    D1::Output: ComputeWrapperSpec,
+    D2: ComputationDef<Output = D1::Output, Back = D1::Back>,
+    D1::Output: Numeric,
 {
     let target = find_broadcast_target(lhs.layout(), rhs.layout());
 
@@ -509,17 +533,26 @@ where
 
 //////////////////////////////////////////////////////////////
 
-fn matmul_tensor_impl<D1, D2>(lhs: &D1, rhs: &D2) -> Result<TensorPromise<D1::Output>, OpError>
+fn matmul_core<D1, D2>(lhs: &D1, rhs: &D2) -> Result<TensorPromise<D1::Output, D1::Back>, OpError>
 where
     D1: ComputationDef,
-    D2: ComputationDef<Output = D1::Output>,
-    D1::Output: ComputeWrapperSpec,
+    D2: ComputationDef<Output = D1::Output, Back = D1::Back>,
+    D1::Output: Numeric,
 {
-    let target = find_broadcast_target_until_batch(lhs.layout(), rhs.layout());
-
-    let (lhs_b, rhs_b, _) = apply_transform_to_pair(
+    let (lhs_c, rhs_c, _) = apply_transform_to_pair(
         lhs,
         rhs,
+        |l, r| (!is_blas_ready(l), !is_blas_ready(r)),
+        |x| Ok(as_contiguous_impl(x)),
+        |x| Ok(as_contiguous_impl(x)),
+        |l1, _| Ok(l1.clone()),
+    )?;
+
+    let target = find_broadcast_target_until_batch(lhs_c.layout(), rhs_c.layout());
+
+    let (lhs_b, rhs_b, layout) = apply_transform_to_pair(
+        &lhs_c,
+        &rhs_c,
         |l, r| {
             (
                 target
@@ -532,15 +565,6 @@ where
         },
         |x| broadcast_impl(x, unsafe { &target.as_ref().unwrap_unchecked().0 }),
         |x| broadcast_impl(x, unsafe { &target.as_ref().unwrap_unchecked().1 }),
-        |l1, _| Ok(l1.clone()),
-    )?;
-
-    let (lhs_c, rhs_c, layout) = apply_transform_to_pair(
-        &lhs_b,
-        &rhs_b,
-        |l, r| (!is_blas_ready(l), !is_blas_ready(r)),
-        |x| Ok(as_contiguous_impl(x)),
-        |x| Ok(as_contiguous_impl(x)),
         |l1, l2| {
             compute_layout(
                 &OpKind::<D1::Output>::MatMul(D1::Output::MUL_NEUTRAL),
@@ -551,17 +575,65 @@ where
 
     Ok(TensorPromise::with_layout(
         OpKind::MatMul(D1::Output::MUL_NEUTRAL),
-        [lhs_c.create_node(), rhs_c.create_node()].into(),
+        [lhs_b.create_node(), rhs_b.create_node()].into(),
         layout,
     ))
 }
 
-//////////////////////////////////////////////////////////////
-
-fn sum_impl<D>(source: &D) -> TensorPromise<D::Output>
+// Drop the dim at position `len - 1 - from_end` via a metadata-only View.
+// Used by matmul's 1-D promotion to strip the size-1 dim introduced by
+// promoting a vector operand to a matrix.
+fn drop_dim_from_end<D>(
+    source: &D,
+    from_end: usize,
+) -> Result<TensorPromise<D::Output, D::Back>, OpError>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
+{
+    let mut new_shape: Vec<usize> = source.layout().shape().to_vec();
+    new_shape.remove(new_shape.len() - 1 - from_end);
+    view_impl(source, &new_shape)
+}
+
+fn matmul_tensor_impl<D1, D2>(
+    lhs: &D1,
+    rhs: &D2,
+) -> Result<TensorPromise<D1::Output, D1::Back>, OpError>
+where
+    D1: ComputationDef,
+    D2: ComputationDef<Output = D1::Output, Back = D1::Back>,
+    D1::Output: Numeric,
+{
+    match (lhs.layout().shape().len(), rhs.layout().shape().len()) {
+        // [K] @ [K] -> [1, K] @ [K, 1] = [1, 1], strip to [1].
+        (1, 1) => {
+            let lhs_p = reshape_impl(lhs, &[1, lhs.layout().shape()[0]])?;
+            let rhs_p = reshape_impl(rhs, &[rhs.layout().shape()[0], 1])?;
+            let result = matmul_core(&lhs_p, &rhs_p)?;
+            drop_dim_from_end(&result, 0)
+        }
+        // [K] @ [..., K, N] -> [1, K] @ [..., K, N] = [..., 1, N], drop the prepended 1.
+        (1, _) => {
+            let lhs_p = reshape_impl(lhs, &[1, lhs.layout().shape()[0]])?;
+            let result = matmul_core(&lhs_p, rhs)?;
+            drop_dim_from_end(&result, 1)
+        }
+        // [..., M, K] @ [K] -> [..., M, K] @ [K, 1] = [..., M, 1], drop the appended 1.
+        (_, 1) => {
+            let rhs_p = reshape_impl(rhs, &[rhs.layout().shape()[0], 1])?;
+            let result = matmul_core(lhs, &rhs_p)?;
+            drop_dim_from_end(&result, 0)
+        }
+        // Both already >= 2-D (construction gate rules out 0-D): straight matmul.
+        _ => matmul_core(lhs, rhs),
+    }
+}
+
+//////////////////////////////////////////////////////////////
+
+fn sum_impl<D>(source: &D) -> TensorPromise<D::Output, D::Back>
+where
+    D: ComputationDef,
 {
     let input = Box::new([source.create_node()]);
 
@@ -572,10 +644,9 @@ fn sum_axis_impl<D>(
     source: &D,
     axis: isize,
     keep_dims: bool,
-) -> Result<TensorPromise<D::Output>, OpError>
+) -> Result<TensorPromise<D::Output, D::Back>, OpError>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let input = Box::new([source.create_node()]);
     let op = OpKind::<D::Output>::SumAxis(axis, keep_dims);
@@ -584,10 +655,9 @@ where
     Ok(TensorPromise::with_layout(op, input, layout))
 }
 
-fn max_impl<D>(source: &D) -> TensorPromise<D::Output>
+fn max_impl<D>(source: &D) -> TensorPromise<D::Output, D::Back>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let input = Box::new([source.create_node()]);
 
@@ -598,10 +668,9 @@ fn max_axis_impl<D>(
     source: &D,
     axis: isize,
     keep_dims: bool,
-) -> Result<TensorPromise<D::Output>, OpError>
+) -> Result<TensorPromise<D::Output, D::Back>, OpError>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let input = Box::new([source.create_node()]);
     let op = OpKind::<D::Output>::MaxAxis(axis, keep_dims);
@@ -610,10 +679,9 @@ where
     Ok(TensorPromise::with_layout(op, input, layout))
 }
 
-fn mean_impl<D>(source: &D) -> TensorPromise<D::Output>
+fn mean_impl<D>(source: &D) -> TensorPromise<D::Output, D::Back>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let input = Box::new([source.create_node()]);
 
@@ -624,10 +692,9 @@ fn mean_axis_impl<D>(
     source: &D,
     axis: isize,
     keep_dims: bool,
-) -> Result<TensorPromise<D::Output>, OpError>
+) -> Result<TensorPromise<D::Output, D::Back>, OpError>
 where
     D: ComputationDef,
-    D::Output: NumberLike,
 {
     let input = Box::new([source.create_node()]);
     let op = OpKind::<D::Output>::MeanAxis(axis, keep_dims);
@@ -640,13 +707,15 @@ where
 
 macro_rules! impl_computation_def {
     ($ty:ident, $variant:ident) => {
-        impl<T> ComputationDef for $ty<T>
+        impl<T, B> ComputationDef for $ty<T, B>
         where
-            T: TensorElement,
+            T: Numeric,
+            B: Backend,
         {
             type Output = T;
+            type Back = B;
 
-            fn create_node(&self) -> NodeKind<T> {
+            fn create_node(&self) -> NodeKind<T, B> {
                 NodeKind::$variant(self.graph.clone())
             }
 
@@ -661,17 +730,18 @@ macro_rules! impl_computation_def {
 
 macro_rules! impl_view {
     ($ty:ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement,
+            T: Numeric,
+            B: Backend,
         {
             #[inline]
-            pub fn view(&self, shape: &[usize]) -> Result<TensorPromise<T>, OpError> {
+            pub fn view(&self, shape: &[usize]) -> Result<TensorPromise<T, B>, OpError> {
                 view_impl(self, shape)
             }
 
             #[inline]
-            pub fn reshape(&self, shape: &[usize]) -> Result<TensorPromise<T>, OpError> {
+            pub fn reshape(&self, shape: &[usize]) -> Result<TensorPromise<T, B>, OpError> {
                 reshape_impl(self, shape)
             }
         }
@@ -680,12 +750,13 @@ macro_rules! impl_view {
 
 macro_rules! impl_slice {
     ($ty:ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement,
+            T: Numeric,
+            B: Backend,
         {
             #[inline]
-            pub fn slice(&self, shape: &[SliceRange]) -> Result<TensorPromise<T>, OpError> {
+            pub fn slice(&self, shape: &[SliceRange]) -> Result<TensorPromise<T, B>, OpError> {
                 slice_impl(self, shape)
             }
         }
@@ -694,12 +765,13 @@ macro_rules! impl_slice {
 
 macro_rules! impl_transpose {
     ($ty: ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement,
+            T: Numeric,
+            B: Backend,
         {
             #[inline]
-            pub fn transpose(&self) -> TensorPromise<T> {
+            pub fn transpose(&self) -> TensorPromise<T, B> {
                 transpose_impl(self)
             }
         }
@@ -708,12 +780,13 @@ macro_rules! impl_transpose {
 
 macro_rules! impl_transpose_axes {
     ($ty:ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement,
+            T: Numeric,
+            B: Backend,
         {
             #[inline]
-            pub fn transpose_axes(&self, axes: &[usize]) -> Result<TensorPromise<T>, OpError> {
+            pub fn transpose_axes(&self, axes: &[usize]) -> Result<TensorPromise<T, B>, OpError> {
                 transpose_axes_impl(self, axes)
             }
         }
@@ -722,12 +795,13 @@ macro_rules! impl_transpose_axes {
 
 macro_rules! impl_as_contiguous {
     ($ty: ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement,
+            T: Numeric,
+            B: Backend,
         {
             #[inline]
-            pub fn as_contiguous(&self) -> TensorPromise<T> {
+            pub fn as_contiguous(&self) -> TensorPromise<T, B> {
                 as_contiguous_impl(self)
             }
         }
@@ -736,12 +810,13 @@ macro_rules! impl_as_contiguous {
 
 macro_rules! impl_broadcast {
     ($ty:ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement,
+            T: Numeric,
+            B: Backend,
         {
             #[inline]
-            pub fn broadcast(&self, shape: &[usize]) -> Result<TensorPromise<T>, OpError> {
+            pub fn broadcast(&self, shape: &[usize]) -> Result<TensorPromise<T, B>, OpError> {
                 broadcast_impl(self, shape)
             }
         }
@@ -762,11 +837,12 @@ macro_rules! impl_reshape_like {
 
 macro_rules! impl_add_scalar {
     ($ty:ident) => {
-        impl<T> Add<T> for &$ty<T>
+        impl<T, B> Add<T> for &$ty<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
-            type Output = TensorPromise<T>;
+            type Output = TensorPromise<T, B>;
 
             #[inline]
             fn add(self, rhs: T) -> Self::Output {
@@ -774,11 +850,12 @@ macro_rules! impl_add_scalar {
             }
         }
 
-        impl<T> Add<T> for $ty<T>
+        impl<T, B> Add<T> for $ty<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
-            type Output = TensorPromise<T>;
+            type Output = TensorPromise<T, B>;
 
             #[inline]
             fn add(self, rhs: T) -> Self::Output {
@@ -790,11 +867,12 @@ macro_rules! impl_add_scalar {
 
 macro_rules! impl_sub_scalar {
     ($ty:ident) => {
-        impl<T> Sub<T> for &$ty<T>
+        impl<T, B> Sub<T> for &$ty<T, B>
         where
-            T: TensorElement + NumericOp + Neg<Output = T>,
+            T: NumericOp + Neg<Output = T>,
+            B: Backend,
         {
-            type Output = TensorPromise<T>;
+            type Output = TensorPromise<T, B>;
 
             #[inline]
             fn sub(self, rhs: T) -> Self::Output {
@@ -802,11 +880,12 @@ macro_rules! impl_sub_scalar {
             }
         }
 
-        impl<T> Sub<T> for $ty<T>
+        impl<T, B> Sub<T> for $ty<T, B>
         where
-            T: TensorElement + NumericOp + Neg<Output = T>,
+            T: NumericOp + Neg<Output = T>,
+            B: Backend,
         {
-            type Output = TensorPromise<T>;
+            type Output = TensorPromise<T, B>;
 
             #[inline]
             fn sub(self, rhs: T) -> Self::Output {
@@ -818,11 +897,12 @@ macro_rules! impl_sub_scalar {
 
 macro_rules! impl_mul_scalar {
     ($ty:ident) => {
-        impl<T> Mul<T> for &$ty<T>
+        impl<T, B> Mul<T> for &$ty<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
-            type Output = TensorPromise<T>;
+            type Output = TensorPromise<T, B>;
 
             #[inline]
             fn mul(self, rhs: T) -> Self::Output {
@@ -830,11 +910,12 @@ macro_rules! impl_mul_scalar {
             }
         }
 
-        impl<T> Mul<T> for $ty<T>
+        impl<T, B> Mul<T> for $ty<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
-            type Output = TensorPromise<T>;
+            type Output = TensorPromise<T, B>;
 
             #[inline]
             fn mul(self, rhs: T) -> Self::Output {
@@ -846,11 +927,12 @@ macro_rules! impl_mul_scalar {
 
 macro_rules! impl_div_scalar {
     ($ty:ident) => {
-        impl<T> Div<T> for &$ty<T>
+        impl<T, B> Div<T> for &$ty<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
-            type Output = TensorPromise<T>;
+            type Output = TensorPromise<T, B>;
 
             #[inline]
             fn div(self, rhs: T) -> Self::Output {
@@ -858,11 +940,12 @@ macro_rules! impl_div_scalar {
             }
         }
 
-        impl<T> Div<T> for $ty<T>
+        impl<T, B> Div<T> for $ty<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
-            type Output = TensorPromise<T>;
+            type Output = TensorPromise<T, B>;
 
             #[inline]
             fn div(self, rhs: T) -> Self::Output {
@@ -874,12 +957,13 @@ macro_rules! impl_div_scalar {
 
 macro_rules! impl_exp {
     ($ty:ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement + FloatLike,
+            T: FloatLike,
+            B: Backend,
         {
             #[inline]
-            pub fn exp(&self) -> TensorPromise<T> {
+            pub fn exp(&self) -> TensorPromise<T, B> {
                 exp_impl(self)
             }
         }
@@ -888,12 +972,13 @@ macro_rules! impl_exp {
 
 macro_rules! impl_ln {
     ($ty:ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement + FloatLike,
+            T: FloatLike,
+            B: Backend,
         {
             #[inline]
-            pub fn ln(&self) -> TensorPromise<T> {
+            pub fn ln(&self) -> TensorPromise<T, B> {
                 ln_impl(self)
             }
         }
@@ -902,12 +987,13 @@ macro_rules! impl_ln {
 
 macro_rules! impl_log2 {
     ($ty:ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement + FloatLike,
+            T: FloatLike,
+            B: Backend,
         {
             #[inline]
-            pub fn log2(&self) -> TensorPromise<T> {
+            pub fn log2(&self) -> TensorPromise<T, B> {
                 log2_impl(self)
             }
         }
@@ -935,9 +1021,10 @@ macro_rules! impl_op_scalar {
 
 macro_rules! impl_add_assign_scalar {
     ($ty:ident) => {
-        impl<T> AddAssign<T> for $ty<T>
+        impl<T, B> AddAssign<T> for $ty<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
             #[inline]
             fn add_assign(&mut self, rhs: T) {
@@ -949,9 +1036,10 @@ macro_rules! impl_add_assign_scalar {
 
 macro_rules! impl_sub_assign_scalar {
     ($ty:ident) => {
-        impl<T> SubAssign<T> for $ty<T>
+        impl<T, B> SubAssign<T> for $ty<T, B>
         where
-            T: TensorElement + NumericOp + Neg<Output = T>,
+            T: NumericOp + Neg<Output = T>,
+            B: Backend,
         {
             #[inline]
             fn sub_assign(&mut self, rhs: T) {
@@ -963,9 +1051,10 @@ macro_rules! impl_sub_assign_scalar {
 
 macro_rules! impl_mul_assign_scalar {
     ($ty:ident) => {
-        impl<T> MulAssign<T> for $ty<T>
+        impl<T, B> MulAssign<T> for $ty<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
             #[inline]
             fn mul_assign(&mut self, rhs: T) {
@@ -977,9 +1066,10 @@ macro_rules! impl_mul_assign_scalar {
 
 macro_rules! impl_div_assign_scalar {
     ($ty:ident) => {
-        impl<T> DivAssign<T> for $ty<T>
+        impl<T, B> DivAssign<T> for $ty<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
             #[inline]
             fn div_assign(&mut self, rhs: T) {
@@ -1002,50 +1092,54 @@ macro_rules! impl_op_assign_scalar {
 
 macro_rules! impl_tensor_binop {
     ($trait:ident, $method:ident, $impl_fn:ident, $lhs:ident, $rhs:ident) => {
-        impl<T> $trait<&$rhs<T>> for &$lhs<T>
+        impl<T, B> $trait<&$rhs<T, B>> for &$lhs<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
-            type Output = TensorPromise<T>;
+            type Output = TensorPromise<T, B>;
 
             #[inline]
-            fn $method(self, rhs: &$rhs<T>) -> Self::Output {
+            fn $method(self, rhs: &$rhs<T, B>) -> Self::Output {
                 $impl_fn(self, rhs)
             }
         }
 
-        impl<T> $trait<$rhs<T>> for &$lhs<T>
+        impl<T, B> $trait<$rhs<T, B>> for &$lhs<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
-            type Output = TensorPromise<T>;
+            type Output = TensorPromise<T, B>;
 
             #[inline]
-            fn $method(self, rhs: $rhs<T>) -> Self::Output {
+            fn $method(self, rhs: $rhs<T, B>) -> Self::Output {
                 $impl_fn(self, &rhs)
             }
         }
 
-        impl<T> $trait<&$rhs<T>> for $lhs<T>
+        impl<T, B> $trait<&$rhs<T, B>> for $lhs<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
-            type Output = TensorPromise<T>;
+            type Output = TensorPromise<T, B>;
 
             #[inline]
-            fn $method(self, rhs: &$rhs<T>) -> Self::Output {
+            fn $method(self, rhs: &$rhs<T, B>) -> Self::Output {
                 $impl_fn(&self, rhs)
             }
         }
 
-        impl<T> $trait<$rhs<T>> for $lhs<T>
+        impl<T, B> $trait<$rhs<T, B>> for $lhs<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
-            type Output = TensorPromise<T>;
+            type Output = TensorPromise<T, B>;
 
             #[inline]
-            fn $method(self, rhs: $rhs<T>) -> Self::Output {
+            fn $method(self, rhs: $rhs<T, B>) -> Self::Output {
                 $impl_fn(&self, &rhs)
             }
         }
@@ -1065,14 +1159,15 @@ macro_rules! impl_tensor_ops {
 
 macro_rules! impl_matmul {
     ($ty:ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement + CanMatMul,
+            T: CanMatMul,
+            B: Backend,
         {
             #[inline]
-            pub fn matmul<D>(&self, rhs: &D) -> Result<TensorPromise<T>, OpError>
+            pub fn matmul<D>(&self, rhs: &D) -> Result<TensorPromise<T, B>, OpError>
             where
-                D: ComputationDef<Output = T>,
+                D: ComputationDef<Output = T, Back = B>,
             {
                 matmul_tensor_impl(self, rhs)
             }
@@ -1084,12 +1179,13 @@ macro_rules! impl_matmul {
 
 macro_rules! impl_sum {
     ($ty:ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
             #[inline]
-            pub fn sum(&self) -> TensorPromise<T> {
+            pub fn sum(&self) -> TensorPromise<T, B> {
                 sum_impl(self)
             }
         }
@@ -1098,16 +1194,17 @@ macro_rules! impl_sum {
 
 macro_rules! impl_sum_axis {
     ($ty:ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
             #[inline]
             pub fn sum_axis(
                 &self,
                 axis: isize,
                 keep_dims: bool,
-            ) -> Result<TensorPromise<T>, OpError> {
+            ) -> Result<TensorPromise<T, B>, OpError> {
                 sum_axis_impl(self, axis, keep_dims)
             }
         }
@@ -1116,12 +1213,13 @@ macro_rules! impl_sum_axis {
 
 macro_rules! impl_max {
     ($ty:ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
             #[inline]
-            pub fn max(&self) -> TensorPromise<T> {
+            pub fn max(&self) -> TensorPromise<T, B> {
                 max_impl(self)
             }
         }
@@ -1130,16 +1228,17 @@ macro_rules! impl_max {
 
 macro_rules! impl_max_axis {
     ($ty:ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
             #[inline]
             pub fn max_axis(
                 &self,
                 axis: isize,
                 keep_dims: bool,
-            ) -> Result<TensorPromise<T>, OpError> {
+            ) -> Result<TensorPromise<T, B>, OpError> {
                 max_axis_impl(self, axis, keep_dims)
             }
         }
@@ -1148,12 +1247,13 @@ macro_rules! impl_max_axis {
 
 macro_rules! impl_mean {
     ($ty:ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement + FloatLike,
+            T: FloatLike,
+            B: Backend,
         {
             #[inline]
-            pub fn mean(&self) -> TensorPromise<T> {
+            pub fn mean(&self) -> TensorPromise<T, B> {
                 mean_impl(self)
             }
         }
@@ -1162,16 +1262,17 @@ macro_rules! impl_mean {
 
 macro_rules! impl_mean_axis {
     ($ty:ident) => {
-        impl<T> $ty<T>
+        impl<T, B> $ty<T, B>
         where
-            T: TensorElement + FloatLike,
+            T: FloatLike,
+            B: Backend,
         {
             #[inline]
             pub fn mean_axis(
                 &self,
                 axis: isize,
                 keep_dims: bool,
-            ) -> Result<TensorPromise<T>, OpError> {
+            ) -> Result<TensorPromise<T, B>, OpError> {
                 mean_axis_impl(self, axis, keep_dims)
             }
         }
@@ -1182,22 +1283,24 @@ macro_rules! impl_mean_axis {
 
 macro_rules! impl_tensor_assign_binop {
     ($trait:ident, $method:ident, $impl_fn:ident, $rhs:ident) => {
-        impl<T> $trait<$rhs<T>> for TensorPromise<T>
+        impl<T, B> $trait<$rhs<T, B>> for TensorPromise<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
             #[inline]
-            fn $method(&mut self, rhs: $rhs<T>) {
+            fn $method(&mut self, rhs: $rhs<T, B>) {
                 *self = $impl_fn(&*self, &rhs);
             }
         }
 
-        impl<T> $trait<&$rhs<T>> for TensorPromise<T>
+        impl<T, B> $trait<&$rhs<T, B>> for TensorPromise<T, B>
         where
-            T: TensorElement + NumericOp,
+            T: NumericOp,
+            B: Backend,
         {
             #[inline]
-            fn $method(&mut self, rhs: &$rhs<T>) {
+            fn $method(&mut self, rhs: &$rhs<T, B>) {
                 *self = $impl_fn(&*self, rhs);
             }
         }
