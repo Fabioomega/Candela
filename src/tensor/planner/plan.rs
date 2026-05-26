@@ -11,9 +11,6 @@ use crate::tensor::backend::Backend;
 use crate::tensor::graph::{NodeKind, TensorGraphCacheNode, TensorGraphEdge, TensorGraphNode};
 use crate::tensor::planner::alias::{self, AliasKind, AliasMap};
 use crate::tensor::planner::get_id;
-use crate::tensor::planner::in_place::find_buffer_inplace;
-use crate::tensor::planner::redirect::{RedirectKind, is_a_redirect};
-use crate::tensor::planner::reference::{ReferenceKind, is_a_reference};
 use crate::tensor::planner::sort::topological_sort;
 
 /// How the executor should produce the output buffer for a single operation.
@@ -475,9 +472,8 @@ pub(crate) fn plan_computation<T, B: Backend>(base_node: &TensorGraphNode<T, B>)
                 ops.push(OpPlan { node, end: None });
             }
             NodeKind::Node(n) => {
-                let classification = alias::classify(&n.op, &n.inputs, &id_slot_map, &alias_map);
-                match classification {
-                    AliasKind::NoAlias => {
+                match alias::handle_alias(&node, n.id, &n.op, &n.inputs, &mut alias_map) {
+                    AliasKind::NoAlias | AliasKind::OwningAlias => {
                         id_op.insert(n.id, ops.len());
                         ops.push(OpPlan { node, end: None });
 
@@ -487,10 +483,7 @@ pub(crate) fn plan_computation<T, B: Backend>(base_node: &TensorGraphNode<T, B>)
                             }
                         }
                     }
-                    AliasKind::Alias(alias_to) => {
-                        alias_map.insert(n.id, alias_to);
-                    }
-                    AliasKind::OwningAlias => {}
+                    AliasKind::Alias => {}
                 }
             }
             NodeKind::Cache(cache) => {

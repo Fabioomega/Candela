@@ -35,8 +35,22 @@ impl<'a, T, B: Backend> AliasMap<'a, T, B> {
     }
 
     #[inline]
-    pub fn is_aliased(&self, id: usize) -> Option<(&NodeKind<T, B>, Tag)> {
-        self.map.get(&id).map(|(node, tag)| (*node, tag.clone()))
+    pub fn insert_resolved(&mut self, id: usize, node: &'a NodeKind<T, B>) {
+        let node_id = get_id(node);
+        let node = self.map.get(&node_id).map_or(node, |(node, _)| *node);
+        self.map.insert(id, (node, Tag::Alias));
+    }
+
+    // Inserts an alias by another alias, if it fails it inserts node.
+    #[inline]
+    pub fn insert_by_id_or(&mut self, id: usize, alias: usize, node: &NodeKind<T, B>) -> bool {
+        if let Some((node, tag)) = self.map.get(&alias) {
+            self.map.insert(id, (*node, tag.clone()));
+
+            true
+        } else {
+            false
+        }
     }
 
     #[inline]
@@ -51,11 +65,11 @@ impl<'a, T, B: Backend> AliasMap<'a, T, B> {
 }
 
 #[inline]
-pub(crate) fn classify<'a, T, B: Backend>(
+pub(crate) fn handle_alias<'a, T, B: Backend>(
+    node: &'a NodeKind<T, B>,
     node_id: usize,
     op: &OpKind<T>,
     inputs: &'a [NodeKind<T, B>],
-    id_slot_map: &HashMap<usize, usize>,
     alias_map: &'a mut AliasMap<'a, T, B>,
 ) -> AliasKind {
     match op {
@@ -66,17 +80,15 @@ pub(crate) fn classify<'a, T, B: Backend>(
             }
 
             let id = get_id(&inputs[0]);
-            if let Some((node, tag)) = alias_map.is_aliased(id)
-                && tag == Tag::AsContiguous
-            {
-                alias_map.insert(id, node);
+            if alias_map.insert_by_id(node_id, id) {
                 AliasKind::Alias
             } else {
+                alias_map.insert_tagged(id, node, Tag::AsContiguous);
                 AliasKind::OwningAlias
             }
         }
         OpKind::NoOp => {
-            alias_map.insert(node_id, alias_map.resolve(&inputs[0]));
+            alias_map.insert_resolved(node_id, &inputs[0]);
             AliasKind::Alias
         }
         _ => AliasKind::NoAlias,
