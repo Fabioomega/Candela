@@ -13,6 +13,7 @@ pub(crate) enum Tag {
 
 pub(crate) enum AliasKind {
     Alias,
+    // This is not necessary but is being maintained as self documenting enum
     OwningAlias,
     NoAlias,
 }
@@ -29,7 +30,7 @@ impl<'a, T, B: Backend> AliasMap<'a, T, B> {
     }
 
     #[inline]
-    pub fn resolve(&self, node: &'a NodeKind<T, B>) -> &NodeKind<T, B> {
+    pub fn resolve(&self, node: &'a NodeKind<T, B>) -> &'a NodeKind<T, B> {
         let id = get_id(node);
         self.map.get(&id).map_or(node, |(node, _)| *node)
     }
@@ -41,14 +42,23 @@ impl<'a, T, B: Backend> AliasMap<'a, T, B> {
         self.map.insert(id, (node, Tag::Alias));
     }
 
-    // Inserts an alias by another alias, if it fails it inserts node.
+    // Inserts an alias by another alias, if it fails it inserts alias_id with (node, tag)..
+    // Returns true if the alias was found and false if it was not.
     #[inline]
-    pub fn insert_by_id_or(&mut self, id: usize, alias: usize, node: &NodeKind<T, B>) -> bool {
-        if let Some((node, tag)) = self.map.get(&alias) {
+    pub fn insert_by_id_or(
+        &mut self,
+        id: usize,
+        alias_id: usize,
+        node: &'a NodeKind<T, B>,
+        tag: Tag,
+    ) -> bool {
+        if let Some((node, tag)) = self.map.get(&alias_id) {
             self.map.insert(id, (*node, tag.clone()));
 
             true
         } else {
+            self.map.insert(alias_id, (node, tag));
+
             false
         }
     }
@@ -70,7 +80,7 @@ pub(crate) fn handle_alias<'a, T, B: Backend>(
     node_id: usize,
     op: &OpKind<T>,
     inputs: &'a [NodeKind<T, B>],
-    alias_map: &'a mut AliasMap<'a, T, B>,
+    alias_map: &mut AliasMap<'a, T, B>,
 ) -> AliasKind {
     match op {
         OpKind::AsContiguous => {
@@ -80,10 +90,9 @@ pub(crate) fn handle_alias<'a, T, B: Backend>(
             }
 
             let id = get_id(&inputs[0]);
-            if alias_map.insert_by_id(node_id, id) {
+            if alias_map.insert_by_id_or(node_id, id, node, Tag::AsContiguous) {
                 AliasKind::Alias
             } else {
-                alias_map.insert_tagged(id, node, Tag::AsContiguous);
                 AliasKind::OwningAlias
             }
         }
