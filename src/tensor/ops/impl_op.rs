@@ -65,9 +65,7 @@ fn find_broadcast_target(l1: &Layout, l2: &Layout) -> Vec<usize> {
         new_shape[largest_size - i - 1] = dim1.max(dim2);
     }
 
-    for dim in 0..diff {
-        new_shape[dim] = largest.shape()[dim];
-    }
+    new_shape[..diff].copy_from_slice(&largest.shape()[..diff]);
 
     new_shape
 }
@@ -128,11 +126,20 @@ where
         return layout.stride()[last_axis] != 0 && layout.stride()[last_axis - 1] != 0;
     }
 
-    // We don't have to check if the tensor is contiguous because, if they are, the AsContiguous node will not be added.
-    // See `impl_as_contiguous` for details.
+    // We don't need to check if it's contiguous because it will become a zero-copy or removed if not necessary
+    // by either the planner or the fusion system.
     // layout.is_contiguous() ||
     D::Back::SUPPORTS_2D_TRANSPOSED_MATMUL && layout.is_last_axes_transposed()
 }
+
+type NodeTransform<Output, Backend> = Result<
+    (
+        NodeWithLayout<Output, Backend>,
+        NodeWithLayout<Output, Backend>,
+        Layout,
+    ),
+    OpError,
+>;
 
 #[inline]
 fn apply_transform_to_pair<D1, D2, F, N1, N2, L>(
@@ -142,14 +149,7 @@ fn apply_transform_to_pair<D1, D2, F, N1, N2, L>(
     transform_l: N1,
     transform_r: N2,
     compute_output_layout: L,
-) -> Result<
-    (
-        NodeWithLayout<D1::Output, D1::Back>,
-        NodeWithLayout<D1::Output, D1::Back>,
-        Layout,
-    ),
-    OpError,
->
+) -> NodeTransform<D1::Output, D1::Back>
 where
     D1: ComputationDef,
     D2: ComputationDef<Output = D1::Output, Back = D1::Back>,
@@ -314,10 +314,6 @@ where
     D: ComputationDef,
 {
     let node = source.create_node();
-    if source.layout().is_contiguous() {
-        return unsafe { TensorPromise::new(OpKind::NoOp, Box::new([node])).unwrap_unchecked() };
-    }
-
     unsafe { TensorPromise::new(OpKind::AsContiguous, Box::new([node])).unwrap_unchecked() }
 }
 
@@ -413,6 +409,24 @@ where
     unsafe { TensorPromise::new(OpKind::ScalarOp(OpKindScalar::Log2), input).unwrap_unchecked() }
 }
 
+fn relu_impl<D>(source: &D) -> TensorPromise<D::Output, D::Back>
+where
+    D: ComputationDef,
+{
+    let input = Box::new([source.create_node()]);
+
+    unsafe { TensorPromise::new(OpKind::ScalarOp(OpKindScalar::ReLU), input).unwrap_unchecked() }
+}
+
+fn tanh_impl<D>(source: &D) -> TensorPromise<D::Output, D::Back>
+where
+    D: ComputationDef,
+{
+    let input = Box::new([source.create_node()]);
+
+    unsafe { TensorPromise::new(OpKind::ScalarOp(OpKindScalar::Tanh), input).unwrap_unchecked() }
+}
+
 //////////////////////////////////////////////////////////////
 
 fn add_tensor_impl<D1, D2>(lhs: &D1, rhs: &D2) -> TensorPromise<D1::Output, D1::Back>
@@ -426,7 +440,7 @@ where
     let result = apply_transform_to_pair(
         lhs,
         rhs,
-        |l, r| (l.layout().shape() != &target, r.layout().shape() != &target),
+        |l, r| (l.layout().shape() != target, r.layout().shape() != target),
         |x| broadcast_impl(x, &target),
         |x| broadcast_impl(x, &target),
         |l1, l2| compute_layout(&OpKind::<D1::Output>::Add, &[l1, l2]),
@@ -455,7 +469,7 @@ where
     let result = apply_transform_to_pair(
         lhs,
         rhs,
-        |l, r| (l.layout().shape() != &target, r.layout().shape() != &target),
+        |l, r| (l.layout().shape() != target, r.layout().shape() != target),
         |x| broadcast_impl(x, &target),
         |x| broadcast_impl(x, &target),
         |l1, l2| compute_layout(&OpKind::<D1::Output>::Sub, &[l1, l2]),
@@ -484,7 +498,7 @@ where
     let result = apply_transform_to_pair(
         lhs,
         rhs,
-        |l, r| (l.layout().shape() != &target, r.layout().shape() != &target),
+        |l, r| (l.layout().shape() != target, r.layout().shape() != target),
         |x| broadcast_impl(x, &target),
         |x| broadcast_impl(x, &target),
         |l1, l2| compute_layout(&OpKind::<D1::Output>::Mul, &[l1, l2]),
@@ -513,7 +527,7 @@ where
     let result = apply_transform_to_pair(
         lhs,
         rhs,
-        |l, r| (l.layout().shape() != &target, r.layout().shape() != &target),
+        |l, r| (l.layout().shape() != target, r.layout().shape() != target),
         |x| broadcast_impl(x, &target),
         |x| broadcast_impl(x, &target),
         |l1, l2| compute_layout(&OpKind::<D1::Output>::Div, &[l1, l2]),
@@ -557,10 +571,10 @@ where
             (
                 target
                     .as_ref()
-                    .map_or(false, |target| l.layout().shape() != target.0),
+                    .is_some_and(|target| l.layout().shape() != target.0),
                 target
                     .as_ref()
-                    .map_or(false, |target| r.layout().shape() != target.1),
+                    .is_some_and(|target| r.layout().shape() != target.1),
             )
         },
         |x| broadcast_impl(x, unsafe { &target.as_ref().unwrap_unchecked().0 }),
@@ -962,6 +976,18 @@ macro_rules! impl_exp {
             T: FloatLike,
             B: Backend,
         {
+            /// Raise `e` to each element (natural exponential), element-wise.
+            ///
+            /// A scalar op, so it fuses with adjacent scalar ops into a single
+            /// `FusedScalar` pass rather than a separate graph node.
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::Tensor;
+            /// let t = Tensor::from_slice(&[0.0_f64], &[1]);
+            /// assert_eq!(t.exp().materialize().data(), &[1.0]); // e^0 == 1
+            /// ```
             #[inline]
             pub fn exp(&self) -> TensorPromise<T, B> {
                 exp_impl(self)
@@ -977,6 +1003,19 @@ macro_rules! impl_ln {
             T: FloatLike,
             B: Backend,
         {
+            /// Take the natural logarithm of each element, element-wise.
+            ///
+            /// A scalar op, so it fuses with adjacent scalar ops into a single
+            /// `FusedScalar` pass rather than a separate graph node. Elements
+            /// `<= 0` follow the platform `ln` (`-inf` at 0, `NaN` below).
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::Tensor;
+            /// let t = Tensor::from_slice(&[1.0_f64], &[1]);
+            /// assert_eq!(t.ln().materialize().data(), &[0.0]); // ln(1) == 0
+            /// ```
             #[inline]
             pub fn ln(&self) -> TensorPromise<T, B> {
                 ln_impl(self)
@@ -992,9 +1031,77 @@ macro_rules! impl_log2 {
             T: FloatLike,
             B: Backend,
         {
+            /// Take the base-2 logarithm of each element, element-wise.
+            ///
+            /// A scalar op, so it fuses with adjacent scalar ops into a single
+            /// `FusedScalar` pass rather than a separate graph node. Elements
+            /// `<= 0` follow the platform `log2` (`-inf` at 0, `NaN` below).
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::Tensor;
+            /// let t = Tensor::from_slice(&[8.0_f64], &[1]);
+            /// assert_eq!(t.log2().materialize().data(), &[3.0]); // log2(8) == 3
+            /// ```
             #[inline]
             pub fn log2(&self) -> TensorPromise<T, B> {
                 log2_impl(self)
+            }
+        }
+    };
+}
+
+macro_rules! impl_relu {
+    ($ty:ident) => {
+        impl<T, B> $ty<T, B>
+        where
+            T: FloatLike,
+            B: Backend,
+        {
+            /// Apply the rectified linear unit element-wise: `max(x, 0)`.
+            ///
+            /// A scalar op, so it fuses with adjacent scalar ops into a single
+            /// `FusedScalar` pass rather than a separate graph node.
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::Tensor;
+            /// let t = Tensor::from_slice(&[-2.0_f64, -0.5, 0.0, 1.5], &[4]);
+            /// assert_eq!(t.relu().materialize().data(), &[0.0, 0.0, 0.0, 1.5]);
+            /// ```
+            #[inline]
+            pub fn relu(&self) -> TensorPromise<T, B> {
+                relu_impl(self)
+            }
+        }
+    };
+}
+
+macro_rules! impl_tanh {
+    ($ty:ident) => {
+        impl<T, B> $ty<T, B>
+        where
+            T: FloatLike,
+            B: Backend,
+        {
+            /// Apply the hyperbolic tangent element-wise, mapping each value
+            /// into `(-1, 1)`.
+            ///
+            /// A scalar op, so it fuses with adjacent scalar ops into a single
+            /// `FusedScalar` pass rather than a separate graph node.
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::Tensor;
+            /// let t = Tensor::from_slice(&[0.0_f64], &[1]);
+            /// assert_eq!(t.tanh().materialize().data(), &[0.0]); // tanh(0) == 0
+            /// ```
+            #[inline]
+            pub fn tanh(&self) -> TensorPromise<T, B> {
+                tanh_impl(self)
             }
         }
     };
@@ -1005,6 +1112,8 @@ macro_rules! impl_unary_scalar_ops {
         impl_exp!($ty);
         impl_ln!($ty);
         impl_log2!($ty);
+        impl_relu!($ty);
+        impl_tanh!($ty);
     };
 }
 
@@ -1099,6 +1208,16 @@ macro_rules! impl_tensor_binop {
         {
             type Output = TensorPromise<T, B>;
 
+            /// Apply this operation element-wise, broadcasting compatible shapes
+            /// (NumPy rules), and return a `TensorPromise`. Nothing is computed
+            /// until `.materialize()`.
+            ///
+            /// # Panics
+            ///
+            /// Panics here, when the operator is applied (not at
+            /// `.materialize()`), if the operand shapes are not
+            /// broadcast-compatible. A shape mismatch between two tensors is
+            /// treated as a programming error, not a recoverable condition.
             #[inline]
             fn $method(self, rhs: &$rhs<T, B>) -> Self::Output {
                 $impl_fn(self, rhs)
@@ -1112,6 +1231,16 @@ macro_rules! impl_tensor_binop {
         {
             type Output = TensorPromise<T, B>;
 
+            /// Apply this operation element-wise, broadcasting compatible shapes
+            /// (NumPy rules), and return a `TensorPromise`. Nothing is computed
+            /// until `.materialize()`.
+            ///
+            /// # Panics
+            ///
+            /// Panics here, when the operator is applied (not at
+            /// `.materialize()`), if the operand shapes are not
+            /// broadcast-compatible. A shape mismatch between two tensors is
+            /// treated as a programming error, not a recoverable condition.
             #[inline]
             fn $method(self, rhs: $rhs<T, B>) -> Self::Output {
                 $impl_fn(self, &rhs)
@@ -1125,6 +1254,16 @@ macro_rules! impl_tensor_binop {
         {
             type Output = TensorPromise<T, B>;
 
+            /// Apply this operation element-wise, broadcasting compatible shapes
+            /// (NumPy rules), and return a `TensorPromise`. Nothing is computed
+            /// until `.materialize()`.
+            ///
+            /// # Panics
+            ///
+            /// Panics here, when the operator is applied (not at
+            /// `.materialize()`), if the operand shapes are not
+            /// broadcast-compatible. A shape mismatch between two tensors is
+            /// treated as a programming error, not a recoverable condition.
             #[inline]
             fn $method(self, rhs: &$rhs<T, B>) -> Self::Output {
                 $impl_fn(&self, rhs)
@@ -1138,6 +1277,16 @@ macro_rules! impl_tensor_binop {
         {
             type Output = TensorPromise<T, B>;
 
+            /// Apply this operation element-wise, broadcasting compatible shapes
+            /// (NumPy rules), and return a `TensorPromise`. Nothing is computed
+            /// until `.materialize()`.
+            ///
+            /// # Panics
+            ///
+            /// Panics here, when the operator is applied (not at
+            /// `.materialize()`), if the operand shapes are not
+            /// broadcast-compatible. A shape mismatch between two tensors is
+            /// treated as a programming error, not a recoverable condition.
             #[inline]
             fn $method(self, rhs: $rhs<T, B>) -> Self::Output {
                 $impl_fn(&self, &rhs)

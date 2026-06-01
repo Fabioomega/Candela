@@ -19,7 +19,7 @@ fn main() {
     // .cache() keeps the computed result alive in a OnceLock after the first
     // evaluation, making the same intermediate value reusable across multiple
     // independent .materialize() calls without recomputing the inner graph.
-    // .get_cache() reads the stored value directly — useful for inspecting what
+    // .get_cache() reads the stored value directly - useful for inspecting what
     // a preprocessing step produced without triggering a new computation.
     let t = arange!(4);                          // [0.0, 1.0, 2.0, 3.0]
     let preprocessed = (t * 2.0 + 1.0).cache(); // computes [1.0, 3.0, 5.0, 7.0] on first use

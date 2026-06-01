@@ -4,26 +4,22 @@ use crate::tensor::backend::common_kernels::{
     compute_max_axis_tensor, compute_max_tensor, compute_mean_axis_tensor, compute_mean_tensor,
     compute_sum_axis_tensor, compute_sum_tensor,
 };
-use crate::tensor::backend::cpu_mkl::kernels::{
+use crate::tensor::backend::cpu_pure::kernels::{
     CommonBLASOps, compute_elementwise_tensor_tensor, compute_elementwise_tensor_tensor_inplace,
     compute_matmul_sum, compute_scalar, compute_scalar_inplace,
 };
-use crate::tensor::backend::cpu_mkl::mkl_extension::{cblas_dgemm_batch_strided, vdAddI};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::{OpKind, Sign};
 use crate::tensor::storage::{Storage, TensorData};
-use cblas_sys::{cblas_daxpy, cblas_dscal};
-use intel_mkl_sys::{vdAdd, vdDiv, vdExp, vdInv, vdLn, vdLog2, vdMul, vdSub, vdTanh};
 
-const BLAS_OPS: CommonBLASOps<f64> = CommonBLASOps {
-    add: vdAddI,
-    scal: cblas_dscal,
-    axby: cblas_daxpy,
-    exp: vdExp,
-    ln: vdLn,
-    log2: vdLog2,
-    inv: vdInv,
-    tanh: vdTanh,
+const BLAS: CommonBLASOps<f32> = CommonBLASOps {
+    fma: |a, b, c| a.mul_add(b, c),
+    exp: |a| a.exp(),
+    ln: |a| a.ln(),
+    log2: |a| a.log2(),
+    max: |a, b| a.max(b),
+    tanh: |a| a.tanh(),
+    matmul: matrixmultiply::sgemm,
 };
 
 #[cfg_attr(
@@ -35,59 +31,43 @@ const BLAS_OPS: CommonBLASOps<f64> = CommonBLASOps {
     )
 )]
 pub(crate) fn compute_op(
-    op: &OpKind<f64>,
-    output_buffer: Vec<f64>,
+    op: &OpKind<f32>,
+    output_buffer: Vec<f32>,
     output_layout: &Layout,
-    inputs: &[TensorData<f64>],
-) -> TensorData<f64> {
+    inputs: &[TensorData<f32>],
+) -> TensorData<f32> {
     match op {
         OpKind::ScalarOp(s) => compute_scalar(
             std::slice::from_ref(s),
+            inputs,
             output_buffer,
             output_layout,
-            inputs,
-            BLAS_OPS,
-            0.0,
-            |x, y| x.max(y),
+            BLAS,
         ),
-        OpKind::FusedScalar(ss) => compute_scalar(
-            ss,
-            output_buffer,
-            output_layout,
-            inputs,
-            BLAS_OPS,
-            0.0,
-            |x, y| x.max(y),
-        ),
+        OpKind::FusedScalar(ss) => compute_scalar(ss, inputs, output_buffer, output_layout, BLAS),
         OpKind::AsContiguous => {
             let output_buffer = clone_to_buffer(&inputs[0], output_buffer);
 
             TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
         }
-        OpKind::Add => compute_elementwise_tensor_tensor(inputs, output_buffer, vdAdd),
-        OpKind::Sub => compute_elementwise_tensor_tensor(inputs, output_buffer, vdSub),
-        OpKind::Mul => compute_elementwise_tensor_tensor(inputs, output_buffer, vdMul),
-        OpKind::Div => compute_elementwise_tensor_tensor(inputs, output_buffer, vdDiv),
-        OpKind::MatMul(a) => compute_matmul_sum(
-            inputs,
-            *a,
-            0.0,
-            output_buffer,
-            output_layout,
-            false,
-            cblas_dgemm_batch_strided,
-        ),
+        OpKind::Add => {
+            compute_elementwise_tensor_tensor(inputs, output_buffer, output_layout, |a, b| a + b)
+        }
+        OpKind::Sub => {
+            compute_elementwise_tensor_tensor(inputs, output_buffer, output_layout, |a, b| a - b)
+        }
+        OpKind::Mul => {
+            compute_elementwise_tensor_tensor(inputs, output_buffer, output_layout, |a, b| a * b)
+        }
+        OpKind::Div => {
+            compute_elementwise_tensor_tensor(inputs, output_buffer, output_layout, |a, b| a / b)
+        }
+        OpKind::MatMul(a) => {
+            compute_matmul_sum(inputs, *a, 0.0, output_buffer, output_layout, false, BLAS)
+        }
         OpKind::MatMulSum(a, b, sign) => {
             let beta = if *sign == Sign::Minus { -*b } else { *b };
-            compute_matmul_sum(
-                inputs,
-                *a,
-                beta,
-                output_buffer,
-                output_layout,
-                true,
-                cblas_dgemm_batch_strided,
-            )
+            compute_matmul_sum(inputs, *a, beta, output_buffer, output_layout, true, BLAS)
         }
         OpKind::Slice(new_layout)
         | OpKind::View(new_layout)
@@ -103,20 +83,20 @@ pub(crate) fn compute_op(
 
             compute_sum_axis_tensor(inputs, axis, output_buffer, output_layout)
         }
-        OpKind::Max => compute_max_tensor(inputs, output_buffer, output_layout, |a, b| a.max(b)),
+        OpKind::Max => compute_max_tensor(inputs, output_buffer, output_layout, BLAS.max),
         OpKind::MaxAxis(axis, _) => {
             let axis = normalize_axis(*axis, inputs[0].shape().len());
 
-            compute_max_axis_tensor(inputs, axis, output_buffer, output_layout, |a, b| a.max(b))
+            compute_max_axis_tensor(inputs, axis, output_buffer, output_layout, BLAS.max)
         }
         OpKind::Mean => {
-            compute_mean_tensor(inputs, output_buffer, output_layout, |a, b| a / (b as f64))
+            compute_mean_tensor(inputs, output_buffer, output_layout, |a, b| a / b as f32)
         }
         OpKind::MeanAxis(axis, _) => {
             let axis = normalize_axis(*axis, inputs[0].shape().len());
 
             compute_mean_axis_tensor(inputs, axis, output_buffer, output_layout, |a, b| {
-                a / (b as f64)
+                a / b as f32
             })
         }
         OpKind::NoOp => inputs[0].clone(),
@@ -132,27 +112,52 @@ pub(crate) fn compute_op(
     )
 )]
 pub(crate) fn compute_op_inplace(
-    op: &OpKind<f64>,
+    op: &OpKind<f32>,
     output_layout: &Layout,
-    mut inputs: Vec<TensorData<f64>>,
+    mut inputs: Vec<TensorData<f32>>,
     output_idx: usize,
-) -> TensorData<f64> {
+) -> TensorData<f32> {
     match op {
-        OpKind::ScalarOp(s) => compute_scalar_inplace(
-            std::slice::from_ref(s),
-            output_layout,
-            inputs,
-            BLAS_OPS,
-            0.0,
-            |x, y| x.max(y),
-        ),
-        OpKind::FusedScalar(ss) => {
-            compute_scalar_inplace(ss, output_layout, inputs, BLAS_OPS, 0.0, |x, y| x.max(y))
+        OpKind::ScalarOp(s) => {
+            compute_scalar_inplace(std::slice::from_ref(s), inputs, output_layout, BLAS)
         }
-        OpKind::Add => compute_elementwise_tensor_tensor_inplace(inputs, output_idx, vdAdd),
-        OpKind::Sub => compute_elementwise_tensor_tensor_inplace(inputs, output_idx, vdSub),
-        OpKind::Mul => compute_elementwise_tensor_tensor_inplace(inputs, output_idx, vdMul),
-        OpKind::Div => compute_elementwise_tensor_tensor_inplace(inputs, output_idx, vdDiv),
+        OpKind::FusedScalar(ss) => compute_scalar_inplace(ss, inputs, output_layout, BLAS),
+        OpKind::Add => {
+            let b = inputs.pop().unwrap();
+            let a = inputs.pop().unwrap();
+            if output_idx == 0 {
+                compute_elementwise_tensor_tensor_inplace(a, b, |a, b| a + b)
+            } else {
+                compute_elementwise_tensor_tensor_inplace(b, a, |a, b| a + b)
+            }
+        }
+        OpKind::Sub => {
+            let b = inputs.pop().unwrap();
+            let a = inputs.pop().unwrap();
+            if output_idx == 0 {
+                compute_elementwise_tensor_tensor_inplace(a, b, |a, b| a - b)
+            } else {
+                compute_elementwise_tensor_tensor_inplace(b, a, |b, a| a - b)
+            }
+        }
+        OpKind::Mul => {
+            let b = inputs.pop().unwrap();
+            let a = inputs.pop().unwrap();
+            if output_idx == 0 {
+                compute_elementwise_tensor_tensor_inplace(a, b, |a, b| a * b)
+            } else {
+                compute_elementwise_tensor_tensor_inplace(b, a, |a, b| a * b)
+            }
+        }
+        OpKind::Div => {
+            let b = inputs.pop().unwrap();
+            let a = inputs.pop().unwrap();
+            if output_idx == 0 {
+                compute_elementwise_tensor_tensor_inplace(a, b, |a, b| a / b)
+            } else {
+                compute_elementwise_tensor_tensor_inplace(b, a, |b, a| a / b)
+            }
+        }
         OpKind::Slice(new_layout)
         | OpKind::View(new_layout)
         | OpKind::TransposeAxes(new_layout)
@@ -169,5 +174,5 @@ pub(crate) fn compute_op_inplace(
 }
 
 #[cfg(test)]
-#[path = "f64_tests.rs"]
+#[path = "f32_tests.rs"]
 mod tests;

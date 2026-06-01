@@ -59,7 +59,7 @@ fn matmul_output_shape() {
 
 #[test]
 fn matmul_dimension_mismatch() {
-    // [2,3] @ [4,5] — inner dims 3 != 4
+    // [2,3] @ [4,5] - inner dims 3 != 4
     let a = l(&[2, 3]);
     let b = l(&[4, 5]);
     let err = compute_layout::<f64>(&OpKind::MatMul(1.0), &[&a, &b]).unwrap_err();
@@ -103,7 +103,7 @@ fn div_equal_shapes() {
 
 #[test]
 fn as_contiguous_output_layout() {
-    let transposed = l(&[3, 4]).transpose(); // shape [4,3], stride [1,4] — not contiguous
+    let transposed = l(&[3, 4]).transpose(); // shape [4,3], stride [1,4] - not contiguous
     let result = compute_layout::<f64>(&OpKind::AsContiguous, &[&transposed]).unwrap();
     assert_eq!(result.shape(), &[4, 3]);
     assert!(result.is_contiguous());

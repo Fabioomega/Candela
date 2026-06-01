@@ -1,6 +1,8 @@
 mod common;
+mod common_kernels;
+#[cfg(feature = "mkl")]
 mod cpu_mkl;
-// mod cpu_pure;
+mod cpu_pure;
 
 use std::fmt::Debug;
 
@@ -47,7 +49,7 @@ pub trait ComputeFor<B: Backend>: Dtype {
 pub trait Backend: Sized + Debug {
     /// `true` if [`OpKind::MatMul`](crate::tensor::ops::def_op::OpKind::MatMul)
     /// accepts a 2D input whose strides describe a transposed view
-    /// (`row_stride == 1`, `col_stride > 1`) — i.e. the underlying GEMM is
+    /// (`row_stride == 1`, `col_stride > 1`) - i.e. the underlying GEMM is
     /// invoked with a trans-flag and no copy is required. The fast path is
     /// deliberately scoped to rank 2; higher-rank tensors are always
     /// contiguified by the op layer before reaching the kernel.
@@ -65,28 +67,33 @@ pub trait Backend: Sized + Debug {
     /// Run `op` over `inputs` into a fresh allocation. `output_buffer` is the
     /// destination `Vec<T>`; the returned [`TensorData`] wraps it with
     /// `output_layout`.
-    fn compute<T: Dtype>(
+    fn compute<T>(
         op: &OpKind<T>,
         output_buffer: Vec<T>,
         output_layout: &Layout,
         inputs: &[TensorData<T>],
     ) -> TensorData<T>
     where
-        T: ComputeFor<Self>;
+        T: Dtype + ComputeFor<Self>;
 
     /// Run `op` reusing `inputs[output_idx]`'s buffer as the destination. The
     /// planner guarantees that buffer is no longer referenced by any live
     /// node at this point, so the in-place write is sound.
-    fn compute_inplace<T: Dtype>(
+    fn compute_inplace<T>(
         op: &OpKind<T>,
         output_layout: &Layout,
         inputs: Vec<TensorData<T>>,
         output_idx: usize,
     ) -> TensorData<T>
     where
-        T: ComputeFor<Self>;
+        T: Dtype + ComputeFor<Self>;
 }
 
 /// Backend selected when no explicit type parameter is supplied at the
-/// [`Tensor`](crate::tensor::Tensor) construction site.
+/// [`Tensor`](crate::tensor::Tensor) construction site. Defaults to the
+/// pure-Rust backend; enabling the `mkl` feature switches it to the Intel MKL
+/// backend.
+#[cfg(feature = "mkl")]
 pub type DefaultBackend = cpu_mkl::CpuMkl;
+#[cfg(not(feature = "mkl"))]
+pub type DefaultBackend = cpu_pure::CpuPure;

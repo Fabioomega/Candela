@@ -54,6 +54,22 @@ fn scalar_op_axby_non_contiguous() {
 }
 
 #[test]
+fn scalar_op_axby_transposed() {
+    // [2,3] transposed to [3,2]: fully non-contiguous, stride [1,3].
+    // logical order [0,3,1,4,2,5]; 2x+1 → [1,7,3,9,5,11].
+    let base = arange(6, &[2, 3]);
+    let input = base.as_layout(base.layout().transpose());
+    let output = compute_op(
+        &OpKind::ScalarOp(OpKindScalar::AxBy(2.0, 1.0)),
+        vec![0.0; 6],
+        &Layout::from_shape(&[3, 2], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![1.0, 7.0, 3.0, 9.0, 5.0, 11.0]);
+    assert!(output.is_contiguous());
+}
+
+#[test]
 fn scalar_op_exp() {
     let input = td(vec![0.0], &[1]);
     let output = compute_op(
@@ -161,6 +177,24 @@ fn add_both_non_contiguous() {
         &[lhs, rhs],
     );
     assert_eq!(output.data(), &vec![3.0; 6]);
+}
+
+#[test]
+fn add_transposed() {
+    // Both operands are [2,3] transposed to [3,2], fully non-contiguous.
+    // logical order [0,3,1,4,2,5]; element-wise sum → [0,6,2,8,4,10].
+    let base_a = arange(6, &[2, 3]);
+    let lhs = base_a.as_layout(base_a.layout().transpose());
+    let base_b = arange(6, &[2, 3]);
+    let rhs = base_b.as_layout(base_b.layout().transpose());
+    let output = compute_op(
+        &OpKind::Add,
+        vec![0.0; 6],
+        &Layout::from_shape(&[3, 2], 0),
+        &[lhs, rhs],
+    );
+    let logical: Vec<f64> = output.iter().copied().collect();
+    assert_eq!(logical, vec![0.0, 6.0, 2.0, 8.0, 4.0, 10.0]);
 }
 
 #[test]
@@ -418,6 +452,40 @@ fn matmul_batched() {
     assert_eq!(output.data(), &vec![1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0]);
 }
 
+#[test]
+fn matmul_transposed() {
+    // Both operands are physically transposed 2x2 views (stride [1,2]).
+    // A = [[1,2],[3,4]], B = [[5,6],[7,8]]; A@B = [[19,22],[43,50]].
+    let a_phys = td(vec![1.0, 3.0, 2.0, 4.0], &[2, 2]);
+    let a = a_phys.as_layout(a_phys.layout().transpose());
+    let b_phys = td(vec![5.0, 7.0, 6.0, 8.0], &[2, 2]);
+    let b = b_phys.as_layout(b_phys.layout().transpose());
+    let output = compute_op(
+        &OpKind::MatMul(1.0),
+        vec![0.0; 4],
+        &Layout::from_shape(&[2, 2], 0),
+        &[a, b],
+    );
+    assert_eq!(output.data(), &vec![19.0, 22.0, 43.0, 50.0]);
+}
+
+#[test]
+fn matmul_batched_transposed() {
+    // A is [2,2,2] with its last two axes transposed (non-contiguous batch
+    // matrices); B is contiguous identity per batch, so A@B = A.
+    // A logical: batch 0 [[1,2],[3,4]], batch 1 [[5,6],[7,8]].
+    let a_phys = td(vec![1.0, 3.0, 2.0, 4.0, 5.0, 7.0, 6.0, 8.0], &[2, 2, 2]);
+    let a = a_phys.as_layout(a_phys.layout().transpose_axes(&[0, 2, 1]).unwrap());
+    let b = td(vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0], &[2, 2, 2]);
+    let output = compute_op(
+        &OpKind::MatMul(1.0),
+        vec![0.0; 8],
+        &Layout::from_shape(&[2, 2, 2], 0),
+        &[a, b],
+    );
+    assert_eq!(output.data(), &vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+}
+
 // ── cpu_compute_op_f64 (matmul_sum) ──────────────────────────────────────────
 // MatMulSum(alpha, beta, sign) computes: alpha*(A@B) +/- beta*C
 // All tests use A = identity [[1,0],[0,1]], B = [[2,3],[4,5]], so A@B = [[2,3],[4,5]].
@@ -547,6 +615,29 @@ fn broadcast_vector_to_matrix() {
     assert_eq!(logical, vec![4.0, 5.0, 6.0, 4.0, 5.0, 6.0]);
 }
 
+#[test]
+fn broadcast_transposed() {
+    // [1,3] transposed to [3,1] (non-contiguous, stride [1,3]), then the
+    // size-1 trailing dim is broadcast to [3,4].
+    let base = td(vec![10.0, 20.0, 30.0], &[1, 3]);
+    let input = base.as_layout(base.layout().transpose());
+    let new_layout = input.layout().broadcast(&[3, 4]).unwrap();
+    let output = compute_op(
+        &OpKind::Broadcast(new_layout.clone()),
+        vec![0.0; 12],
+        &new_layout,
+        &[input],
+    );
+    assert_eq!(output.shape(), &[3, 4]);
+    let logical: Vec<f64> = output.iter().copied().collect();
+    assert_eq!(
+        logical,
+        vec![
+            10.0, 10.0, 10.0, 10.0, 20.0, 20.0, 20.0, 20.0, 30.0, 30.0, 30.0, 30.0
+        ]
+    );
+}
+
 // ── cpu_compute_op_f64_inplace (broadcast) ───────────────────────────────────
 
 #[test]
@@ -591,6 +682,20 @@ fn sum_non_contiguous() {
         &[input],
     );
     assert_eq!(output.data(), &vec![3.0]);
+}
+
+#[test]
+fn sum_transposed() {
+    // [2,3] transposed to [3,2], fully non-contiguous; total sum = 15.
+    let base = arange(6, &[2, 3]);
+    let input = base.as_layout(base.layout().transpose());
+    let output = compute_op(
+        &OpKind::Sum,
+        vec![0.0; 1],
+        &Layout::from_shape(&[1], 0),
+        &[input],
+    );
+    assert_eq!(output.data(), &vec![15.0]);
 }
 
 #[test]

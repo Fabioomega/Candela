@@ -66,11 +66,7 @@ impl<T: Clone> Storage<T> {
 
     #[inline]
     pub fn as_mut_ptr(&mut self) -> Option<*mut T> {
-        if let Some(buffer) = Arc::get_mut(&mut self.buffer) {
-            Some(buffer.as_mut_ptr())
-        } else {
-            None
-        }
+        Arc::get_mut(&mut self.buffer).map(|buffer| buffer.as_mut_ptr())
     }
 
     #[inline]
@@ -106,7 +102,7 @@ impl<T: Clone> TensorData<T> {
         let len: usize = shape.iter().product();
 
         Self {
-            storage: Storage::from_scalar(scalar, len as usize),
+            storage: Storage::from_scalar(scalar, len),
             layout: Layout::from_shape(shape, 0),
         }
     }
@@ -194,10 +190,19 @@ impl<T: Clone> TensorData<T> {
         }
     }
 
+    /// Iterate over the backing buffer using `layout` instead of this storage's own
+    /// layout. Useful for traversals more exotic than the safe interface exposes.
+    ///
+    /// # Safety
+    ///
+    /// `layout` must be a valid transformation of this storage's current layout -
+    /// every index it addresses must fall within the backing buffer. A layout
+    /// derived from this storage's layout (a view, slice, transpose, or broadcast
+    /// of it) upholds this; an unrelated layout may read out of bounds and is
+    /// undefined behaviour. The `debug_assert!` below is only a coarse guard, not
+    /// a full bounds check.
     #[inline]
     pub unsafe fn iter_as_layout<'a>(&'a self, layout: &'a Layout) -> SliceIter<'a, T> {
-        // This is a rough check. It does a rough guard on the layout that is being iterated over.
-        // The correct way to use this is my transmuting the layout the tensor already have, otherwise UB may happen.
         debug_assert!(
             self.layout().len() >= layout.len() && self.layout.offset() >= layout.offset()
         );
@@ -288,7 +293,11 @@ impl<T: Clone + Default> TensorData<T> {
         packing_buffer_size: usize,
     ) -> IterImpl<ChunkedContiguousIter<'_, T>, ChunkedIter<'_, T>> {
         if self.is_contiguous() {
-            IterImpl::Contiguous(ChunkedContiguousIter::new(self.data(), packing_buffer_size))
+            let start = self.offset();
+            IterImpl::Contiguous(ChunkedContiguousIter::new(
+                &self.data()[start..start + self.len()],
+                packing_buffer_size,
+            ))
         } else {
             IterImpl::NotContiguous(ChunkedSliceIter::new(
                 self.iter().cloned(),
@@ -359,7 +368,7 @@ impl<T: std::fmt::Display + Copy> std::fmt::Display for TensorData<T> {
                     indent += 2;
 
                     if dim != last {
-                        write!(f, "\n")?;
+                        writeln!(f)?;
                     }
                 }
                 StepInfo::ExitDimension(dim) => {
@@ -370,7 +379,7 @@ impl<T: std::fmt::Display + Copy> std::fmt::Display for TensorData<T> {
                         write!(f, "{:indent$}", "", indent = indent)?;
                     }
 
-                    write!(f, "]\n")?;
+                    writeln!(f, "]")?;
                 }
                 StepInfo::Value(v) => {
                     if in_seq {

@@ -1,5 +1,6 @@
 use std::iter::zip;
 
+use crate::PACKING_BUFFER_SIZE;
 use crate::tensor::Dimension;
 use crate::tensor::backend::common::clone_to_buffer;
 use crate::tensor::definitions::{ChunkedIter, NumberLike};
@@ -7,7 +8,6 @@ use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKindScalar;
 use crate::tensor::storage::{Storage, TensorData};
 use crate::tensor::traits::{StreamingIterator, StreamingZip};
-use crate::{PACKING_BUFFER_SIZE, branch_fast_iter};
 use cblas_sys::CBLAS_LAYOUT::{self, CblasRowMajor};
 use cblas_sys::CBLAS_TRANSPOSE::{self, CblasNoTrans, CblasTrans};
 
@@ -30,16 +30,8 @@ pub(crate) fn fill_buffer<T: Clone>(buffer: *mut T, len: usize, value: T) {
     }
 }
 
-#[inline]
-pub(crate) fn normalize_axis<T: Clone>(axis: isize, shape_len: usize) -> usize {
-    (if axis < 0 {
-        shape_len as isize + axis
-    } else {
-        axis
-    }) as usize
-}
-
 // When inplace=true, input and output alias the same buffer.
+#[allow(clippy::too_many_arguments)]
 #[inline]
 fn compute_blas_scalar_op<T: NumberLike, F: Fn(T, T) -> T>(
     ops: &[OpKindScalar<T>],
@@ -503,10 +495,10 @@ pub(crate) fn compute_matmul_sum<T: Copy>(
             alpha,
             a.as_ptr(),
             lda,
-            a_stride as i32,
+            a_stride,
             b.as_ptr(),
             ldb,
-            b_stride as i32,
+            b_stride,
             beta,
             output_buffer.as_mut_ptr(),
             n,
@@ -514,144 +506,6 @@ pub(crate) fn compute_matmul_sum<T: Copy>(
             a_shape[0] as i32,
         );
     };
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
-}
-
-#[inline]
-fn compute_op_tensor<T: NumberLike, F: Fn(T, T) -> T>(
-    inputs: &[TensorData<T>],
-    output_buffer: &mut Vec<T>,
-    start_value: T,
-    op: F,
-) {
-    output_buffer[0] = start_value;
-
-    branch_fast_iter!(inputs[0].fast_iter() => it, {
-        for el in it {
-            output_buffer[0] = op(output_buffer[0], *el);
-        }
-    });
-}
-
-#[inline]
-pub(crate) fn compute_sum_tensor<T: NumberLike>(
-    inputs: &[TensorData<T>],
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
-    start_value: T,
-) -> TensorData<T> {
-    compute_op_tensor(inputs, &mut output_buffer, start_value, |a, b| a + b);
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
-}
-
-#[inline]
-pub(crate) fn compute_max_tensor<T: NumberLike, F: Fn(T, T) -> T>(
-    inputs: &[TensorData<T>],
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
-    start_value: T,
-    max: F,
-) -> TensorData<T> {
-    compute_op_tensor(inputs, &mut output_buffer, start_value, max);
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
-}
-
-#[inline]
-pub(crate) fn compute_mean_tensor<T: NumberLike, F: FnOnce(T, usize) -> T>(
-    inputs: &[TensorData<T>],
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
-    start_value: T,
-    div: F,
-) -> TensorData<T> {
-    compute_op_tensor(inputs, &mut output_buffer, start_value, |a, b| a + b);
-    output_buffer[0] = div(output_buffer[0], inputs[0].layout().len());
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
-}
-
-// TODO: Confirm that the contiguous path can vectorize
-// TODO: Benchmark if the contiguous path can be made faster by reducing striding code
-fn compute_op_axis_tensor<T: NumberLike, F: Fn(T, T) -> T>(
-    inputs: &[TensorData<T>],
-    axis: usize,
-    output_buffer: &mut Vec<T>,
-    start_value: T,
-    op: F,
-) {
-    let t = &inputs[0];
-    let n_outer: usize = t.shape()[..axis].iter().product();
-    let n_size: usize = t.shape()[axis];
-    let n_inner: usize = t.shape()[axis + 1..].iter().product();
-
-    let mut base_pos = 0;
-    output_buffer.fill(start_value);
-
-    branch_fast_iter!(
-        t.fast_iter() => _it, {
-            let mut it = _it;
-
-            for _ in 0..n_outer {
-                for _ in 0..n_size {
-                    for inner in 0..n_inner {
-                        let el = unsafe { it.next().unwrap_unchecked() };
-                        let current = output_buffer[base_pos + inner];
-
-                        output_buffer[base_pos + inner] = op(current, *el);
-                    }
-                }
-
-                base_pos += n_inner;
-            }
-        }
-    );
-}
-
-#[inline]
-pub(crate) fn compute_sum_axis_tensor<T: NumberLike>(
-    inputs: &[TensorData<T>],
-    axis: usize,
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
-    start_value: T,
-) -> TensorData<T> {
-    compute_op_axis_tensor(inputs, axis, &mut output_buffer, start_value, |a, b| a + b);
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
-}
-
-#[inline]
-pub(crate) fn compute_max_axis_tensor<T: NumberLike, F: Fn(T, T) -> T>(
-    inputs: &[TensorData<T>],
-    axis: usize,
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
-    start_value: T,
-    max: F,
-) -> TensorData<T> {
-    compute_op_axis_tensor(inputs, axis, &mut output_buffer, start_value, max);
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
-}
-
-#[inline]
-pub(crate) fn compute_mean_axis_tensor<T: NumberLike, F: Fn(T, usize) -> T>(
-    inputs: &[TensorData<T>],
-    axis: usize,
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
-    start_value: T,
-    div: F,
-) -> TensorData<T> {
-    compute_op_axis_tensor(inputs, axis, &mut output_buffer, start_value, |a, b| a + b);
-
-    let n = inputs[0].shape()[axis];
-    for el in output_buffer.iter_mut() {
-        *el = div(*el, n);
-    }
 
     TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
 }

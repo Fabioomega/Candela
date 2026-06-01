@@ -65,7 +65,7 @@ impl<'a, T, B: Backend> Iterator for TopologicalSortIter<'a, T, B> {
 /// Returns an iterator that visits every node reachable from `base_node` in
 /// topological order (inputs before the ops that consume them).
 ///
-/// `base_node` itself is **not** yielded — the planner adds it separately at the
+/// `base_node` itself is **not** yielded - the planner adds it separately at the
 /// end of the plan. All other nodes are deduplicated by ID, so shared nodes
 /// appear exactly once.
 ///
@@ -78,7 +78,7 @@ impl<'a, T, B: Backend> Iterator for TopologicalSortIter<'a, T, B> {
 ///
 /// If a cache node and a regular node share the same ID in the same DAG, the
 /// regular node wins and the cache is ignored for that branch. This is a known
-/// edge case — avoid constructing graphs where this can happen.
+/// edge case - avoid constructing graphs where this can happen.
 #[cfg_attr(
     feature = "tracing",
     tracing::instrument(

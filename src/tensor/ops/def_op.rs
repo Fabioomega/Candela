@@ -9,7 +9,7 @@ pub enum Sign {
 // TODO: Design some way to fuse arbitrary combinations of ops
 // without handling it at the runtime, because it would be annoying.
 // Maybe macros?
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OpKindScalar<T> {
     AxBy(T, T),
     Exp,
@@ -21,7 +21,7 @@ pub enum OpKindScalar<T> {
     // TODO: Sigmoid,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OpKind<T> {
     NoOp,
     ScalarOp(OpKindScalar<T>),

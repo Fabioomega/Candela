@@ -4,7 +4,7 @@
 //
 // Matmul is the only built-in op that requires contiguous memory. Non-contiguous
 // inputs (transposed, sliced, etc.) are packed automatically via an AsContiguous
-// node before the BLAS call — zero extra effort from the caller.
+// node before the BLAS call - zero extra effort from the caller.
 
 use candela::{Dimension, Tensor};
 
@@ -30,7 +30,7 @@ fn main() {
     // A [2,3,4] @ B [2,4,5] = C [2,3,5]
     //
     // The leading dimension is a batch index. Slice i of C equals slice i of A
-    // multiplied by slice i of B — each pair is an independent [3,4] @ [4,5] matmul.
+    // multiplied by slice i of B - each pair is an independent [3,4] @ [4,5] matmul.
     //
     // Using all-ones matrices: every output element is the inner product of four
     // ones, so every element of C equals 4.0.

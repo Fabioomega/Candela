@@ -135,10 +135,7 @@ impl SliceInfo {
             let end = match r.end {
                 SliceBounds::End => layout.shape()[dim],
                 SliceBounds::Index(i) => i,
-                SliceBounds::ReverseIndex(i) => {
-                    let true_index = layout.shape()[dim] - i;
-                    true_index
-                }
+                SliceBounds::ReverseIndex(i) => layout.shape()[dim] - i,
                 _ => unreachable!("a new variation of SliceBounds was implemented"),
             };
 

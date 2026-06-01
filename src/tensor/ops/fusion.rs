@@ -108,13 +108,13 @@ where
 {
     match (op1, op2) {
         (OpKind::ScalarOp(s1), OpKind::ScalarOp(s2)) => {
-            fuse_scalar_op(&[s1.clone()], inputs1, &[s2.clone()])
+            fuse_scalar_op(std::slice::from_ref(s1), inputs1, std::slice::from_ref(s2))
         }
         (OpKind::FusedScalar(f1), OpKind::ScalarOp(s1)) => {
-            fuse_scalar_op(&f1, inputs1, &[s1.clone()])
+            fuse_scalar_op(f1, inputs1, std::slice::from_ref(s1))
         }
         (OpKind::ScalarOp(s1), OpKind::FusedScalar(f2)) => {
-            fuse_scalar_op(&[s1.clone()], inputs1, f2)
+            fuse_scalar_op(std::slice::from_ref(s1), inputs1, f2)
         }
         (OpKind::FusedScalar(f1), OpKind::FusedScalar(f2)) => fuse_scalar_op(f1, inputs1, f2),
         _ => unreachable!(),
@@ -175,13 +175,12 @@ where
 
             let mut b1 = T::MUL_NEUTRAL;
 
-            if let Some(node) = node {
-                if let OpKind::ScalarOp(scalar) = &node.op
-                    && let OpKindScalar::AxBy(a2, b2) = scalar
-                    && *b2 == T::SUM_NEUTRAL
-                {
-                    b1 = *a2;
-                }
+            if let Some(node) = node
+                && let OpKind::ScalarOp(scalar) = &node.op
+                && let OpKindScalar::AxBy(a2, b2) = scalar
+                && *b2 == T::SUM_NEUTRAL
+            {
+                b1 = *a2;
             }
 
             Some(Fusion {
@@ -211,13 +210,12 @@ where
 
             let mut b1 = T::MUL_NEUTRAL;
 
-            if let Some(node) = node {
-                if let OpKind::ScalarOp(scalar) = &node.op
-                    && let OpKindScalar::AxBy(a2, b2) = scalar
-                    && *b2 == T::SUM_NEUTRAL
-                {
-                    b1 = *a2;
-                }
+            if let Some(node) = node
+                && let OpKind::ScalarOp(scalar) = &node.op
+                && let OpKindScalar::AxBy(a2, b2) = scalar
+                && *b2 == T::SUM_NEUTRAL
+            {
+                b1 = *a2;
             }
 
             Some(Fusion {
@@ -253,10 +251,6 @@ where
             Some(fuse_scalar_ops(op1, inputs1, op2))
         }
         (OpKind::View(_), OpKind::AsContiguous) => Some(Fusion {
-            op: op1.clone(),
-            inputs: inputs1.into(),
-        }),
-        (OpKind::NoOp, OpKind::NoOp) => Some(Fusion {
             op: op1.clone(),
             inputs: inputs1.into(),
         }),

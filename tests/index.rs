@@ -33,7 +33,7 @@ fn get_out_of_bounds() {
 
 #[test]
 fn get_sliced() {
-    // [[0,1,2],[3,4,5],[6,7,8]], slice rows [1..3] — non-contiguous view
+    // [[0,1,2],[3,4,5],[6,7,8]], slice rows [1..3] - non-contiguous view
     let t = Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], &[3, 3]);
     let sliced = t.slice(s![1..3, ..]).unwrap().materialize();
     // sliced[0][1] == 4.0, sliced[1][2] == 8.0
@@ -43,7 +43,7 @@ fn get_sliced() {
 
 #[test]
 fn get_transposed() {
-    // [[0,1,2],[3,4,5]].T — [i,j] in transposed space reads [j,i] of original
+    // [[0,1,2],[3,4,5]].T - [i,j] in transposed space reads [j,i] of original
     let t = Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0], &[2, 3]);
     let tr = t.transpose().materialize();
     // tr is [3,2]: tr[2][1] == original[1][2] == 5.0
@@ -75,7 +75,7 @@ fn item_scalar() {
 
 #[test]
 fn item_after_materialize() {
-    // Ops that reduce to a single element — item reads it correctly
+    // Ops that reduce to a single element - item reads it correctly
     let t = Tensor::from_scalar(3.0_f64, &[1]);
     let result = (t * 7.0).materialize();
     assert_eq!(result.item(), &21.0);

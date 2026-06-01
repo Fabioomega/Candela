@@ -1,3 +1,7 @@
+extern crate cblas;
+extern crate intel_mkl_src;
+extern crate intel_mkl_sys;
+
 mod f32;
 mod f64;
 mod kernels;
@@ -15,26 +19,26 @@ impl Backend for CpuMkl {
     const SUPPORTS_2D_TRANSPOSED_MATMUL: bool = true;
     const SUPPORTS_NON_CONTIGUOUS_MATMUL: bool = false;
 
-    fn compute<T: Dtype>(
+    fn compute<T>(
         op: &OpKind<T>,
         output_buffer: Vec<T>,
         output_layout: &Layout,
         inputs: &[TensorData<T>],
     ) -> TensorData<T>
     where
-        T: ComputeFor<CpuMkl>,
+        T: Dtype + ComputeFor<CpuMkl>,
     {
         T::compute(op, output_buffer, output_layout, inputs)
     }
 
-    fn compute_inplace<T: Dtype>(
+    fn compute_inplace<T>(
         op: &OpKind<T>,
         output_layout: &Layout,
         inputs: Vec<TensorData<T>>,
         output_idx: usize,
     ) -> TensorData<T>
     where
-        T: ComputeFor<Self>,
+        T: Dtype + ComputeFor<Self>,
     {
         T::compute_inplace(op, output_layout, inputs, output_idx)
     }
@@ -47,7 +51,7 @@ impl ComputeFor<CpuMkl> for f64 {
         output_layout: &Layout,
         inputs: &[TensorData<f64>],
     ) -> TensorData<f64> {
-        f64::compute_op_f64(op, output_buffer, output_layout, inputs)
+        f64::compute_op(op, output_buffer, output_layout, inputs)
     }
 
     fn compute_inplace(
@@ -56,7 +60,7 @@ impl ComputeFor<CpuMkl> for f64 {
         inputs: Vec<TensorData<Self>>,
         output_idx: usize,
     ) -> TensorData<Self> {
-        f64::compute_op_f64_inplace(op, output_layout, inputs, output_idx)
+        f64::compute_op_inplace(op, output_layout, inputs, output_idx)
     }
 }
 
@@ -67,7 +71,7 @@ impl ComputeFor<CpuMkl> for f32 {
         output_layout: &Layout,
         inputs: &[TensorData<f32>],
     ) -> TensorData<f32> {
-        f32::compute_op_f32(op, output_buffer, output_layout, inputs)
+        f32::compute_op(op, output_buffer, output_layout, inputs)
     }
 
     fn compute_inplace(
@@ -76,6 +80,6 @@ impl ComputeFor<CpuMkl> for f32 {
         inputs: Vec<TensorData<Self>>,
         output_idx: usize,
     ) -> TensorData<Self> {
-        f32::compute_op_f32_inplace(op, output_layout, inputs, output_idx)
+        f32::compute_op_inplace(op, output_layout, inputs, output_idx)
     }
 }

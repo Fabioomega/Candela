@@ -15,7 +15,7 @@ use std::sync::Arc;
 /// Internally, a `Tensor<T>` is an `Arc<`[`TensorGraphEdge<T>`]`>`: a
 /// reference-counted leaf node that carries the concrete [`TensorData<T>`]
 /// (data buffer + [`Layout`]) and the unique ID that the execution planner uses
-/// to track this value in the graph. `Clone` is therefore a cheap Arc bump — the
+/// to track this value in the graph. `Clone` is therefore a cheap Arc bump - the
 /// underlying storage is shared with the original. Call [`clone_deep`] when you
 /// need a fully independent buffer, or [`clone_detached`] when you want a shallow
 /// copy that the graph will treat as an unrelated tensor.
@@ -35,7 +35,7 @@ use std::sync::Arc;
 /// let t = Tensor::from_scalar(1.0_f64, &[3, 3]);
 /// assert_eq!(t.data().len(), 9);
 ///
-/// // From an existing vec — total elements must equal the product of `shape`.
+/// // From an existing vec - total elements must equal the product of `shape`.
 /// let t = Tensor::from_vec(vec![1.0_f64, 2.0, 3.0], &[3]);
 /// assert_eq!(t.data(), &vec![1.0, 2.0, 3.0]);
 ///
@@ -129,6 +129,16 @@ impl<T: Copy, B: Backend> Tensor<T, B> {
         self.graph.get().iter()
     }
 
+    /// Iterate over the backing buffer using `layout` instead of this tensor's own
+    /// layout. Useful for traversals more exotic than the safe interface exposes.
+    ///
+    /// # Safety
+    ///
+    /// `layout` must be a valid transformation of this tensor's current layout -
+    /// every index it addresses must fall within the backing buffer. A layout
+    /// derived from this tensor's layout (a view, slice, transpose, or broadcast
+    /// of it) upholds this; an unrelated layout may read out of bounds and is
+    /// undefined behaviour.
     #[inline]
     pub unsafe fn iter_as_layout<'a>(&'a self, layout: &'a Layout) -> SliceIter<'a, T> {
         unsafe { self.graph.get().iter_as_layout(layout) }
@@ -152,7 +162,7 @@ impl<T: Copy, B: Backend> Tensor<T, B> {
     /// Make a shallow copy of this tensor with a new graph identity.
     ///
     /// The underlying buffer is shared with the original, but the new tensor carries a fresh
-    /// graph ID. The planner treats it as an unrelated input — no connection is maintained to
+    /// graph ID. The planner treats it as an unrelated input - no connection is maintained to
     /// any live promises that reference the original. Use [`Tensor::clone`] to preserve that
     /// connection, or [`Tensor::clone_deep`] for a fully independent buffer.
     ///
@@ -173,7 +183,7 @@ impl<T: Numeric, B: Backend> Tensor<T, B> {
     ///
     /// Creates a `NoOp` [`TensorGraphNode`] with the tensor's edge as its sole input.
     /// The primary use case is initializing a mutable accumulator that will have ops
-    /// applied to it in a loop — as it needs a [`TensorPromise<T>`] on both sides
+    /// applied to it in a loop - as it needs a [`TensorPromise<T>`] on both sides
     /// of the assignment:
     ///
     /// ```
@@ -220,7 +230,7 @@ impl<T, B: Backend> Clone for Tensor<T, B> {
     /// Shallow copy sharing the same underlying buffer and graph identity.
     ///
     /// Equivalent to bumping an `Arc` reference count. The copy is connected to all promises
-    /// that reference the original — the planner sees them as the same input node. For a copy
+    /// that reference the original - the planner sees them as the same input node. For a copy
     /// the graph treats as unrelated, use [`clone_detached`]. For an independent buffer, use
     /// [`clone_deep`].
     ///
@@ -262,7 +272,7 @@ impl<T: std::fmt::Display + Copy, B: Backend> std::fmt::Display for Tensor<T, B>
                     indent += 2;
 
                     if dim != last {
-                        write!(f, "\n")?;
+                        writeln!(f)?;
                     }
                 }
                 StepInfo::ExitDimension(dim) => {
@@ -273,7 +283,7 @@ impl<T: std::fmt::Display + Copy, B: Backend> std::fmt::Display for Tensor<T, B>
                         write!(f, "{:indent$}", "", indent = indent)?;
                     }
 
-                    write!(f, "]\n")?;
+                    writeln!(f, "]")?;
                 }
                 StepInfo::Value(v) => {
                     if in_seq {

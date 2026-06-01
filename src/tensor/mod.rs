@@ -1,7 +1,3 @@
-extern crate cblas;
-extern crate intel_mkl_src;
-extern crate intel_mkl_sys;
-
 #[macro_use]
 mod convenience;
 
@@ -19,12 +15,12 @@ pub(crate) mod traits;
 pub(crate) mod graph;
 pub(crate) mod ops;
 pub mod promise;
-pub mod tensor;
+pub mod tensor_interface;
 pub use convenience::*;
 
 pub use mem_formats::layout::Layout;
 pub use mem_formats::slice::SliceRange;
 pub use promise::{CachedTensorPromise, TensorPromise};
-pub use tensor::Tensor;
+pub use tensor_interface::Tensor;
 pub use traits::Dimension;
 pub(crate) use traits::FromIndex;

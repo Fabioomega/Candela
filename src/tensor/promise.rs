@@ -8,18 +8,18 @@
 #![allow(private_bounds)]
 use std::sync::Arc;
 
-use crate::tensor::backend::{Backend, ComputeFor};
+use crate::tensor::backend::{Backend, ComputeFor, DefaultBackend};
 use crate::tensor::definitions::NumberLike;
 use crate::tensor::errors::OpError;
 use crate::tensor::graph::{NodeKind, TensorGraphCacheNode, TensorGraphNode};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKind;
-use crate::tensor::tensor::Tensor;
+use crate::tensor::tensor_interface::Tensor;
 use crate::tensor::traits::{Dimension, Numeric, Promising};
 
 /// A lazy computation that runs when you call [`.materialize()`].
 ///
-/// Building a `TensorPromise` chain allocates no intermediate tensors — the
+/// Building a `TensorPromise` chain allocates no intermediate tensors - the
 /// graph is constructed, not evaluated. Compatible scalar operations are fused
 /// during construction so the work is already minimised before execution begins.
 ///
@@ -34,7 +34,7 @@ use crate::tensor::traits::{Dimension, Numeric, Promising};
 /// let result = (t * 2.0 + 1.0).materialize();
 /// assert_eq!(result.data(), &vec![7.0; 4]);
 /// ```
-pub type TensorPromise<T, B> = RawTensorPromise<TensorGraphNode<T, B>>;
+pub type TensorPromise<T, B = DefaultBackend> = RawTensorPromise<TensorGraphNode<T, B>>;
 
 /// A lazy computation whose result is kept alive after the first evaluation.
 ///
@@ -56,17 +56,17 @@ pub type TensorPromise<T, B> = RawTensorPromise<TensorGraphNode<T, B>>;
 /// let t = Tensor::from_scalar(1.0_f64, &[4]);
 /// let cached = (t + 2.0).cache();
 ///
-/// // Two separate materializations — the inner graph runs only once.
+/// // Two separate materializations - the inner graph runs only once.
 /// let r1 = (&cached * 2.0).materialize();
 /// let r2 = (&cached + 10.0).materialize();
 /// assert_eq!(r1.data(), &vec![6.0; 4]);
 /// assert_eq!(r2.data(), &vec![13.0; 4]);
 /// ```
-pub type CachedTensorPromise<T, B> = RawTensorPromise<TensorGraphCacheNode<T, B>>;
+pub type CachedTensorPromise<T, B = DefaultBackend> = RawTensorPromise<TensorGraphCacheNode<T, B>>;
 
 /// The underlying generic promise struct, parameterised over the graph node type.
 ///
-/// You won't normally use this type directly — work with the [`TensorPromise`]
+/// You won't normally use this type directly - work with the [`TensorPromise`]
 /// and [`CachedTensorPromise`] aliases instead.
 pub struct RawTensorPromise<P> {
     pub(crate) graph: Arc<P>,
@@ -94,7 +94,7 @@ impl<T: Numeric, B: Backend> TensorPromise<T, B> {
     /// result after the first evaluation.
     ///
     /// Internally this wraps `self` in a `NoOp` cache node, so the original
-    /// graph is unchanged — caching is layered on top, not baked in.
+    /// graph is unchanged - caching is layered on top, not baked in.
     /// The `NoOp` is used to stop the fusion layer from skipping the cache.
     ///
     /// # Examples
@@ -211,11 +211,9 @@ impl<T: Numeric + ComputeFor<B>, B: Backend> CachedTensorPromise<T, B> {
     /// assert!(cached.get_cache().is_some());
     /// ```
     pub fn get_cache(&self) -> Option<Tensor<T>> {
-        if let Some(tensor) = self.graph.get_cache() {
-            Some(Tensor::from_data(tensor.clone()))
-        } else {
-            None
-        }
+        self.graph
+            .get_cache()
+            .map(|tensor| Tensor::from_data(tensor.clone()))
     }
 
     /// Return the cached result if it has already been computed, or calls

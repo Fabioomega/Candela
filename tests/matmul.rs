@@ -87,7 +87,7 @@ fn matmul_batched_values<T: FloatLikeTensorElement>(#[case] _t: T) {
 
 #[test]
 fn matmul_shape_mismatch() {
-    // [3,4] @ [3,4] — inner dims 4 != 3
+    // [3,4] @ [3,4] - inner dims 4 != 3
     let a = Tensor::from_scalar(1.0, &[3, 4]);
     let b = Tensor::from_scalar(1.0, &[3, 4]);
     assert!(a.matmul(&b).is_err());
@@ -111,7 +111,7 @@ fn matmul_not_symmetric<T: FloatLikeTensorElement>(#[case] _t: T) {
 #[test]
 #[should_panic]
 fn matmul_plus_bias_wrong_shape_panics() {
-    // (A@B) shape is [2,2]; bias is [3,3] — incompatible, no broadcast possible
+    // (A@B) shape is [2,2]; bias is [3,3] - incompatible, no broadcast possible
     let a = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
     let b = Tensor::from_slice(&[5.0, 6.0, 7.0, 8.0], &[2, 2]);
     let bias = Tensor::from_scalar(1.0, &[3, 3]);

@@ -1,12 +1,15 @@
 # Execution Planner
 
 When you call `.materialize()` on a promise, Candela doesn't just start executing nodes
-in some arbitrary order. It first builds a *plan* — a fully ordered schedule that says
-exactly what to compute, which buffer to write into, and what to free afterward. This
-document explains how that plan is built.
+in some arbitrary order. It first builds a *plan* - a fully ordered schedule that says
+exactly what to compute, which buffer to write into, what to free afterward, and which
+buffer holds the final answer. This document explains how that plan is built.
 
-If you haven't read [graph.md](graph.md) yet, it's worth a quick look first — the
+If you haven't read [graph.md](graph.md) yet, it's worth a quick look first - the
 planner works directly with the node types described there.
+
+This document describes the planner as it is now. For how it got here - the dead ends
+and the bugs that shaped it - see [planner-history.md](planner-history.md).
 
 ---
 
@@ -24,178 +27,212 @@ that question before execution begins.
 
 ---
 
-## Three passes
+## How a plan is built
 
-### 1. Topological sort
+The planner runs in two passes over the graph, followed by a small fixup.
 
-The planner starts by sorting the graph in dependency order — inputs before the ops that
-consume them. (A topological sort is any ordering of a DAG's nodes where every
-dependency appears before the thing that depends on it. For a computation graph, that
-just means: no op runs before its inputs are ready.) This is done by `topological_sort` in `src/tensor/planner/sort.rs` using
-an iterative post-order DFS (no recursion, so deep graphs don't blow the stack).
+### Pass 1 - the pre-planner
 
-A few details worth knowing:
-- Shared nodes are deduplicated via a `HashSet` of node IDs. If the same node feeds into
-  two different parents, it appears in the sorted output exactly once.
-- If a `CachedTensorPromise` is already filled, the planner doesn't traverse its subtree
-  — it treats it as a leaf.
-- The root node (the one you called `.materialize()` on) is *not* yielded by the
-  iterator. It's planned separately at the end.
+A single walk in topological order (`pre_plan` in `src/tensor/planner/plan.rs`) does
+four things at once, for every node:
 
-### 2. Lifetime analysis
+1. **Orders it.** The walk is driven by `topological_sort` (`sort.rs`), an iterative
+   post-order DFS - inputs before the ops that consume them, no recursion so deep graphs
+   don't overflow the stack. Shared nodes are deduplicated by ID, so a node feeding two
+   parents appears once. A *filled* `CachedTensorPromise` is treated as a leaf: its
+   subtree isn't traversed. The root node is not yielded - it's handled at the end of the
+   pass.
 
-After sorting, the planner makes one pass to find out when each intermediate result is
-last read. Specifically, for each node it records the *index* of the last operation that
-uses its output as an input. Once execution reaches that index, the buffer is free.
+2. **Classifies its aliasing.** Each node is sorted into an `AliasKind` - `Alias`,
+   `Takeover`, or `NoAlias` - which decides whether it produces a buffer at all. This is
+   the heart of the planner and gets its own section below.
 
-Nodes whose output is never read by anything else in the graph — the root node, for
-instance — get `end = None`.
+3. **Snapshots its resolved inputs.** For each input, the planner records *the node that
+   actually produces that input's buffer*, as the alias map stands at this point in the
+   walk. The snapshot is frozen onto the node and never recomputed. This is what makes
+   resolution independent of execution order - again, more below.
 
-### 3. Buffer assignment
+4. **Records its lifetime.** It notes the index of the last step that reads the node's
+   output. Once execution passes that index, the buffer is free. A node whose output is
+   never read again - the root, for instance - gets `end = None`.
 
-This is the core of the planner. For each node in order, it picks one of five strategies:
+### Pass 2 - buffer assignment
 
-**In-place reuse.** Scalar ops and binary tensor ops can overwrite one of their own
-inputs. If an input's buffer is already free at this point and the sizes match, the
-planner chooses this — no extra allocation, no cache lookup.
+Now the planner walks the staged nodes in order and, for each, picks how the executor
+should produce its output buffer. This is `classify` in `runtime.rs`, returning one of
+five `ExecKind` strategies:
 
-**Reference pass-through.** Layout-only ops (`View`, `Slice`, `Transpose`) produce no
-new data at all. They alias an existing buffer. The planner extends the original buffer's
-lifetime to cover all aliases and emits a plan step with no real computation.
+**In-place reuse** (`InPlace`). Scalar ops and binary tensor ops can overwrite one of
+their own inputs. If an input's buffer is already free at this point and the sizes match,
+the planner writes the result straight into it - no allocation, no copy.
 
-**Redirect deduplication.** Some ops produce a canonical transformed version of their
-input — `AsContiguous` being the main example. If a duplicate of that op appears later
-for the same input, no buffer is planned for it; the planner resolves its ID, so that
-the executor does not have to worry . See the next section for the full story on
-when this fires and what to watch out for.
+**Reference, slot-backed** (`ReferenceSlot`). Layout-only ops - `View`, `Slice`,
+`Transpose`, `TransposeAxes`, `Broadcast`, and `NoOp` - produce no new data. They alias
+an existing slot-backed buffer at a new layout. The planner extends that buffer's
+lifetime to cover the alias and emits a step with no real computation.
 
-**Buffer reuse.** If a previously allocated buffer has been freed and has the right size,
-the planner reclaims it. This is a linear scan over the current slot list.
+**Reference, eternal** (`ReferenceEternal`). The same, but the aliased input is an edge
+or a cache buffer - things the planner never frees - so there's no slot lifetime to
+extend. This also covers reference *chains*: when a layout-only op aliases another
+layout-only op that itself bottomed out at an edge or cache (e.g. matmul's
+`edge → View → Broadcast`), the inner node owns no slot, so the outer op is eternal too.
 
-**Fresh allocation.** If none of the above apply, a new `Vec<T>` is scheduled for
-allocation at execution time.
+**Buffer reuse** (`UseSlot`). If a previously allocated buffer has been freed and is the
+right size, the planner reclaims it. This is a linear scan over the live slot list.
 
-After assigning all outputs, the planner populates the `dealloc_after` lists — each
-buffer gets appended to the plan step at its `end` index, so the executor drops it
-immediately after its last use.
+**Fresh allocation** (`Allocate`). If none of the above apply, a new `Vec<T>` is
+scheduled for allocation at execution time.
+
+`AsContiguous` straddles two of these: if its input is already contiguous it's a
+reference (no packing needed); otherwise it reuses a freed buffer or allocates one to
+pack into.
+
+### Fixup - deallocation lists
+
+After every output is assigned, the planner walks the slots and appends each buffer's ID
+to the `dealloc_after` list of the plan step at its `end` index. The executor drops a
+buffer the instant the step that last needed it completes.
 
 ---
 
-## Redirect deduplication
+## Aliasing: alias vs takeover
 
-When an op packs a non-contiguous tensor into a fresh contiguous buffer — matmul's BLAS
-path is the main consumer (BLAS is the standard library of optimized linear algebra
-routines; it requires contiguous row-major input) — it would be wasteful to do that work twice if two branches of
-the same graph both need a packed version of the same input. The redirect mechanism
-handles this: the first `AsContiguous` over a given input is registered as *canonical* and
-planned normally. Any later `AsContiguous` over the *same* input node (same `Arc`, same
-ID) within the same planning pass emits no plan step and no buffer — it's recorded in a
-redirect table instead, and the executor transparently serves the canonical buffer to all
-its consumers.
+This is the part worth slowing down for - it's where two earlier designs went wrong (see
+[planner-history.md](planner-history.md)).
 
-A few things to know before you rely on this.
+Some nodes don't produce a buffer; they *are* another node's buffer. `NoOp` is the
+obvious case: it's the identity, so its result is exactly its input's buffer.
+`AsContiguous` is subtler - it packs a non-contiguous input into a fresh contiguous
+buffer, but if two branches of the graph both pack the *same* input, the second packing
+is wasted work. They should share one buffer.
 
-**Deduplication requires a shared node, not shared data.** Two `AsContiguous` ops
-collapse only if they wrap exactly the same `Arc<TensorGraphNode>` — the same pointer,
-the same ID. If two parts of the graph each build their own path to "the same data" (say,
-by calling `.as_promise()` on the same tensor twice), they produce separate nodes with
-separate IDs and each gets its own buffer. There is no deduplication across separately
-constructed graph paths.
+The planner handles both with an **alias map**: a `node id -> owning node` table
+(`AliasMap` in `alias.rs`). `resolve(input)` turns an input into the node that actually
+produces its buffer; absence from the map means a node produces its own. A node enters
+the map one of two ways.
 
-**DFS order picks the canonical node, and it matters across passes.** The redirect table
-is rebuilt on every `.materialize()` call. Whichever `AsContiguous` the DFS visits first
-becomes canonical for that pass. If the canonical node is ephemeral — not backed by a
-`CachedTensorPromise` — it re-allocates and re-computes on every subsequent call even
-after a cached version of the same data is warm. To guarantee the cached buffer is always
-canonical, pass the `CachedTensorPromise` directly as the input to downstream ops:
+### Alias - "I am someone else's buffer"
+
+An `Alias` node contributes no computation and emits no plan step. It records
+`node.id -> target` and disappears. A `NoOp` aliases its input. A *second* `AsContiguous`
+over an input that's already been packed aliases the first one's result. An
+`AsContiguous` over a cache node aliases the cache directly (caches store contiguous
+results - see [graph.md](graph.md)). Aliases point *backward*, to a node already visited
+earlier in the sort, so resolving one always lands on something real.
+
+### Takeover - "I am now the canonical version of my input"
+
+A `Takeover` node *is* computed - it's the first `AsContiguous` over its input, the thing
+that does the packing - but it also **claims** its input. The claim means: from here on,
+anyone who wanted that input should use *me* instead, because I'm the contiguous version
+of it. The same machinery backs cache nodes claiming their inner computation.
+
+Claiming is more than inserting one entry. If something already aliased the claimed node,
+that alias is now stale - it should point at the claimer too. So `takeover` rewrites
+*every* entry pointing at the claimed node to point at the new owner, then points the
+claimed node itself at the new owner. The map stays **single-hop**: after a takeover
+nothing points at the old node, so `resolve` is always one lookup, never a chain.
+
+### The `Tag` - telling "already done" from "needs claiming"
+
+How does the planner know whether a second `AsContiguous` should *alias* the first
+(dedup) or *take over* (because the existing alias isn't actually contiguous)? Each alias
+entry carries a `Tag` describing what its target guarantees: `Anything` (same data, no
+layout promise - a `NoOp`), `AsContiguous` (a contiguous packing), or `AsContiguousCache`
+(a contiguous packing that also survives across materializations). A later `AsContiguous`
+deduplicates only when the existing alias already promises contiguity; over a plain
+`NoOp` alias (`Anything`) it takes over instead.
+
+### Why resolution is a per-node snapshot
+
+Here's the subtle part. A `Takeover` reaches *backward* to claim its input - but
+consumers of that input are scattered across the graph, some sorted *before* the takeover
+and some *after*. They can't be treated the same:
+
+- A consumer planned **before** the takeover must read the *original* input. The claimer
+  hasn't been computed yet at that point in execution; pointing the consumer at it would
+  be a read of a buffer that doesn't exist.
+- A consumer planned **after** the takeover should read the claimer - that's the whole
+  point of deduplication, and by then the claimer's buffer is live.
+
+The planner gets this right for free by **resolving each node's inputs at the moment that
+node is reached in the sort, and freezing the result.** The alias map is built
+incrementally in the same walk, so a node sees only the claims registered *before* its
+own position:
+
+- Consumers sorted before the takeover froze their resolution while the map still pointed
+  at the original input. They read the original. Correct.
+- Consumers sorted after see the rewritten entry and resolve to the claimer. Correct.
+- The takeover node resolves its *own* inputs **before** registering its claim, so it
+  never resolves to itself - it reads the input it's about to pack, exactly as it should.
+
+The backward rewrite (`takeover` fixing up prior entries) only affects consumers planned
+*after* the claim; earlier consumers already froze their inputs and never consult the map
+again. So "frozen at my position in the sort" hands every consumer the one correct answer
+with no special cases and no ordering hazard.
+
+A worked example. `transposed` (a `Transpose`) feeds two consumers:
+`contiguous = transposed.as_contiguous()` and `shifted = &transposed + 1.0`. The sort,
+driven by a LIFO stack, can yield `shifted` *before* `contiguous`:
 
 ```
-// Suboptimal: both AsContiguous ops target raw_promise.id.
-// They deduplicate within a pass, but if the ephemeral one wins the DFS
-// it re-allocates on every call even after the cache is warm.
-let cached = raw_promise.clone().cache();
-let result = (op_a(&cached) + op_b(&raw_promise)).materialize();
-
-// Better: all downstream ops take the cached promise directly.
-// Once warm, AsContiguous(filled_cache) is immediately recognized as
-// redundant — no allocation, no plan step, regardless of DFS order.
-let cached = raw_promise.cache();
-let result = (op_a(&cached) + op_b(&cached)).materialize();
+transposed, shifted, contiguous
 ```
 
-**Filled caches as direct inputs skip the ordering question entirely.** When
-`AsContiguous`'s direct input is an already-filled `CachedTensorPromise`, the planner
-doesn't wait for another `AsContiguous` to appear first. Filled caches always store a
-contiguous result (see [graph.md](graph.md)), so packing is pointless regardless of what
-else is in the graph or what order the DFS visits things. The cache is immediately
-recorded as the redirect target — no plan step, no allocation.
+When `shifted` is reached, no claim on `transposed` exists yet, so its frozen input is
+`transposed` - and at execution it reads the transpose, which is what it wants. When
+`contiguous` is reached it takes over `transposed`; a *later* consumer would resolve to
+`contiguous`. Nobody reads a buffer before it exists. (This exact graph used to panic -
+[planner-history.md](planner-history.md) tells that story.)
 
-**Same-ID edge case.** The sort deduplicates nodes by ID, and `NodeKind::Cache` is keyed
-on its *inner* node's ID. If a `NodeKind::Cache` and a `NodeKind::Node` share the same
-inner ID — possible when constructing graphs manually with cloned nodes, but not
-reachable through the public `.cache()` API — only the first one the DFS encounters is
-planned; the other is silently dropped. The regular node tends to win because it appears
-as an ancestor inside the cache's own subtree and is therefore encountered first during
-depth-first traversal. Avoid constructing graphs where this can happen.
+### What deduplication can and can't do
+
+- **It needs a shared node, not shared data.** Two `AsContiguous` ops collapse only if
+  they wrap the same `Arc<TensorGraphNode>` - the same ID. If two parts of the graph each
+  build their own path to "the same data" (e.g. by calling `.as_promise()` on the same
+  tensor twice), they produce separate nodes with separate IDs and each gets its own
+  buffer.
+
+- **DFS order picks the canonical node, and the map is rebuilt every `.materialize()`.**
+  Whichever `AsContiguous` the sort reaches first becomes the `Takeover`. If that node is
+  ephemeral - not backed by a `CachedTensorPromise` - it re-packs on every call. To keep
+  a cached buffer canonical, pass the `CachedTensorPromise` directly to downstream ops:
+  `AsContiguous` over a cache input is recognized as an `Alias` immediately, regardless of
+  DFS order, so the cached buffer is always reused.
+
+---
+
+## The root node
+
+The node you called `.materialize()` on is special: nothing consumes its output, and the
+sort doesn't yield it. The planner classifies it at the end of the pre-planner.
+
+Usually it's ordinary computation and becomes the last plan step; the result lands in the
+live-buffer cache under the root's own ID. But if the root is a *pure alias* - say you
+materialize `x.as_contiguous()` where `x` is already contiguous
+- it produces no step at all, and the result is its target's buffer. `Plan::root_id`
+records which ID that is; the planner forces that target's lifetime to `None` so it
+survives to the end instead of being reclaimed, and the executor returns whatever sits
+under `root_id`.
 
 ---
 
 ## Execution
 
-The executor in `TensorGraphNode::compute` (in `src/tensor/graph.rs`) works through the
-plan one step at a time, maintaining a live-buffer cache keyed by node ID. After each
-step it removes any IDs listed in `dealloc_after`, dropping the buffer as soon as it's
-no longer needed.
+The executor in `TensorGraphNode::compute` (`src/tensor/graph.rs`) works through the plan
+one step at a time, maintaining a live-buffer cache keyed by node ID. After each step it
+removes any IDs in `dealloc_after`, dropping the buffer as soon as it's no longer needed.
+When the plan is exhausted, it returns the buffer under `Plan::root_id`.
 
-Redirect resolution is entirely a plan-time concern. Each step's `resolved_inputs`
-already holds the canonical IDs — any node whose input would have been redirected sees
-the canonical ID baked in. The executor never consults a redirect table; it reads
-`resolved_inputs` and looks up those IDs in the live-buffer cache directly. Deduplicated
-`AsContiguous` nodes emit no plan step at all; their consumers receive the canonical ID
-through `resolved_inputs` without any special handling at execution time.
+Alias resolution is entirely a plan-time concern. Each step's `resolved_inputs` already
+holds the canonical IDs - a node whose input was aliased or taken over sees the resolved
+ID baked in. The executor never consults the alias map; it reads `resolved_inputs` and
+looks those IDs up directly. Aliased nodes emit no step at all; their consumers received
+the right ID at plan time.
 
----
-
-## Why redirect resolution moved to plan time
-
-The redirect mechanism went through one design iteration worth understanding, because
-the problem it solved is subtle.
-
-The original design carried the redirect map alongside the plan at execution time. The
-executor would resolve every input through the map before each cache lookup: if a node
-ID had a redirect entry, the canonical ID was used instead. Simple to reason about
-locally — but it introduced a timing hazard.
-
-Consider a graph where a `Transpose` node (`node_1`) feeds two consumers: an
-`AsContiguous` node (`node_2`, which registers the redirect `node_1 → node_2`) and a
-plain scalar op (`node_3`). The topological sort is a depth-first traversal with a LIFO
-stack. If `root.inputs = [node_2, node_3]`, `node_3`'s subtree is popped and explored
-first, yielding the execution order:
-
-```
-node_1, node_3, node_2
-```
-
-During planning, `node_2` is processed last and inserts the redirect `node_1 → node_2`.
-At execution time, `node_3` runs before `node_2`. When it resolves its `node_1` input
-through the global table, the redirect is already there — pointing to `node_2`'s buffer,
-which hasn't been computed yet. Panic.
-
-The root problem: the redirect table was global state, applied to every input lookup
-regardless of when the lookup happened relative to the redirect being registered.
-
-The fix moves resolution to plan time. `build_resolved_inputs` is called when each plan
-step is emitted, consulting `id_redirect` as it exists at that exact moment. The redirect
-for `node_1 → node_2` is inserted into the map *after* `node_2`'s step is emitted (via a
-`pending_redirect_from` that fires at the end of `plan_node`). So `node_3`, planned
-before `node_2`, sees a redirect-free map and stores `node_1`'s ID directly in its
-`resolved_inputs`. Steps planned after the redirect is registered pick up the canonical
-ID. Execution order no longer matters — each step carries exactly what it needs.
-
-This design also keeps the door open for parallel execution. A runtime redirect table
-would be shared mutable state across threads; with redirects baked into each step's
-`resolved_inputs`, steps are self-contained and can be dispatched independently. When
-GPU execution arrives, the plan steps can be distributed without shared bookkeeping.
+This also keeps the door open for parallel execution. There is no shared mutable
+resolution table to coordinate - every step is self-contained, so when GPU execution
+arrives the steps can be dispatched without shared bookkeeping.
 
 ---
 
@@ -213,9 +250,8 @@ A few things the planner takes for granted:
 
 ## Performance
 
-Planning time scales with graph size. For the common case — a linear chain of ops —
-it's effectively linear and the overhead is negligible. However, if you're building very
-large graphs with many nodes that all have distinct output sizes (preventing buffer
-reuse), you may notice planning overhead growing faster than expected. The internal slot
-search is O(n) per node in the worst case, making planning O(n²) overall for those
-graphs.
+Planning time scales with graph size. For the common case - a linear chain of ops - it's
+effectively linear and the overhead is negligible. However, if you're building very large
+graphs with many nodes that all have distinct output sizes (preventing buffer reuse), you
+may notice planning overhead growing faster than expected. The internal slot search is
+O(n) per node in the worst case, making planning O(n²) overall for those graphs.

@@ -72,7 +72,7 @@ fn slice_shape_and_offset() {
 #[test]
 fn slice_too_many_ranges() {
     use crate::tensor::mem_formats::slice::SliceRange;
-    let l = Layout::from_shape(&[5], 0); // 1D — only one axis
+    let l = Layout::from_shape(&[5], 0); // 1D - only one axis
     let result = l.slice(&[SliceRange::from(..), SliceRange::from(..)]);
     assert!(matches!(result, Err(OpError::AxesOutOfBounds)));
 }
@@ -124,7 +124,7 @@ fn transpose_axes_out_of_bounds() {
 
 #[test]
 fn transpose_axes_duplicate_axes() {
-    // [0, 0, 1] is not a valid permutation — duplicates corrupt the layout
+    // [0, 0, 1] is not a valid permutation - duplicates corrupt the layout
     let l = Layout::from_shape(&[2, 3, 4], 0);
     assert!(l.transpose_axes(&[0, 0, 1]).is_err());
 }
@@ -146,14 +146,14 @@ fn is_contiguous_after_transpose() {
 #[test]
 fn is_contiguous_innermost_broadcast_2d() {
     // [3, 1] -> [3, 4]: stride [1, 0], adj_stride [1, 0]
-    // adj_stride[0] == 1 but the last stride is zero — not contiguous
+    // adj_stride[0] == 1 but the last stride is zero - not contiguous
     let b = Layout::from_shape(&[3, 1], 0).broadcast(&[3, 4]).unwrap();
     assert!(!b.is_contiguous());
 }
 
 #[test]
 fn is_contiguous_outermost_broadcast_2d() {
-    // [1, 4] -> [3, 4]: stride [0, 1], adj_stride [-3, 1] — already correct before fix
+    // [1, 4] -> [3, 4]: stride [0, 1], adj_stride [-3, 1] - already correct before fix
     let b = Layout::from_shape(&[1, 4], 0).broadcast(&[3, 4]).unwrap();
     assert!(!b.is_contiguous());
 }
@@ -170,7 +170,7 @@ fn is_contiguous_innermost_broadcast_3d() {
 #[test]
 fn is_contiguous_middle_broadcast_3d() {
     // [2, 1, 4] -> [2, 3, 4]: stride [4, 0, 1], adj_stride [1, -3, 1]
-    // both endpoints are 1 — only caught by checking stride for zeros
+    // both endpoints are 1 - only caught by checking stride for zeros
     let b = Layout::from_shape(&[2, 1, 4], 0)
         .broadcast(&[2, 3, 4])
         .unwrap();
@@ -181,14 +181,14 @@ fn is_contiguous_middle_broadcast_3d() {
 
 #[test]
 fn is_transposed_outermost_broadcast_2d() {
-    // [1, 4] -> [3, 4]: adj_stride [-3, 1] — negative comes from zero stride, not a transpose
+    // [1, 4] -> [3, 4]: adj_stride [-3, 1] - negative comes from zero stride, not a transpose
     let b = Layout::from_shape(&[1, 4], 0).broadcast(&[3, 4]).unwrap();
     assert!(!b.is_transposed());
 }
 
 #[test]
 fn is_transposed_middle_broadcast_3d() {
-    // [2, 1, 4] -> [2, 3, 4]: adj_stride [1, -3, 1] — negative at dim 1 is from zero stride
+    // [2, 1, 4] -> [2, 3, 4]: adj_stride [1, -3, 1] - negative at dim 1 is from zero stride
     let b = Layout::from_shape(&[2, 1, 4], 0)
         .broadcast(&[2, 3, 4])
         .unwrap();
@@ -242,6 +242,15 @@ fn broadcast_incompatible_shapes() {
     let l = Layout::from_shape(&[2, 3, 4], 0);
     assert!(matches!(
         l.broadcast(&[2, 4, 4]),
+        Err(OpError::CannotBroadcast)
+    ));
+}
+
+#[test]
+fn broadcast_incompatible_shapes_multiples() {
+    let l = Layout::from_shape(&[2, 2, 4], 0);
+    assert!(matches!(
+        l.broadcast(&[2, 8, 8]),
         Err(OpError::CannotBroadcast)
     ));
 }

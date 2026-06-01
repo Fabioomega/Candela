@@ -34,10 +34,10 @@ static NEXT_ID: AtomicUsize = const { AtomicUsize::new(0) };
 
 /// Every node in the computation graph is one of these three variants.
 ///
-/// - `Edge` — a leaf that wraps a materialized tensor (no computation attached).
-/// - `Cache` — a computation whose result is stored after the first evaluation
+/// - `Edge` - a leaf that wraps a materialized tensor (no computation attached).
+/// - `Cache` - a computation whose result is stored after the first evaluation
 ///   and returned directly on subsequent calls.
-/// - `Node` — a regular computation that runs every time it's reached in the plan.
+/// - `Node` - a regular computation that runs every time it's reached in the plan.
 pub enum NodeKind<T, B: Backend> {
     Edge(Arc<TensorGraphEdge<T, B>>),
     Cache(Arc<TensorGraphCacheNode<T, B>>),
@@ -140,7 +140,7 @@ fn execute_output<T: NumberLike + ComputeFor<B>, B: Backend>(
 
 //////////////////////////////////////////////////////////////////////////////////
 
-/// Leaf node in the computation graph — a plain [`Tensor`] entering the graph.
+/// Leaf node in the computation graph - a plain [`Tensor`] entering the graph.
 ///
 /// Created by [`Tensor::as_promise`], which wraps the underlying [`TensorData`]
 /// in an edge and assigns it a unique ID. The edge carries no op; its only job
@@ -198,7 +198,7 @@ impl<T, B: Backend> Debug for TensorGraphEdge<T, B> {
 /// A computation node in the graph. Holds an op, its inputs, and the output layout.
 ///
 /// Constructed via [`TensorGraphNode::new`], which runs operator fusion and
-/// computes the output layout before storing anything — so by the time a node
+/// computes the output layout before storing anything - so by the time a node
 /// exists, compatible scalar chains have already been collapsed into a single
 /// [`OpKind::FusedScalar`] and the output shape is known.
 ///
@@ -253,26 +253,30 @@ impl<T: NumberLike + ComputeFor<B>, B: Backend> Promising for TensorGraphNode<T,
     /// Execute the subgraph rooted at this node and return the result.
     ///
     /// This is the entry point for `.materialize()`. It calls [`plan_computation`]
-    /// to build a static schedule, then steps through it in order — running each
+    /// to build a static schedule, then steps through it in order - running each
     /// op, inserting its result into a live-buffer cache, and dropping entries
     /// listed in `dealloc_after` immediately so intermediate buffers are freed as
     /// soon as they're no longer needed.
     ///
     /// Three [`OutputKind`] variants drive execution:
-    /// - **Allocate** — allocate a fresh buffer and compute into it.
-    /// - **Buffer reuse** — extract a previously freed buffer from the cache and
+    /// - **Allocate** - allocate a fresh buffer and compute into it.
+    /// - **Buffer reuse** - extract a previously freed buffer from the cache and
     ///   compute into it without allocating.
-    /// - **In-place** — mutate one of the op's inputs directly. Layout-only ops
+    /// - **In-place** - mutate one of the op's inputs directly. Layout-only ops
     ///   (`View`, `Slice`, `Transpose`) also use this path; they share the input
     ///   buffer at a new layout without running any computation.
     ///
-    /// All redirect resolution is performed at plan time. Each step's
-    /// `resolved_inputs` contains the concrete `computation_cache` IDs to use..
+    /// All alias resolution is performed at plan time. Each step's
+    /// `resolved_inputs` contains the concrete `computation_cache` IDs to use.
     ///
     /// Leaf tensors (graph inputs) are inserted into `computation_cache` first via
-    /// [`ComputeKind::Leaf`] steps.
+    /// [`ComputeKind::Leaf`] steps. The result is the buffer left under the plan's
+    /// `root_id` once every step has run.
     fn compute(&self) -> TensorData<T> {
-        let plan = plan_computation(&self).plan;
+        let plan = plan_computation(self);
+        let root_id = plan.root_id;
+        let plan = plan.plan;
+
         let mut computation_cache: HashMap<usize, TensorData<T>> = HashMap::new();
 
         for comp in plan.into_iter() {
@@ -345,7 +349,7 @@ impl<T: NumberLike + ComputeFor<B>, B: Backend> Promising for TensorGraphNode<T,
 
         // TODO: The plan always ends with self computed and inserted into the cache, so this
         // is always Some. Can use unwrap_unchecked once the executor contract is verified.
-        computation_cache.remove(&self.id).unwrap()
+        computation_cache.remove(&root_id).unwrap()
     }
 
     #[inline]
@@ -373,7 +377,7 @@ impl<T: Debug, B: Backend> Debug for TensorGraphNode<T, B> {
 /// clone of the stored result without re-running the graph.
 ///
 /// This is what you get when you call [`.cache()`] on a `TensorPromise`. The
-/// planner never reclaims the slot owned by a cache node — its buffer survives
+/// planner never reclaims the slot owned by a cache node - its buffer survives
 /// across separate `.materialize()` calls.
 ///
 /// [`.cache()`]: crate::tensor::promise::TensorPromise::cache
@@ -422,7 +426,7 @@ impl<T: Numeric, B: Backend> TensorGraphCacheNode<T, B> {
 
         match node {
             Ok(node) => Ok(Self {
-                node: node,
+                node,
                 cache: OnceLock::new(),
             }),
             Err(err) => Err(err),

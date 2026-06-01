@@ -6,7 +6,7 @@ use crate::tensor::{
     mem_formats::slice::{SliceInfo, SliceRange},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Layout {
     pub(crate) shape: Box<[usize]>,
     pub(crate) stride: Box<[i32]>,
@@ -167,16 +167,8 @@ impl Layout {
             return Err(OpError::CannotBroadcast);
         }
 
-        if shape.len() == self.shape.len() {
-            for (s1, s2) in zip(shape.iter(), self.shape.iter()) {
-                if *s1 % *s2 != 0 {
-                    return Err(OpError::CannotBroadcast);
-                }
-            }
-        }
-
         for (s1, s2) in zip(shape.iter().rev(), self.shape.iter().rev()) {
-            if *s1 % *s2 != 0 {
+            if *s2 != 1 && *s1 != *s2 {
                 return Err(OpError::CannotBroadcast);
             }
         }
@@ -184,7 +176,6 @@ impl Layout {
         let mut new_stride: Vec<i32> = Vec::with_capacity(shape.len());
         new_stride.extend(
             (self.shape.len()..shape.len())
-                .into_iter()
                 .map(|_| 0)
                 .chain(self.stride.iter().cloned()),
         );
@@ -228,15 +219,20 @@ impl Layout {
         }
     }
 
+    /// Cyclically rotates the axes so that iterating the layout walks along
+    /// `axis`: `axis` becomes the innermost (fastest-varying) dimension, and
+    /// every axis above it (`0..=axis`) is pulled inward as the surrounding
+    /// block, so a flat iterator steps through all of their index combinations
+    /// before advancing the trailing axes. The trailing axes (`axis+1..`) stay
+    /// outermost in their original order.
     #[inline]
-    pub fn to_dim_stride(&self, dim: usize) -> Result<Self, OpError> {
-        if dim >= self.shape().len() {
+    pub fn rotate_axis_innermost(&self, axis: usize) -> Result<Self, OpError> {
+        if axis >= self.shape().len() {
             return Err(OpError::AxesOutOfBounds);
         }
 
-        let mut axes = self.shape.to_vec();
-        axes.remove(dim);
-        axes.push(dim);
+        let mut axes: Vec<usize> = (axis + 1..self.shape().len()).collect();
+        axes.extend(0..=axis);
 
         unsafe { Ok(self.transpose_axes(&axes).unwrap_unchecked()) }
     }
@@ -320,6 +316,11 @@ impl Layout {
     #[inline]
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 }
 

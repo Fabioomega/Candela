@@ -1,4 +1,39 @@
 #![allow(private_bounds)]
+//! A lazy, graph-based tensor engine for the CPU, with `f32`/`f64` element
+//! types and a pluggable backend (pure-Rust by default, Intel MKL behind the
+//! `mkl` feature).
+//!
+//! Operations on a [`Tensor`] don't compute anything - they build a computation
+//! graph and return a [`TensorPromise`]. Calling `.materialize()` plans the
+//! whole graph (ordering, buffer reuse, scalar-op fusion) and runs it in one
+//! pass, handing back a finished [`Tensor`].
+//!
+//! ```
+//! use candela::{arange, Tensor};
+//!
+//! // Building the expression allocates nothing; only `.materialize()` runs it.
+//! let x: Tensor<f64> = arange!(4);          // [0, 1, 2, 3]
+//! let y = (x * 2.0 + 1.0).materialize();    // 2x + 1, fused into one pass
+//! assert_eq!(y.data(), &[1.0, 3.0, 5.0, 7.0]);
+//! ```
+//!
+//! # The three types
+//!
+//! - [`Tensor`] - a materialized buffer with a shape and stride.
+//! - [`TensorPromise`] - an unevaluated computation graph; `.materialize()` runs it.
+//! - [`CachedTensorPromise`] - a promise that keeps its result alive for reuse
+//!   across separate materializations.
+//!
+//! # Concepts
+//!
+//! The `doc/` directory in the repository walks through the design, problem-first:
+//!
+//! - `doc/graph.md` - the computation graph: node types, sharing, and
+//!   construction-time fusion.
+//! - `doc/planner.md` - the execution planner: ordering, buffer reuse, and aliasing.
+//! - `doc/layout.md` - strides, zero-copy views, and the `adj_stride` iteration trick.
+//! - `doc/backends.md` - the backend/dtype split and the `mkl` feature flag.
+
 pub mod tensor;
 
 pub use tensor::arange;

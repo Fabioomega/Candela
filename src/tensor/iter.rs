@@ -1,5 +1,4 @@
 use std::iter::FusedIterator;
-use std::sync::Arc;
 
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::traits::StreamingIterator;
@@ -443,67 +442,3 @@ impl<'a, T: Clone> Iterator for ChunkedContiguousIter<'a, T> {
 }
 
 impl<'a, T: Clone> FusedIterator for ChunkedContiguousIter<'a, T> {}
-
-/////////////////////////////////////////////////////////////
-pub struct SliceIterByLayout<'a, T: Clone> {
-    data: &'a Arc<Vec<T>>,
-    pos: isize,
-    counter: Box<[usize]>,
-    layout: Layout,
-}
-
-impl<'a, T: Clone> SliceIterByLayout<'a, T> {
-    pub fn new(data: &'a Arc<Vec<T>>, layout: Layout) -> Self {
-        let counter = vec![0; layout.shape().len()].into_boxed_slice();
-
-        Self {
-            data,
-            pos: layout.offset() as isize,
-            layout,
-            counter,
-        }
-    }
-}
-
-impl<'a, T: Clone> Iterator for SliceIterByLayout<'a, T> {
-    type Item = &'a T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.layout.len == 0 {
-            return None;
-        }
-
-        let last = self.counter.len() - 1;
-        self.counter[last] += 1;
-        let mut step_dim = last;
-
-        for dim in (1..self.counter.len()).rev() {
-            if self.counter[dim] == self.layout.shape()[dim] {
-                self.counter[dim] = 0;
-                self.counter[dim - 1] += 1;
-
-                step_dim = dim - 1;
-                continue;
-            }
-            break;
-        }
-
-        let pos = self.pos as usize;
-
-        unsafe {
-            let item = &self.data[pos] as *const T;
-            self.pos += self.layout.adj_stride()[step_dim] as isize;
-            self.layout.len -= 1;
-
-            Some(&*item)
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.layout.len, Some(self.layout.len))
-    }
-}
-
-impl<'a, T: Clone> ExactSizeIterator for SliceIterByLayout<'a, T> {}
-
-impl<'a, T: Clone> FusedIterator for SliceIterByLayout<'a, T> {}

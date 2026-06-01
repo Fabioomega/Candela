@@ -1,8 +1,8 @@
 //! Static execution planner.
 //!
-//! [`plan_computation`] analyses the computation graph once and returns a
-//! `Vec<ComputeKind>` that tells the executor exactly what to run, which
-//! buffer to write into, and what to free after each step.
+//! [`plan_computation`] analyses the computation graph once and returns a [`Plan`]
+//! that tells the executor exactly what to run, which buffer to write into, what to
+//! free after each step, and which buffer holds the final result.
 
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -10,8 +10,9 @@ use std::fmt::Debug;
 use crate::tensor::backend::Backend;
 use crate::tensor::graph::{NodeKind, TensorGraphCacheNode, TensorGraphEdge, TensorGraphNode};
 use crate::tensor::planner::alias::{self, AliasKind, AliasMap};
-use crate::tensor::planner::get_id;
+use crate::tensor::planner::runtime::{ExecKind, Slot};
 use crate::tensor::planner::sort::topological_sort;
+use crate::tensor::planner::{get_id, runtime};
 
 /// How the executor should produce the output buffer for a single operation.
 #[derive(Debug)]
@@ -54,384 +55,433 @@ pub(crate) enum ComputeKind<'a, T, B: Backend> {
     },
 }
 
-/// A buffer slot tracked by the planner.
-///
-/// Each live buffer in the plan is represented by one slot. `end` is the index
-/// of the last plan step that reads this buffer; after that step the executor
-/// drops it. `end = None` means the buffer lives forever — this is used for
-/// cached nodes whose results must survive across separate `.materialize()` calls.
-pub(crate) struct Slot {
-    id: usize,
-    pub(crate) len: usize,
-    pub(crate) end: Option<usize>,
-}
-
+/// A node staged by the pre-planner: the node itself, its inputs already resolved
+/// through the alias map *at the node's position in the sort*, and `end` - the
+/// index of the last step that reads its output, or `None` if never reclaimed.
 #[derive(Debug)]
 struct OpPlan<'a, T, B: Backend> {
     node: &'a NodeKind<T, B>,
+    resolved_inputs: Vec<&'a NodeKind<T, B>>,
     end: Option<usize>,
 }
 
 #[inline]
-fn find_slot(slots: &[Slot], op_start: usize, len: usize) -> Option<usize> {
-    for (i, slot) in slots.iter().enumerate() {
-        if slot.len == len && slot.end.map_or(false, |e| e < op_start) {
-            return Some(i);
-        }
-    }
-
-    None
-}
-
-#[inline]
 fn extend_slot_life(slot_end1: Option<usize>, slot_end2: Option<usize>) -> Option<usize> {
-    slot_end1.map_or(None, |e1| slot_end2.map_or(None, |e2| Some(e1.max(e2))))
+    slot_end1.and_then(|e1| slot_end2.map(|e2| e1.max(e2)))
 }
 
-/// Resolve each input's raw node ID through the current redirect map.
-/// Called immediately before emitting a plan step so the node being planned
-/// never sees its own redirect entry (which is inserted after the push).
+/// Project the input references resolved in [`pre_plan`] to their
+/// `computation_cache` ids.
 #[inline]
-fn build_resolved_inputs<T, B: Backend>(
-    inputs: &[NodeKind<T, B>],
-    id_redirect: &HashMap<usize, usize>,
-) -> Vec<usize> {
-    inputs
-        .iter()
-        .map(|inp| {
-            let id = get_id(inp);
-            *id_redirect.get(&id).unwrap_or(&id)
-        })
-        .collect()
+fn build_resolved_inputs<T, B: Backend>(resolved_inputs: &[&NodeKind<T, B>]) -> Vec<usize> {
+    resolved_inputs.iter().map(|inp| get_id(*inp)).collect()
 }
 
-#[cfg_attr(
-    feature = "tracing",
-    tracing::instrument(
-        level = "trace",
-        skip(node, plan, slots, id_slot_map, ref_deallocs, alias_map),
-        fields(node_id = node.id, output_len = node.layout.len(), slots_available = slots.len())
-    )
-)]
 #[inline]
-fn plan_node<'a, T, B: Backend>(
-    op_start: usize,
-    mut op_end: Option<usize>,
-    node: &'a TensorGraphNode<T, B>,
-    plan: &mut Vec<ComputeKind<'a, T, B>>,
-    slots: &mut Vec<Slot>,
-    id_slot_map: &mut HashMap<usize, usize>,
-    ref_deallocs: &mut Vec<(usize, Option<usize>)>,
-    alias_map: &mut AliasMap<'_, T, B>,
+fn resolve_inputs<'a, T, B: Backend>(
+    inputs: &'a [NodeKind<T, B>],
+    alias_map: &AliasMap<'a, T, B>,
+) -> Vec<&'a NodeKind<T, B>> {
+    inputs.iter().map(|i| alias_map.resolve(i)).collect()
+}
+
+#[inline]
+fn track_lifetimes<T, B: Backend>(
+    resolved: &[&NodeKind<T, B>],
+    pos: usize,
+    id_op: &HashMap<usize, usize>,
+    ops: &mut [OpPlan<'_, T, B>],
 ) {
-    let (inplace_slot, input_idx) = find_buffer_inplace(
-        &node.op,
-        &node.inputs,
-        &node.layout,
-        op_start,
-        slots,
-        id_slot_map,
-        id_redirect,
-    );
+    for inp in resolved {
+        if let Some(&op_idx) = id_op.get(&get_id(inp)) {
+            ops[op_idx].end = Some(pos);
+        }
+    }
+}
 
-    if let Some(slot_idx) = inplace_slot {
-        #[cfg(feature = "tracing")]
-        tracing::trace!(
-            decision = "inplace",
-            slot_idx,
-            input_idx,
-            reused_node_id = slots[slot_idx].id,
-            "planned in-place reuse of input buffer"
-        );
+/// Mutable accumulator state for the buffer-assignment pass. The `plan_*` methods
+/// read and extend these four collections in lockstep as they walk the staged ops:
+/// `plan` is the schedule under construction, `slots` tracks reusable buffers,
+/// `id_slot_map` maps node ids to the slot holding their output, and `ref_deallocs`
+/// records reference nodes whose buffers are reclaimed at a later step.
+struct PlanState<'a, T, B: Backend> {
+    plan: Vec<ComputeKind<'a, T, B>>,
+    slots: Vec<Slot>,
+    id_slot_map: HashMap<usize, usize>,
+    ref_deallocs: Vec<(usize, Option<usize>)>,
+}
 
-        id_slot_map.insert(node.id, slot_idx);
-        slots[slot_idx].end = op_end;
-
-        let resolved_inputs = build_resolved_inputs(&node.inputs, id_redirect);
-        plan.push(ComputeKind::Op {
-            node,
-            output: OutputKind::InPlaceIdx(input_idx),
-            resolved_inputs,
-            dealloc_after: Vec::new(),
-        });
-
-        slots[slot_idx].id = node.id;
-
-        return;
+impl<'a, T, B: Backend> PlanState<'a, T, B> {
+    fn new() -> Self {
+        Self {
+            plan: Vec::with_capacity(32),
+            slots: Vec::with_capacity(32),
+            id_slot_map: HashMap::with_capacity(32),
+            ref_deallocs: Vec::with_capacity(8),
+        }
     }
 
-    match is_a_reference(&node.op, &node.inputs, &id_slot_map) {
-        ReferenceKind::Edge(input_idx) => {
-            let resolved_inputs = build_resolved_inputs(&node.inputs, id_redirect);
-            plan.push(ComputeKind::Op {
-                node,
-                output: OutputKind::InPlaceIdx(input_idx),
-                resolved_inputs,
-                dealloc_after: Vec::new(),
-            });
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            level = "trace",
+            skip(self, node, resolved_inputs),
+            fields(
+                node_id = node.id,
+                output_len = node.layout.len(),
+                slots_available = self.slots.len()
+            )
+        )
+    )]
+    #[inline]
+    fn plan_node(
+        &mut self,
+        op_start: usize,
+        op_end: Option<usize>,
+        node: &'a TensorGraphNode<T, B>,
+        resolved_inputs: &[&NodeKind<T, B>],
+    ) {
+        match runtime::classify(
+            &node.op,
+            resolved_inputs,
+            &node.layout,
+            op_start,
+            &self.slots,
+            &self.id_slot_map,
+        ) {
+            ExecKind::Allocate => {
+                self.id_slot_map.insert(node.id, self.slots.len());
+                self.slots.push(Slot {
+                    id: node.id,
+                    len: node.layout.len(),
+                    end: op_end,
+                });
 
-            return;
-        }
-        ReferenceKind::Slot(slot_idx, input_idx) => {
-            let source_node_id = slots[slot_idx].id;
-            let extended_end = extend_slot_life(slots[slot_idx].end, op_end);
-            slots[slot_idx].end = extended_end;
-            id_slot_map.insert(node.id, slot_idx);
-            ref_deallocs.push((node.id, extended_end));
+                let resolved_inputs = build_resolved_inputs(resolved_inputs);
+                self.plan.push(ComputeKind::Op {
+                    node,
+                    output: OutputKind::Allocate(node.layout.len()),
+                    resolved_inputs,
+                    dealloc_after: Vec::new(),
+                });
+            }
+            ExecKind::UseSlot { slot_idx } => {
+                self.id_slot_map.insert(node.id, slot_idx);
+                self.slots[slot_idx].end = op_end;
 
-            #[cfg(feature = "tracing")]
-            tracing::trace!(
-                decision = "reference",
+                let resolved_inputs = build_resolved_inputs(resolved_inputs);
+                self.plan.push(ComputeKind::Op {
+                    node,
+                    output: OutputKind::Buffer(self.slots[slot_idx].id),
+                    resolved_inputs,
+                    dealloc_after: Vec::new(),
+                });
+
+                self.slots[slot_idx].id = node.id;
+            }
+            ExecKind::InPlace {
                 slot_idx,
                 input_idx,
-                source_node_id,
-                ?extended_end,
-                "planned reference op; extended slot lifetime to cover all aliases"
-            );
+            } => {
+                self.id_slot_map.insert(node.id, slot_idx);
+                self.slots[slot_idx].end = op_end;
 
-            let resolved_inputs = build_resolved_inputs(&node.inputs, id_redirect);
-            plan.push(ComputeKind::Op {
-                node,
-                output: OutputKind::InPlaceIdx(input_idx),
-                resolved_inputs,
-                dealloc_after: Vec::new(),
-            });
+                let resolved_inputs = build_resolved_inputs(resolved_inputs);
+                self.plan.push(ComputeKind::Op {
+                    node,
+                    output: OutputKind::InPlaceIdx(input_idx),
+                    resolved_inputs,
+                    dealloc_after: Vec::new(),
+                });
 
-            return;
+                self.slots[slot_idx].id = node.id;
+            }
+            ExecKind::ReferenceEternal { input_idx } => {
+                let resolved_inputs = build_resolved_inputs(resolved_inputs);
+                self.plan.push(ComputeKind::Op {
+                    node,
+                    output: OutputKind::InPlaceIdx(input_idx),
+                    resolved_inputs,
+                    dealloc_after: Vec::new(),
+                });
+            }
+            ExecKind::ReferenceSlot {
+                slot_idx,
+                input_idx,
+            } => {
+                let extended_end = extend_slot_life(self.slots[slot_idx].end, op_end);
+                self.slots[slot_idx].end = extended_end;
+                self.id_slot_map.insert(node.id, slot_idx);
+                self.ref_deallocs.push((node.id, extended_end));
+
+                let resolved_inputs = build_resolved_inputs(resolved_inputs);
+                self.plan.push(ComputeKind::Op {
+                    node,
+                    output: OutputKind::InPlaceIdx(input_idx),
+                    resolved_inputs,
+                    dealloc_after: Vec::new(),
+                });
+            }
         }
-        ReferenceKind::NoRef => {}
     }
 
-    let slot = find_slot(slots, op_start, node.layout.len());
-    if let Some(slot_idx) = slot {
-        #[cfg(feature = "tracing")]
-        tracing::trace!(
-            decision = "buffer_reuse",
-            slot_idx,
-            reused_node_id = slots[slot_idx].id,
-            slot_len = slots[slot_idx].len,
-            "planned reuse of a free same-size buffer"
-        );
-
-        id_slot_map.insert(node.id, slot_idx);
-        slots[slot_idx].end = op_end;
-
-        let resolved_inputs = build_resolved_inputs(&node.inputs, id_redirect);
-        plan.push(ComputeKind::Op {
-            node,
-            output: OutputKind::Buffer(slots[slot_idx].id),
-            resolved_inputs,
-            dealloc_after: Vec::new(),
-        });
-
-        slots[slot_idx].id = node.id;
-    } else {
-        #[cfg(feature = "tracing")]
-        tracing::trace!(
-            decision = "allocate",
-            len = node.layout.len(),
-            new_slot_idx = slots.len(),
-            "no free slot found, will allocate new buffer"
-        );
-
-        id_slot_map.insert(node.id, slots.len());
-        slots.push(Slot {
-            id: node.id,
-            len: node.layout.len(),
-            end: op_end,
-        });
-
-        let resolved_inputs = build_resolved_inputs(&node.inputs, id_redirect);
-        plan.push(ComputeKind::Op {
-            node,
-            output: OutputKind::Allocate(node.layout.len()),
-            resolved_inputs,
-            dealloc_after: Vec::new(),
-        });
-    }
-
-    // Activate the redirect after the step is emitted so this node's own
-    // resolved_inputs used the pre-redirect state.
-    if let Some(id) = pending_redirect_from {
-        id_redirect.insert(id, node.id);
-    }
-}
-
-// The planner must assume that during some computation / before the planner finished planning
-//  the cache may have been filled by another thread and cannot assume the current state of the cache.
-// If that was not the case, it's possible to dumb the executor even further, as it would not have
-//  to check the state of the cache before taking a decision.
-#[cfg_attr(
-    feature = "tracing",
-    tracing::instrument(
-        level = "trace",
-        skip(cache, plan, slots, id_slot_map, ref_deallocs, alias_map),
-        fields(
-            node_id = cache.get_node().id,
-            output_len = cache.get_node().layout.len(),
-            cache_filled = cache.is_cache_filled(),
-            slots_available = slots.len()
+    // The planner must assume that during some computation / before the planner finished planning
+    //  the cache may have been filled by another thread and cannot assume the current state of the cache.
+    // If that was not the case, it's possible to dumb the executor even further, as it would not have
+    //  to check the state of the cache before taking a decision.
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(
+            level = "trace",
+            skip(self, cache, resolved_inputs),
+            fields(
+                node_id = cache.get_node().id,
+                output_len = cache.get_node().layout.len(),
+                cache_filled = cache.is_cache_filled(),
+                slots_available = self.slots.len()
+            )
         )
-    )
-)]
-fn plan_cache_node<'a, T, B: Backend>(
-    op_start: usize,
-    cache: &'a TensorGraphCacheNode<T, B>,
-    plan: &mut Vec<ComputeKind<'a, T, B>>,
-    slots: &mut Vec<Slot>,
-    id_slot_map: &mut HashMap<usize, usize>,
-    ref_deallocs: &mut Vec<(usize, Option<usize>)>,
-    alias_map: &mut AliasMap<'_, T, B>,
-) {
-    let node = cache.get_node();
+    )]
+    fn plan_cache_node(
+        &mut self,
+        op_start: usize,
+        cache: &'a TensorGraphCacheNode<T, B>,
+        resolved_inputs: &[&NodeKind<T, B>],
+    ) {
+        let node = cache.get_node();
 
-    if cache.is_cache_filled() {
-        #[cfg(feature = "tracing")]
-        tracing::trace!(
-            decision = "cache_hit",
-            "cache already filled at plan time, skipping computation"
-        );
-
-        let resolved_inputs = build_resolved_inputs(&node.inputs, id_redirect);
-        plan.push(ComputeKind::CachedOp {
-            cache,
-            output: OutputKind::Allocate(0),
-            resolved_inputs,
-            dealloc_after: Vec::new(),
-        });
-        return;
-    }
-
-    let (inplace_slot, input_idx) = find_buffer_inplace(
-        &node.op,
-        &node.inputs,
-        &node.layout,
-        op_start,
-        slots,
-        id_slot_map,
-        id_redirect,
-    );
-
-    if let Some(slot_idx) = inplace_slot {
-        #[cfg(feature = "tracing")]
-        tracing::trace!(
-            decision = "inplace",
-            slot_idx,
-            input_idx,
-            reused_node_id = slots[slot_idx].id,
-            "planned in-place reuse; slot will be kept alive for the cache"
-        );
-
-        // id_slot_map.insert(node.id, slot_idx);
-        slots[slot_idx].end = None;
-
-        let resolved_inputs = build_resolved_inputs(&node.inputs, id_redirect);
-        plan.push(ComputeKind::CachedOp {
-            cache,
-            output: OutputKind::InPlaceIdx(input_idx),
-            resolved_inputs,
-            dealloc_after: Vec::new(),
-        });
-
-        return;
-    }
-
-    match is_a_reference(&node.op, &node.inputs, &id_slot_map, id_redirect) {
-        ReferenceKind::Edge(input_idx) => {
-            let resolved_inputs = build_resolved_inputs(&node.inputs, id_redirect);
-            plan.push(ComputeKind::CachedOp {
+        if cache.is_cache_filled() {
+            let resolved_inputs = build_resolved_inputs(resolved_inputs);
+            self.plan.push(ComputeKind::CachedOp {
                 cache,
-                output: OutputKind::InPlaceIdx(input_idx),
+                output: OutputKind::Allocate(0),
                 resolved_inputs,
                 dealloc_after: Vec::new(),
             });
-
             return;
         }
-        ReferenceKind::Slot(slot_idx, input_idx) => {
-            slots[slot_idx].end = None;
-            ref_deallocs.push((node.id, None));
 
-            let resolved_inputs = build_resolved_inputs(&node.inputs, id_redirect);
-            plan.push(ComputeKind::CachedOp {
-                cache,
-                output: OutputKind::InPlaceIdx(input_idx),
-                resolved_inputs,
-                dealloc_after: Vec::new(),
-            });
+        match runtime::classify(
+            &node.op,
+            resolved_inputs,
+            &node.layout,
+            op_start,
+            &self.slots,
+            &self.id_slot_map,
+        ) {
+            ExecKind::Allocate => {
+                let resolved_inputs = build_resolved_inputs(resolved_inputs);
+                self.plan.push(ComputeKind::CachedOp {
+                    cache,
+                    output: OutputKind::Allocate(node.layout.len()),
+                    resolved_inputs,
+                    dealloc_after: Vec::new(),
+                });
+            }
+            ExecKind::UseSlot { slot_idx } => {
+                self.slots[slot_idx].end = None;
 
-            return;
+                let resolved_inputs = build_resolved_inputs(resolved_inputs);
+                self.plan.push(ComputeKind::CachedOp {
+                    cache,
+                    output: OutputKind::Buffer(self.slots[slot_idx].id),
+                    resolved_inputs,
+                    dealloc_after: Vec::new(),
+                });
+            }
+            ExecKind::InPlace {
+                slot_idx,
+                input_idx,
+            } => {
+                self.slots[slot_idx].end = None;
+
+                let resolved_inputs = build_resolved_inputs(resolved_inputs);
+                self.plan.push(ComputeKind::CachedOp {
+                    cache,
+                    output: OutputKind::InPlaceIdx(input_idx),
+                    resolved_inputs,
+                    dealloc_after: Vec::new(),
+                });
+            }
+            ExecKind::ReferenceEternal { input_idx } => {
+                let resolved_inputs = build_resolved_inputs(resolved_inputs);
+                self.plan.push(ComputeKind::CachedOp {
+                    cache,
+                    output: OutputKind::InPlaceIdx(input_idx),
+                    resolved_inputs,
+                    dealloc_after: Vec::new(),
+                });
+            }
+            ExecKind::ReferenceSlot {
+                slot_idx,
+                input_idx,
+            } => {
+                self.slots[slot_idx].end = None;
+                self.ref_deallocs.push((node.id, None));
+
+                let resolved_inputs = build_resolved_inputs(resolved_inputs);
+                self.plan.push(ComputeKind::CachedOp {
+                    cache,
+                    output: OutputKind::InPlaceIdx(input_idx),
+                    resolved_inputs,
+                    dealloc_after: Vec::new(),
+                });
+            }
         }
-        ReferenceKind::NoRef => {}
-    }
-
-    let slot = find_slot(slots, op_start, node.layout.len());
-    if let Some(slot_idx) = slot {
-        #[cfg(feature = "tracing")]
-        tracing::trace!(
-            decision = "buffer_reuse",
-            slot_idx,
-            reused_node_id = slots[slot_idx].id,
-            slot_len = slots[slot_idx].len,
-            "planned buffer reuse; slot will be kept alive for the cache"
-        );
-
-        slots[slot_idx].end = None;
-
-        let resolved_inputs = build_resolved_inputs(&node.inputs, id_redirect);
-        plan.push(ComputeKind::CachedOp {
-            cache,
-            output: OutputKind::Buffer(slots[slot_idx].id),
-            resolved_inputs,
-            dealloc_after: Vec::new(),
-        });
-    } else {
-        #[cfg(feature = "tracing")]
-        tracing::trace!(
-            decision = "allocate",
-            len = node.layout.len(),
-            "no free slot found, will allocate new buffer for the cache"
-        );
-
-        let resolved_inputs = build_resolved_inputs(&node.inputs, id_redirect);
-        plan.push(ComputeKind::CachedOp {
-            cache,
-            output: OutputKind::Allocate(node.layout.len()),
-            resolved_inputs,
-            dealloc_after: Vec::new(),
-        });
     }
 }
 
-/// The output of [`plan_computation`].
+/// The root, resolved against the completed alias map. `id` is the
+/// `computation_cache` key the result lands under - the root's own id, or, when the
+/// root is a pure alias, the id of the node it resolves to. `resolved_inputs` is
+/// used only when the root is planned as its own step (`id == base_node.id`).
+struct RootNode<'a, T, B: Backend> {
+    id: usize,
+    resolved_inputs: Vec<&'a NodeKind<T, B>>,
+}
+
+/// Topologically sort the graph and, in one walk, classify each node's aliasing,
+/// snapshot its resolved inputs, and record buffer lifetimes. Returns the staged
+/// [`OpPlan`]s and the resolved [`RootNode`]. The alias map is built and consumed
+/// entirely here; the buffer-assignment pass never sees it.
+fn pre_plan<'a, T: PartialEq, B: Backend>(
+    base_node: &'a TensorGraphNode<T, B>,
+) -> (Vec<OpPlan<'a, T, B>>, RootNode<'a, T, B>) {
+    let dag_iter = topological_sort(base_node);
+    let mut id_op: HashMap<usize, usize> = HashMap::with_capacity(32);
+    let mut ops: Vec<OpPlan<'_, T, B>> = Vec::with_capacity(32);
+    let mut alias_map: AliasMap<'_, T, B> = AliasMap::new();
+
+    for node in dag_iter {
+        match node {
+            NodeKind::Edge(e) => {
+                // Edges are leaves - give them a position in id_op so compute
+                // nodes can find them when tracking lifetimes, but their end
+                // stays None (never deallocated).
+                id_op.insert(e.id, ops.len());
+                ops.push(OpPlan {
+                    node,
+                    resolved_inputs: Vec::new(),
+                    end: None,
+                });
+            }
+            NodeKind::Node(n) => match alias::classify(&n.op, &n.inputs, &alias_map) {
+                AliasKind::NoAlias => {
+                    let resolved_inputs = resolve_inputs(&n.inputs, &alias_map);
+                    let pos = ops.len();
+                    id_op.insert(n.id, pos);
+
+                    track_lifetimes(&resolved_inputs, pos, &id_op, &mut ops);
+
+                    ops.push(OpPlan {
+                        node,
+                        resolved_inputs,
+                        end: None,
+                    });
+                }
+                AliasKind::Takeover(parent, tag) => {
+                    let resolved_inputs = resolve_inputs(&n.inputs, &alias_map);
+                    let pos = ops.len();
+                    id_op.insert(n.id, ops.len());
+
+                    track_lifetimes(&resolved_inputs, pos, &id_op, &mut ops);
+
+                    ops.push(OpPlan {
+                        node,
+                        resolved_inputs,
+                        end: None,
+                    });
+
+                    alias_map.takeover(parent, node, tag);
+                }
+                AliasKind::Alias(target, tag) => {
+                    alias_map.insert(n.id, target, tag);
+                }
+            },
+            NodeKind::Cache(cache) => {
+                let n = cache.get_node();
+
+                match alias::classify_cache(&n.inputs, &alias_map) {
+                    AliasKind::Alias(target, tag) => {
+                        alias_map.insert(n.id, target, tag);
+                    }
+                    AliasKind::Takeover(old_owner, tag) => {
+                        let resolved_inputs = resolve_inputs(&n.inputs, &alias_map);
+                        let pos = ops.len();
+
+                        id_op.insert(n.id, ops.len());
+
+                        track_lifetimes(&resolved_inputs, pos, &id_op, &mut ops);
+
+                        ops.push(OpPlan {
+                            node,
+                            resolved_inputs,
+                            end: None,
+                        });
+
+                        alias_map.takeover(old_owner, node, tag);
+                    }
+                    _ => unreachable!("classify_cache always aliases or takes over"),
+                }
+            }
+        }
+    }
+
+    let root_id = match alias::classify(&base_node.op, &base_node.inputs, &alias_map) {
+        AliasKind::Alias(target, _) => {
+            // Root is a pure alias: the result IS the target's buffer. Force it to
+            // live to the end so the executor's final lookup finds it and pass 2
+            // never reuses its slot.
+            let id = get_id(target);
+            if let Some(&op_idx) = id_op.get(&id) {
+                ops[op_idx].end = None;
+            }
+            id
+        }
+
+        _ => base_node.id,
+    };
+
+    (
+        ops,
+        RootNode {
+            id: root_id,
+            resolved_inputs: resolve_inputs(&base_node.inputs, &alias_map),
+        },
+    )
+}
+
+/// The output of [`plan_computation`]: the ordered execution schedule plus the id
+/// the final result is stored under.
 ///
-/// Contains the ordered execution schedule. All redirect resolution is done at
-/// plan time — each step's `resolved_inputs` holds the concrete `computation_cache`
-/// keys the executor should use.
+/// All alias resolution is done at plan time - each step's `resolved_inputs` holds
+/// the concrete `computation_cache` keys the executor reads.
 pub(crate) struct Plan<'a, T, B: Backend> {
-    /// Ordered list of steps to execute. Each step carries its [`OutputKind`],
-    /// pre-resolved input IDs, and the list of buffer IDs to drop once the step
-    /// completes.
+    /// Steps in dependency order. Each carries its [`OutputKind`], pre-resolved
+    /// input IDs, and the list of buffer IDs to drop once the step completes.
     pub(crate) plan: Vec<ComputeKind<'a, T, B>>,
+    /// `computation_cache` key holding the root result - the root node's id, or the
+    /// resolved target when the root is a pure alias and emits no step of its own.
+    pub(crate) root_id: usize,
 }
 
 /// Build a static execution plan for the subgraph rooted at `base_node`.
 ///
-/// This is called once per `.materialize()` invocation. It performs a topological
-/// sort, analyses buffer lifetimes, and assigns each node an [`OutputKind`] that
-/// tells the executor whether to allocate a new buffer, reuse a freed one, or
-/// write in-place into an input.
+/// Called once per `.materialize()` invocation. The pre-planner ([`pre_plan`])
+/// topologically sorts the graph, classifies aliases, snapshots each node's
+/// resolved inputs, and records buffer lifetimes; this function then assigns each
+/// node an [`OutputKind`] - allocate, reuse a freed buffer, write in-place, or
+/// alias an input - and fills the `dealloc_after` lists.
 ///
-/// All redirect resolution (deduplication of [`OpKind::AsContiguous`] nodes) is
-/// performed here. Each plan step's `resolved_inputs` contains the concrete
-/// `computation_cache` IDs to use.
+/// Alias resolution (deduplication and claiming of [`OpKind::AsContiguous`] and
+/// `NoOp` nodes) is baked into each step's `resolved_inputs`. Leaf tensors appear
+/// as [`ComputeKind::Leaf`] steps; the executor inserts them into
+/// `computation_cache` before any computation runs so all steps resolve inputs
+/// uniformly by ID.
 ///
-/// Leaf tensors (graph inputs) appear as [`ComputeKind::Leaf`] steps. The executor
-/// inserts them into `computation_cache` before any computation runs so all steps
-/// resolve inputs uniformly by ID.
-///
-/// The plan is in dependency order and includes the root node as its last element.
-/// See [doc/planner.md] for a full walkthrough of the algorithm.
+/// Steps are in dependency order. The root is the last step unless it is a pure
+/// alias, in which case it emits no step and [`Plan::root_id`] names the buffer
+/// holding the result. See [doc/planner.md] for a full walkthrough of the algorithm.
 ///
 /// [doc/planner.md]: https://github.com/Fabioomega/candela/blob/main/doc/planner.md
 /// [`OpKind::AsContiguous`]: crate::tensor::ops::def_op::OpKind::AsContiguous
@@ -451,107 +501,38 @@ pub(crate) struct Plan<'a, T, B: Backend> {
         )
     )
 )]
-pub(crate) fn plan_computation<T, B: Backend>(base_node: &TensorGraphNode<T, B>) -> Plan<'_, T, B> {
-    let dag_iter = topological_sort(base_node);
-
-    let mut plan: Vec<ComputeKind<'_, T, B>> = Vec::with_capacity(32);
-    let mut ops: Vec<OpPlan<'_, T, B>> = Vec::with_capacity(32);
-    let mut slots: Vec<Slot> = Vec::with_capacity(32);
-    let mut id_op: HashMap<usize, usize> = HashMap::with_capacity(32);
-    let mut id_slot_map: HashMap<usize, usize> = HashMap::with_capacity(32);
-    let mut alias_map: AliasMap<'_, T, B> = AliasMap::new();
-    let mut ref_deallocs: Vec<(usize, Option<usize>)> = Vec::with_capacity(8);
-
-    for node in dag_iter {
-        match node {
-            NodeKind::Edge(e) => {
-                // Edges are leaves — give them a position in id_op so compute
-                // nodes can find them when tracking lifetimes, but their end
-                // stays None (never deallocated).
-                id_op.insert(e.id, ops.len());
-                ops.push(OpPlan { node, end: None });
-            }
-            NodeKind::Node(n) => {
-                match alias::handle_alias(&node, n.id, &n.op, &n.inputs, &mut alias_map) {
-                    AliasKind::NoAlias | AliasKind::OwningAlias => {
-                        id_op.insert(n.id, ops.len());
-                        ops.push(OpPlan { node, end: None });
-
-                        for inp in n.inputs.iter() {
-                            if let Some(&op_idx) = id_op.get(&get_id(inp)) {
-                                ops[op_idx].end = Some(ops.len() - 1);
-                            }
-                        }
-                    }
-                    AliasKind::Alias => {}
-                }
-            }
-            NodeKind::Cache(cache) => {
-                let n = cache.get_node();
-                id_op.insert(n.id, ops.len());
-                ops.push(OpPlan { node, end: None });
-
-                for inp in n.inputs.iter() {
-                    if let Some(&op_idx) = id_op.get(&get_id(inp)) {
-                        ops[op_idx].end = Some(ops.len() - 1);
-                    }
-                }
-            }
-        }
-    }
+pub(crate) fn plan_computation<T: PartialEq, B: Backend>(
+    base_node: &TensorGraphNode<T, B>,
+) -> Plan<'_, T, B> {
+    let mut state: PlanState<'_, T, B> = PlanState::new();
+    let (ops, root) = pre_plan(base_node);
 
     let ops_len = ops.len();
 
     for (i, op) in ops.into_iter().enumerate() {
         match op.node {
             NodeKind::Edge(e) => {
-                plan.push(ComputeKind::Leaf { edge: e });
+                state.plan.push(ComputeKind::Leaf { edge: e });
             }
             NodeKind::Node(arc_node) => {
-                plan_node(
-                    i,
-                    op.end,
-                    arc_node,
-                    &mut plan,
-                    &mut slots,
-                    &mut id_slot_map,
-                    &mut ref_deallocs,
-                    &mut alias_map,
-                );
+                state.plan_node(i, op.end, arc_node, &op.resolved_inputs);
             }
             NodeKind::Cache(arc_cache) => {
-                plan_cache_node(
-                    i,
-                    arc_cache,
-                    &mut plan,
-                    &mut slots,
-                    &mut id_slot_map,
-                    &mut ref_deallocs,
-                    &mut alias_map,
-                );
+                state.plan_cache_node(i, arc_cache, &op.resolved_inputs);
             }
         }
     }
 
-    plan_node(
-        ops_len,
-        None,
-        &base_node,
-        &mut plan,
-        &mut slots,
-        &mut id_slot_map,
-        &mut ref_deallocs,
-        &mut alias_map,
-    );
-
-    #[cfg(feature = "tracing")]
-    {
-        let dealloc_edges = slots.iter().filter(|s| s.end.is_some()).count();
-        tracing::Span::current().record("ops_count", plan.len());
-        tracing::Span::current().record("slots_count", slots.len());
-        tracing::Span::current().record("dealloc_edges", dealloc_edges);
-        tracing::Span::current().record("ref_deallocs_count", ref_deallocs.len());
+    if root.id == base_node.id {
+        state.plan_node(ops_len, None, base_node, &root.resolved_inputs);
     }
+
+    let PlanState {
+        mut plan,
+        slots,
+        ref_deallocs,
+        ..
+    } = state;
 
     for (node_id, dealloc_at) in &ref_deallocs {
         let Some(end) = dealloc_at else { continue };
@@ -573,5 +554,8 @@ pub(crate) fn plan_computation<T, B: Backend>(base_node: &TensorGraphNode<T, B>)
         }
     }
 
-    Plan { plan }
+    Plan {
+        plan,
+        root_id: root.id,
+    }
 }

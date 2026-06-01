@@ -3,7 +3,7 @@
 // re-running the inner graph.
 //
 // The canonical use case is a preprocessing step that is shared across multiple
-// independent downstream flows called at different points in time — like a bias
+// independent downstream flows called at different points in time - like a bias
 // correction or a feature normalisation that feeds several separate computations.
 
 use candela::Tensor;
@@ -12,7 +12,7 @@ fn main() {
     let raw = Tensor::from_vec(vec![10.0_f64, 20.0, 30.0, 40.0], &[4]);
 
     // Build the preprocessing step and register it as cached.
-    // Nothing runs here — the inner graph (raw - 2.0) is not executed yet.
+    // Nothing runs here - the inner graph (raw - 2.0) is not executed yet.
     let preprocessed = (raw - 2.0).cache();
 
     // The cache starts empty.

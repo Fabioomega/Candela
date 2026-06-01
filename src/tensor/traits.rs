@@ -38,6 +38,10 @@ pub trait Dimension {
         self.layout().len()
     }
 
+    fn is_empty(&self) -> bool {
+        self.layout().is_empty()
+    }
+
     fn offset(&self) -> usize {
         self.layout().offset()
     }
@@ -74,6 +78,7 @@ pub trait StreamingIterator {
 
     fn next_stream<'a>(&'a mut self) -> Option<Self::Item<'a>>;
 
+    #[allow(unused)]
     fn zip<Other>(self, other: Other) -> StreamingZip<Self, Other>
     where
         Self: Sized,
@@ -86,6 +91,7 @@ pub trait StreamingIterator {
     }
 }
 
+#[allow(unused)]
 pub struct StreamingZip<A: StreamingIterator, B: StreamingIterator> {
     left: A,
     right: B,
@@ -113,6 +119,7 @@ pub(crate) trait Numeric: crate::tensor::definitions::NumberLike {
     const SUM_NEUTRAL: Self;
     const ONE: Self;
     const ZERO: Self;
+    const MIN: Self;
 }
 
 impl Numeric for f64 {
@@ -120,6 +127,7 @@ impl Numeric for f64 {
     const SUM_NEUTRAL: Self = 0.0;
     const ONE: Self = 1.0;
     const ZERO: Self = 0.0;
+    const MIN: Self = f64::NEG_INFINITY;
 }
 
 impl Numeric for f32 {
@@ -127,4 +135,5 @@ impl Numeric for f32 {
     const SUM_NEUTRAL: Self = 0.0;
     const ONE: Self = 1.0;
     const ZERO: Self = 0.0;
+    const MIN: Self = f32::NEG_INFINITY;
 }

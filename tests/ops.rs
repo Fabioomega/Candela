@@ -74,7 +74,7 @@ fn fused_chain_long() {
     let t = ones!(&[4]);
     let mut p = t.as_promise();
     for i in 0..20_u32 {
-        p = p + i as f64;
+        p += i as f64;
     }
     let result = p.materialize();
     assert_eq!(result.data(), &vec![190.0 + 1.0; 4]);

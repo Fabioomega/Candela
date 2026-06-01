@@ -57,7 +57,7 @@ fn broadcast_scalar_tensor_against_matrix<T: FloatLikeTensorElement>(#[case] _t:
     let s = Tensor::from_scalar(T::from_f64(5.0), &[1]);
     let m = Tensor::from_scalar(T::from_f64(1.0), &[3, 3]);
     let result = (s * m).materialize();
-    assert_approx_eq(result.data(), &vec![5.0; 9]);
+    assert_approx_eq(result.data(), &[5.0; 9]);
 }
 
 #[rstest]
@@ -99,7 +99,7 @@ fn broadcast_mul_with_row_vector<T: FloatLikeTensorElement>(#[case] _t: T) {
 #[test]
 #[should_panic]
 fn broadcast_incompatible_shapes_panics() {
-    // [3,4] + [2,4] — dim 0 mismatch, neither is 1
+    // [3,4] + [2,4] - dim 0 mismatch, neither is 1
     let a = ones!(&[3, 4]);
     let b = ones!(&[2, 4]);
     let _ = (a + b).materialize();

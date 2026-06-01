@@ -24,7 +24,7 @@ pub fn cast<T: FloatLikeTensorElement>(values: &[f64]) -> Vec<T> {
     values.iter().copied().map(T::from_f64).collect()
 }
 
-/// Build a `Tensor<T>` from an `f64` slice and shape — the typed equivalent
+/// Build a `Tensor<T>` from an `f64` slice and shape - the typed equivalent
 /// of writing `Tensor::from_slice(&[T::from_f64(...), ...], shape)`.
 pub fn tensor_of<T: FloatLikeTensorElement>(values: &[f64], shape: &[usize]) -> Tensor<T> {
     Tensor::from_slice(&cast::<T>(values), shape)

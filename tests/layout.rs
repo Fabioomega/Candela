@@ -9,7 +9,7 @@ use common::assert_approx_eq;
 fn view_is_zero_copy() {
     let t: Tensor<f64> = arange!(12);
     let viewed = t.view(&[3, 4]).unwrap().materialize();
-    // The result shares the same underlying data buffer — no allocation
+    // The result shares the same underlying data buffer - no allocation
     assert_eq!(viewed.data().as_ptr(), t.data().as_ptr());
 }
 
@@ -19,7 +19,7 @@ fn transpose_is_zero_copy() {
     let viewed = t.view(&[3, 4]).unwrap();
     let t2 = viewed.materialize();
     let transposed = t2.transpose().materialize();
-    // Buffer pointer must be the same — no copy was made
+    // Buffer pointer must be the same - no copy was made
     assert_eq!(transposed.data().as_ptr(), t2.data().as_ptr());
 }
 
@@ -91,10 +91,10 @@ fn as_contiguous_transposed() {
 
 #[test]
 fn view_after_as_contiguous() {
-    // Transposed tensor can't be viewed directly — must go through as_contiguous first
+    // Transposed tensor can't be viewed directly - must go through as_contiguous first
     let t = Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0], &[2, 3]);
     let cont = t.transpose().as_contiguous().materialize();
-    // [3,2] contiguous — can view as [6]
+    // [3,2] contiguous - can view as [6]
     let viewed = cont.view(&[6]).unwrap().materialize();
     assert_eq!(viewed.shape(), &[6]);
 }

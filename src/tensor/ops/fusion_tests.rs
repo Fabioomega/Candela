@@ -15,7 +15,7 @@ fn axby(a: f64, b: f64) -> OpKind<f64> {
     OpKind::ScalarOp(OpKindScalar::AxBy(a, b))
 }
 
-fn assert_fused_scalar<'a>(op: &'a OpKind<f64>, expected_len: usize) -> &'a [OpKindScalar<f64>] {
+fn assert_fused_scalar(op: &OpKind<f64>, expected_len: usize) -> &[OpKindScalar<f64>] {
     match op {
         OpKind::FusedScalar(ops) => {
             assert_eq!(ops.len(), expected_len, "FusedScalar length mismatch");
@@ -49,9 +49,9 @@ fn axby_axby_fused_constants() {
     let input = edge(1.0, &[4]);
     let fusion = compute_fusion(
         &axby(2.0, 1.0),
-        &[input.clone()],
+        std::slice::from_ref(&input),
         &axby(3.0, 4.0),
-        &[input.clone()],
+        std::slice::from_ref(&input),
         0,
     );
     let result = fusion.unwrap();
@@ -64,9 +64,9 @@ fn axby_then_exp() {
     let input = edge(1.0, &[4]);
     let fusion = compute_fusion(
         &axby(2.0, 0.0),
-        &[input.clone()],
+        std::slice::from_ref(&input),
         &OpKind::ScalarOp(OpKindScalar::Exp),
-        &[input.clone()],
+        std::slice::from_ref(&input),
         0,
     );
     let result = fusion.unwrap();
@@ -81,9 +81,9 @@ fn exp_then_axby() {
     let exp_op = OpKind::ScalarOp(OpKindScalar::Exp);
     let fusion = compute_fusion(
         &exp_op,
-        &[input.clone()],
+        std::slice::from_ref(&input),
         &axby(2.0, 0.0),
-        &[input.clone()],
+        std::slice::from_ref(&input),
         0,
     );
     let result = fusion.unwrap();
@@ -99,9 +99,9 @@ fn view_then_as_contiguous() {
     let view_layout = Layout::from_shape(&[3, 4], 0);
     let fusion = compute_fusion(
         &OpKind::View(view_layout.clone()),
-        &[input.clone()],
+        std::slice::from_ref(&input),
         &OpKind::AsContiguous,
-        &[input.clone()],
+        std::slice::from_ref(&input),
         0,
     );
     let result = fusion.unwrap();
