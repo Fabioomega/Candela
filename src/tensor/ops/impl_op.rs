@@ -749,11 +749,54 @@ macro_rules! impl_view {
             T: Numeric,
             B: Backend,
         {
+            /// Reinterprets the tensor's data as having shape `shape` without allocating.
+            ///
+            /// The tensor must be contiguous and must have the same length as the original tensor.
+            /// Use [`.reshape()`][Self::reshape] if the tensor may not be contiguous.
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::Tensor;
+            ///
+            /// let t = Tensor::from_slice(&[4.0, 3.0, 2.0, 1.0], &[4]);
+            /// // Shares the same underlying data as t
+            /// let v = t.view(&[2, 2]).unwrap().materialize();
+            ///
+            /// assert_eq!(v.shape(), &[2, 2]);
+            /// ```
+            ///
+            /// # Errors
+            ///
+            /// Returns [`OpError::NonContiguousView`] if the tensor is not contiguous or [`OpError::InvalidViewShape`] if the shape is invalid.
             #[inline]
             pub fn view(&self, shape: &[usize]) -> Result<TensorPromise<T, B>, OpError> {
                 view_impl(self, shape)
             }
 
+            /// Reinterprets the tensor's data as having shape `shape`,
+            /// allocating if the tensor is not contiguous.
+            ///
+            /// This always succeeds, as long as the total number of elements in the new shape is the
+            /// same as the original one - unlike [`.view()`][Self::view].
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::Tensor;
+            ///
+            /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+            /// let r = t.transpose().reshape(&[4]).unwrap().materialize();
+            ///
+            /// assert_eq!(r.shape(), &[4]);
+            /// // r is contiguous as it was allocated in a new buffer.
+            /// assert!(r.is_contiguous());
+            /// ```
+            ///
+            /// # Errors
+            ///
+            /// Returns [`OpError::InvalidViewShape`] if `shape` does not have the same
+            /// total number of elements as the original.
             #[inline]
             pub fn reshape(&self, shape: &[usize]) -> Result<TensorPromise<T, B>, OpError> {
                 reshape_impl(self, shape)
@@ -976,18 +1019,18 @@ macro_rules! impl_exp {
             T: FloatLike,
             B: Backend,
         {
-            /// Raise `e` to each element (natural exponential), element-wise.
-            ///
-            /// A scalar op, so it fuses with adjacent scalar ops into a single
-            /// `FusedScalar` pass rather than a separate graph node.
+            /// Computes `e^x` for each element.
             ///
             /// # Examples
             ///
             /// ```
             /// use candela::Tensor;
+            ///
             /// let t = Tensor::from_slice(&[0.0_f64], &[1]);
             /// assert_eq!(t.exp().materialize().data(), &[1.0]); // e^0 == 1
             /// ```
+            // TODO: Add a small explanation about how it may be cheaper if used in
+            // conjunction with other elementwise operations because of fusion.
             #[inline]
             pub fn exp(&self) -> TensorPromise<T, B> {
                 exp_impl(self)
@@ -1003,19 +1046,20 @@ macro_rules! impl_ln {
             T: FloatLike,
             B: Backend,
         {
-            /// Take the natural logarithm of each element, element-wise.
+            /// Computes the natural logarithm of each element.
             ///
-            /// A scalar op, so it fuses with adjacent scalar ops into a single
-            /// `FusedScalar` pass rather than a separate graph node. Elements
-            /// `<= 0` follow the platform `ln` (`-inf` at 0, `NaN` below).
+            /// Elements `<= 0` follow the platform `ln` behavior: `-inf` at zero, `NaN` below.
             ///
             /// # Examples
             ///
             /// ```
             /// use candela::Tensor;
+            ///
             /// let t = Tensor::from_slice(&[1.0_f64], &[1]);
             /// assert_eq!(t.ln().materialize().data(), &[0.0]); // ln(1) == 0
             /// ```
+            // TODO: Add a small explanation about how it may be cheaper if used in
+            // conjunction with other elementwise operations because of fusion.
             #[inline]
             pub fn ln(&self) -> TensorPromise<T, B> {
                 ln_impl(self)
@@ -1031,19 +1075,20 @@ macro_rules! impl_log2 {
             T: FloatLike,
             B: Backend,
         {
-            /// Take the base-2 logarithm of each element, element-wise.
+            /// Computes the base-2 logarithm of each element.
             ///
-            /// A scalar op, so it fuses with adjacent scalar ops into a single
-            /// `FusedScalar` pass rather than a separate graph node. Elements
-            /// `<= 0` follow the platform `log2` (`-inf` at 0, `NaN` below).
+            /// Elements `<= 0` follow the platform `log2` behavior: `-inf` at zero, `NaN` below.
             ///
             /// # Examples
             ///
             /// ```
             /// use candela::Tensor;
+            ///
             /// let t = Tensor::from_slice(&[8.0_f64], &[1]);
             /// assert_eq!(t.log2().materialize().data(), &[3.0]); // log2(8) == 3
             /// ```
+            // TODO: Add a small explanation about how it may be cheaper if used in
+            // conjunction with other elementwise operations because of fusion.
             #[inline]
             pub fn log2(&self) -> TensorPromise<T, B> {
                 log2_impl(self)
@@ -1059,18 +1104,28 @@ macro_rules! impl_relu {
             T: FloatLike,
             B: Backend,
         {
-            /// Apply the rectified linear unit element-wise: `max(x, 0)`.
-            ///
-            /// A scalar op, so it fuses with adjacent scalar ops into a single
-            /// `FusedScalar` pass rather than a separate graph node.
+            /// Applies the rectified linear unit (`relu`): `max(x, 0.0)` for each element.
             ///
             /// # Examples
             ///
             /// ```
             /// use candela::Tensor;
+            ///
+            /// // relu is equivalent to max(x, 0.0) per element.
+            /// let x = -3.0_f64;
+            /// let t = Tensor::from_scalar(x, &[1]);
+            /// assert_eq!(t.relu().materialize().item(), x.max(0.0));
+            /// ```
+            ///
+            /// ```
+            /// use candela::Tensor;
+            ///
+            /// // Negative values clamp to zero; non-negative values pass through.
             /// let t = Tensor::from_slice(&[-2.0_f64, -0.5, 0.0, 1.5], &[4]);
             /// assert_eq!(t.relu().materialize().data(), &[0.0, 0.0, 0.0, 1.5]);
             /// ```
+            // TODO: Add a small explanation about how it may be cheaper if used in
+            // conjunction with other elementwise operations because of fusion.
             #[inline]
             pub fn relu(&self) -> TensorPromise<T, B> {
                 relu_impl(self)
@@ -1086,19 +1141,18 @@ macro_rules! impl_tanh {
             T: FloatLike,
             B: Backend,
         {
-            /// Apply the hyperbolic tangent element-wise, mapping each value
-            /// into `(-1, 1)`.
-            ///
-            /// A scalar op, so it fuses with adjacent scalar ops into a single
-            /// `FusedScalar` pass rather than a separate graph node.
+            /// Applies the hyperbolic tangent to each element, mapping values into `(-1, 1)`.
             ///
             /// # Examples
             ///
             /// ```
             /// use candela::Tensor;
-            /// let t = Tensor::from_slice(&[0.0_f64], &[1]);
-            /// assert_eq!(t.tanh().materialize().data(), &[0.0]); // tanh(0) == 0
+            ///
+            /// let t = Tensor::from_scalar(0.0_f64, &[1]);
+            /// assert_eq!(t.tanh().materialize().item(), 0.0); // tanh(0) == 0
             /// ```
+            // TODO: Add a small explanation about how it may be cheaper if used in
+            // conjunction with other elementwise operations because of fusion.
             #[inline]
             pub fn tanh(&self) -> TensorPromise<T, B> {
                 tanh_impl(self)
@@ -1208,16 +1262,12 @@ macro_rules! impl_tensor_binop {
         {
             type Output = TensorPromise<T, B>;
 
-            /// Apply this operation element-wise, broadcasting compatible shapes
-            /// (NumPy rules), and return a `TensorPromise`. Nothing is computed
-            /// until `.materialize()`.
+            /// Applies the operation element-wise, broadcasting if the shapes are compatible.
             ///
             /// # Panics
             ///
-            /// Panics here, when the operator is applied (not at
-            /// `.materialize()`), if the operand shapes are not
-            /// broadcast-compatible. A shape mismatch between two tensors is
-            /// treated as a programming error, not a recoverable condition.
+            /// Panics when the operator is applied — not at `.materialize()` — if the
+            /// shapes are not broadcast-compatible.
             #[inline]
             fn $method(self, rhs: &$rhs<T, B>) -> Self::Output {
                 $impl_fn(self, rhs)
@@ -1231,16 +1281,12 @@ macro_rules! impl_tensor_binop {
         {
             type Output = TensorPromise<T, B>;
 
-            /// Apply this operation element-wise, broadcasting compatible shapes
-            /// (NumPy rules), and return a `TensorPromise`. Nothing is computed
-            /// until `.materialize()`.
+            /// Applies the operation element-wise, broadcasting if the shapes are compatible.
             ///
             /// # Panics
             ///
-            /// Panics here, when the operator is applied (not at
-            /// `.materialize()`), if the operand shapes are not
-            /// broadcast-compatible. A shape mismatch between two tensors is
-            /// treated as a programming error, not a recoverable condition.
+            /// Panics when the operator is applied — not at `.materialize()` — if the
+            /// shapes are not broadcast-compatible.
             #[inline]
             fn $method(self, rhs: $rhs<T, B>) -> Self::Output {
                 $impl_fn(self, &rhs)
@@ -1254,16 +1300,12 @@ macro_rules! impl_tensor_binop {
         {
             type Output = TensorPromise<T, B>;
 
-            /// Apply this operation element-wise, broadcasting compatible shapes
-            /// (NumPy rules), and return a `TensorPromise`. Nothing is computed
-            /// until `.materialize()`.
+            /// Applies the operation element-wise, broadcasting if the shapes are compatible.
             ///
             /// # Panics
             ///
-            /// Panics here, when the operator is applied (not at
-            /// `.materialize()`), if the operand shapes are not
-            /// broadcast-compatible. A shape mismatch between two tensors is
-            /// treated as a programming error, not a recoverable condition.
+            /// Panics when the operator is applied — not at `.materialize()` — if the
+            /// shapes are not broadcast-compatible.
             #[inline]
             fn $method(self, rhs: &$rhs<T, B>) -> Self::Output {
                 $impl_fn(&self, rhs)
@@ -1277,16 +1319,12 @@ macro_rules! impl_tensor_binop {
         {
             type Output = TensorPromise<T, B>;
 
-            /// Apply this operation element-wise, broadcasting compatible shapes
-            /// (NumPy rules), and return a `TensorPromise`. Nothing is computed
-            /// until `.materialize()`.
+            /// Applies the operation element-wise, broadcasting if the shapes are compatible.
             ///
             /// # Panics
             ///
-            /// Panics here, when the operator is applied (not at
-            /// `.materialize()`), if the operand shapes are not
-            /// broadcast-compatible. A shape mismatch between two tensors is
-            /// treated as a programming error, not a recoverable condition.
+            /// Panics when the operator is applied — not at `.materialize()` — if the
+            /// shapes are not broadcast-compatible.
             #[inline]
             fn $method(self, rhs: $rhs<T, B>) -> Self::Output {
                 $impl_fn(&self, &rhs)
