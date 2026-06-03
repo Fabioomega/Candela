@@ -1,4 +1,4 @@
-# Candela — Roadmap
+# Candela - Roadmap
 
 Phases are ordered by dependency. Complete earlier phases before starting later ones.
 
@@ -6,7 +6,7 @@ Status markers: `[ ]` not started · `[~]` in progress · `[x]` done
 
 ---
 
-## Phase 1 — Execution Planner (Done)
+## Phase 1 - Execution Planner (Done)
 
 **Goal:** Replace the current ad-hoc buffer-reuse mechanism with a correct static
 execution plan derived from the computation graph.
@@ -57,34 +57,34 @@ assert_eq!(result.data(), &[-1.0, 0.0, 1.0, 2.0]);
 
 ---
 
-## Phase 2 — Cleanup and Test Foundation (Done)
+## Phase 2 - Cleanup and Test Foundation (Done)
 
 **Why here:** Small, high-leverage housekeeping while the Phase 1 architecture is fresh.
 The test suite must exist before Phase 3 so regressions are caught as they are introduced,
 not discovered later.
 
 ### Implementation
-- [X] Delete `src/tensor/tensor_old.rs` — dead code, never referenced
+- [X] Delete `src/tensor/tensor_old.rs` - dead code, never referenced
 - [X] Remove unused `lapacke` dependency from `Cargo.toml`
 - [X] Mark internal modules `pub(crate)`: `OpKind`, `NodeKind`, `Promising`,
       `TensorGraphEdge`, `TensorGraphNode`, `TensorGraphCacheNode`
 - [X] Fix `Clone` semantics: make `Clone` a shallow Arc-bump; rename the current deep
       copy to `deep_clone()`. A `Vec<Tensor<T>>::clone()` should not silently copy every
       buffer
-- [kinda?] Replace remaining `unreachable!()` / `todo!()` in `graph.rs`, `impl_layout.rs`,
+- [X] Replace remaining `unreachable!()` / `todo!()` in `graph.rs`, `impl_layout.rs`,
       and `impl_compute` with `Err(OpError::...)` or `unimplemented!()` with a clear
       message
 - [X] Fix the three bugs in `Layout::broadcast_to_shape` before Phase 4 can use it:
       the `cfg_debug_only!` guard predicate is inverted; stride is built from `shape`
       instead of `self.stride`; `len` is computed from `self.shape` instead of the
       target shape
-- [me in the future, good luck S2] Set up `tests/` directory with an integration test module
-- [fuck2] Add a GitHub Actions workflow: `cargo fmt --check`, `cargo clippy -- -D warnings`,
+- [X] Set up `tests/` directory with an integration test module
+- [X] Add a GitHub Actions workflow: `cargo fmt --check`, `cargo clippy -- -D warnings`,
       `cargo test`
 
 ### Tests
 ```rust
-// Clone is shallow — both tensors share the same Arc, no allocation
+// Clone is shallow - both tensors share the same Arc, no allocation
 let a = arange(1000);
 let b = a.clone();
 assert!(Arc::ptr_eq(&a.storage().buffer, &b.storage().buffer));
@@ -117,7 +117,7 @@ assert_eq!((t / 2.0).materialize().data(), &[1.5; 4]);
 
 ---
 
-## Phase 3 — Complete Matmul (Done)
+## Phase 3 - Complete Matmul (Done)
 
 **Goal:** Make matrix multiplication actually compute the correct result.
 
@@ -164,7 +164,7 @@ assert!(a_3x4.matmul(&b_3x4).is_err());
 
 ---
 
-## Phase 4 — Broadcasting (Done)
+## Phase 4 - Broadcasting (Done)
 
 **Goal:** Allow ops to work on tensors with compatible but non-identical shapes by
 expanding dimensions implicitly rather than erroring.
@@ -204,7 +204,7 @@ assert!((ones(&[3, 4]) + ones(&[2, 4])).materialize().is_err());
 
 ---
 
-## Phase 5 — Reduction Ops
+## Phase 5 - Reduction Ops (Done)
 
 **Goal:** Add `sum`, `mean`, and `max` reductions along a specified axis, with optional
 `keepdim` support.
@@ -244,7 +244,7 @@ assert_eq!(t.max(0, false).materialize().data(), &[5.0]);
 
 ---
 
-## Phase 6 — f32 Support and Activation Ops
+## Phase 6 - f32 Support and Activation Ops (~Done)
 
 **Goal:** Support `f32` tensors in addition to `f64`, and add `relu`, `sigmoid`, and
 `tanh` as first-class ops.
@@ -252,6 +252,8 @@ assert_eq!(t.max(0, false).materialize().data(), &[5.0]);
 **Why here:** These are two independent, straightforward additions that together greatly
 expand usability. Being scalar ops, activations automatically participate in fusion
 without any new fusion rules.
+
+**Status:** f32 support is in. Activation ops (`relu`, `sigmoid`, `tanh`) still to land.
 
 ### Tests
 ```rust
@@ -282,92 +284,70 @@ assert_eq!(result.data(), &[0.0, 2.0, 4.0, 6.0]);
 
 ---
 
-## Phase 7 — Model Building Blocks
+## Phase 7 - Backend / Dtype Split and CI (Done)
 
-**Goal:** Implement `Linear`, `Softmax`, and `LayerNorm` by composing the primitives
-from Phases 3–6.
+**Goal:** Decouple the compute device from the element type, gate Intel MKL behind a
+feature flag with a pure-Rust fallback, and stand up the CI that everything afterwards
+will rely on.
 
-**Why here:** With matmul, broadcasting, reductions, and activations all in place,
-these layers are pure composition — no new kernel work needed.
+**Why moved forward:** every later phase is shaped by whether the backend abstraction
+exists. Today the project does not compile without an Intel toolchain, which gates
+contributors and rules out non-x86 targets entirely. Doing this before autodiff or
+skeletons also means those phases get to design against a clean trait rather than
+retrofit one.
 
-### Tests
-```rust
-// Linear: [batch=2, in=3] @ [out=4, in=3]^T + [4] = [2, 4]
-let x      = Tensor::from_scalar(1.0, &[2, 3]);
-let weight = Tensor::from_scalar(1.0, &[4, 3]);
-let bias   = Tensor::from_scalar(0.5, &[4]);
-let out    = linear(x, weight, bias).materialize();
-assert_eq!(out.shape(), &[2, 4]);
-// each output element = dot([1,1,1], [1,1,1]) + 0.5 = 3.5
-assert_approx_eq!(out.data(), &[3.5; 8]);
+### Implementation
 
-// Softmax output sums to 1 along last axis
-let logits = Tensor::from_data(&[1.0, 2.0, 3.0, 1.0, 2.0, 3.0], &[2, 3]);
-let probs  = softmax(&logits, 1).materialize();
-let row0_sum: f64 = probs.data()[..3].iter().sum();
-assert_approx_eq!(row0_sum, 1.0);
-```
-
-### Documentation
-- Create `examples/linear_layer.rs` showing a single forward pass
-- Document each function with shape conventions
-
----
-
-## Phase 8 — Symbolic Autodiff
-
-**Goal:** Implement automatic differentiation by traversing the existing computation
-graph in reverse and building a new gradient graph.
-
-**Why symbolic:** The graph already carries the op and inputs at every node. Building
-the backward pass as a new graph means gradients get fusion, execution planning, and
-buffer reuse for free — the same machinery applies to both passes.
-
-**Gradient rules you will need** (math, not implementation):
-- `AxBy(a, b)`: `grad_input = a * grad_output`
-- `Add`: `grad_lhs = grad_output`, `grad_rhs = grad_output`
-- `Sub`: `grad_lhs = grad_output`, `grad_rhs = -grad_output`
-- `Mul`: `grad_lhs = rhs * grad_output`, `grad_rhs = lhs * grad_output`
-- `Matmul`: `grad_lhs = grad @ rhs^T`, `grad_rhs = lhs^T @ grad`
-- `ReduceSum`: gradient is the broadcast of `grad_output` back to the input shape
+- Split `ComputeWrapperSpec` into a `Backend` trait (compute device - `CpuMkl`,
+  `CpuNaive` to start) and a `Dtype` trait (element type - `f32`, `f64`). The pair
+  `<B: Backend, T: Dtype>` selects a kernel set.
+- Put MKL behind `--features mkl`. Default build uses the pure-Rust path:
+  `matrixmultiply` (or a hand-rolled blocked kernel) for `MatMul`, straightforward
+  loops for elementwise.
+- Replace the `todo!()` arms in `cpu_f64.rs` and `cpu_f32.rs` with
+  `OpError::UnsupportedInplace(op_name)` so an unsupported planner decision returns
+  an error rather than panicking.
+- Add `# Safety` doc comments to every `pub unsafe fn`, especially `iter_as_layout`.
+- Remove the gratuitous `unsafe { layout.unwrap_unchecked() }` blocks in `graph.rs`
+  and `impl_op.rs` - the optimiser already eliminates the dead panic branches.
+- Decide and document: do `add/sub/mul/div` method variants return `Result` (per
+  the README's "methods return Result" rule) or panic (per the current code)? Make
+  one of the two true.
+- Stand up `.github/workflows/ci.yml` running `cargo fmt --check`,
+  `cargo clippy -- -D warnings`, and `cargo test` on the MKL-off build. Add an
+  `--features mkl` job once an MKL-enabled runner is feasible.
 
 ### Tests
 ```rust
-// Gradient of sum(x^2) w.r.t. x = 2x
-let x = Parameter::new(Tensor::from_data(&[1.0, 2.0, 3.0], &[3]));
-let loss = (x.as_promise() * x.as_promise()).sum(0, false);
-let grads = loss.backward();
-assert_approx_eq!(grads[&x].data(), &[2.0, 4.0, 6.0]);
+// Same op runs under either backend with identical results.
+let t = Tensor::<CpuNaive, f32>::from_scalar(2.0, &[4]);
+assert_eq!((t * 3.0).materialize().data(), &[6.0; 4]);
 
-// Chain rule: d/dx (3x + 1)^2 = 2(3x+1)*3 = 6(3x+1)
-let x = Parameter::new(Tensor::from_scalar(2.0, &[1]));
-let y = ((x.as_promise() * 3.0 + 1.0) * (x.as_promise() * 3.0 + 1.0)).sum(0, false);
-let grads = y.backward();
-// at x=2: 6*(3*2+1) = 6*7 = 42
-assert_approx_eq!(grads[&x].data(), &[42.0]);
-
-// Gradient flows through matmul
-let w = Parameter::new(Tensor::from_scalar(1.0, &[3, 3]));
-let x = Tensor::from_scalar(1.0, &[2, 3]);
-let loss = linear(x, w, zeros(&[3])).sum(0, false).sum(0, false);
-let grads = loss.backward();
-assert_eq!(grads[&w].shape(), &[3, 3]);
+// Default build (no MKL) compiles and runs the full test suite.
+// `cargo test` on a non-Intel machine is green.
 ```
 
 ### Documentation
-- Add an `Autodiff` section to `README.md`
-- Create `examples/gradient_descent.rs`: simple 1D regression for 10 steps
-- Document the gradient rule for each `OpKind`
+- Add a "Backends" section to `README.md` covering the feature flag and what
+  `mkl` vs default builds enable.
+- Create `doc/backends.md` describing the `Backend` trait and what it takes to
+  add a new one.
 
 ---
 
-## Phase 9 — PromiseSkeleton
+## Phase 8 - PromiseSkeleton
 
 **Goal:** Pre-compile the execution plan once for a fixed graph topology and reuse it
 across iterations with different data, avoiding the cost of re-planning on every call.
 
-**Why:** In a training loop, graph topology and shapes are identical across iterations —
-only leaf data changes. This is equivalent to CUDA graphs applied to the CPU path.
+**Why moved forward:** every benchmark right now measures planner overhead + compute.
+Skeletons let benchmarks measure compute alone - necessary for honest numbers before
+autodiff piles more nodes onto every graph. Skeletons also unlock real production
+patterns (preprocessing pipelines, repeated inference) that don't require autograd.
+
+**What this also gives us:** a natural home for caching the topological sort and the
+fusion-pass result (both of which currently re-run on every `.materialize()`), and
+for amortising buffer allocation via a per-skeleton memory pool.
 
 ### Tests
 ```rust
@@ -392,19 +372,231 @@ assert_eq!(result2.data(), &[11.0; 4]);
 
 ---
 
-## Phase 10 — Backend / Dtype Split
+## Phase 9 - Fusion Rewrite Pass and FusedElementwise
 
-**Goal:** Decouple the compute device (CPU-MKL) from the element type (f64, f32) so
-that adding a no-MKL fallback and a future CUDA backend are well-defined extension
-points rather than hacks. The no-MKL path also removes the Intel toolchain as a hard
-requirement, which matters for CI and non-Intel platforms.
+**Goal:** Move fusion out of `TensorGraphNode::new` into a dedicated rewrite pass over
+the DAG, and introduce a multi-input `FusedElementwise` op so trees like
+`(x + 1) * (y - 2)` collapse into a single pass.
+
+**Why here:** the current `try_fuse` only folds a new op into one of its parents,
+operates only on linear chains over a single tensor input, and runs greedily at
+construction time. That covered the early ops, but it does not generalize:
+
+- Multi-tensor elementwise expressions cannot fuse at all (no representation for
+  "kernel over N tensor inputs").
+- Algebraic identities like `x * 0 → 0`, `x + 0 → x`, `transpose(transpose(x)) → x`
+  are not applied - and autodiff (Phase 10) will generate huge graphs full of
+  exactly those patterns.
+- Adding a new fusion means editing one big `match` in `compute_fusion` instead of
+  defining a rule independently.
+
+### Implementation
+
+**The rewrite framework:**
+```rust
+trait Rewrite<T: Copy> {
+    fn try_apply(&self, node: &NodeKind<T>) -> Option<NodeKind<T>>;
+}
+```
+A pass walks the DAG bottom-up, applies each rule, and iterates to fixpoint. The
+pass runs at plan time (cached inside `PromiseSkeleton` so it pays only once).
+`TensorGraphNode::new` becomes pure construction; the fusion work moves out.
+
+**Rules to land:**
+- `ScalarChainFusion` - what `fusion.rs` does today, expressed as one rule.
+- `MatmulFusion` - `MatMul + ScalarOp`, `MatMul + Add`, etc.
+- `AlgebraicIdentities` - `x*0`, `x+0`, `x*1`, `x-x`, `transpose(transpose(x))`,
+  `view(view(x))`, broadcast-then-reduce-same-axis, etc.
+- `AsContiguousDropContig` - drop `AsContiguous` when its input is already
+  contiguous (currently in `compute_fusion`).
+- `ElementwiseTreeBuilder` - see below.
+
+**FusedElementwise op:**
+```rust
+enum ElemExpr<T: Copy> {
+    Input(usize),                        // refers to inputs[i]
+    Const(T),
+    AxBy(T, T, Box<ElemExpr<T>>),
+    Add(Box<ElemExpr<T>>, Box<ElemExpr<T>>),
+    Sub(Box<ElemExpr<T>>, Box<ElemExpr<T>>),
+    Mul(Box<ElemExpr<T>>, Box<ElemExpr<T>>),
+    Div(Box<ElemExpr<T>>, Box<ElemExpr<T>>),
+    Exp(Box<ElemExpr<T>>),
+    Ln(Box<ElemExpr<T>>),
+    // activations from Phase 6
+}
+
+OpKind::FusedElementwise { expr: ElemExpr<T>, n_inputs: usize }
+```
+The kernel is a per-chunk tree interpreter. The single-input chain stays on the
+BLAS fast path (`FusedScalar` remains as a special case); only the multi-input
+cases use the interpreter. The threshold for fusion: rewrite if it reduces total
+memory traffic (saving one intermediate buffer write+read is almost always a win).
+
+### Tests
+```rust
+// Two-input elementwise expression collapses to one kernel pass.
+let x = arange(4).as_promise();
+let y = arange(4).as_promise();
+let result = ((&x + 1.0) * (&y - 2.0)).materialize();
+// Verify the graph has exactly one FusedElementwise node before execution.
+
+// Algebraic identity: x * 0 produces zeros without computing x.
+let x = (arange(4) + 100.0).as_promise();  // expensive-looking subgraph
+let zero = Tensor::from_scalar(0.0, &[4]);
+let result = (&x * zero).materialize();
+assert_eq!(result.data(), &[0.0; 4]);
+
+// transpose(transpose(x)) folds away.
+let t = arange_2d(3, 4);
+let result = t.transpose().transpose().materialize();
+// Plan should contain zero Transpose ops.
+```
+
+### Documentation
+- Add `doc/fusion.md` describing the rewrite framework and the rule set
+- Document each `Rewrite` impl with the pattern it matches and the rationale
 
 ---
 
-## Phase 11 — CUDA Backend
+## Phase 10 - Symbolic Autodiff
 
-Long-horizon. Depends on the backend abstraction introduced in Phase 10. Each `OpKind`
-maps to a CUDA kernel; async execution uses CUDA streams.
+**Goal:** Implement automatic differentiation by traversing the existing computation
+graph in reverse and building a new gradient graph.
+
+**Why symbolic:** the graph already carries the op and inputs at every node. Building
+the backward pass as a new graph means gradients get fusion (now much more aggressive
+thanks to Phase 9), execution planning, and buffer reuse for free - the same
+machinery applies to both passes.
+
+**Why after Phase 9:** backward passes generate graphs full of `0`s, `1`s, broadcasts
+back, and transposed matmuls. Without the rewrite pass these graphs run several times
+slower than they need to. Landing autodiff on top of an existing fusion pass means
+gradient code is fast from day one.
+
+**Gradient rules you will need** (math, not implementation):
+- `AxBy(a, b)`: `grad_input = a * grad_output`
+- `Add`: `grad_lhs = grad_output`, `grad_rhs = grad_output`
+- `Sub`: `grad_lhs = grad_output`, `grad_rhs = -grad_output`
+- `Mul`: `grad_lhs = rhs * grad_output`, `grad_rhs = lhs * grad_output`
+- `Matmul`: `grad_lhs = grad @ rhs^T`, `grad_rhs = lhs^T @ grad`
+- `ReduceSum`: gradient is the broadcast of `grad_output` back to the input shape
+
+### Tests
+```rust
+// Gradient of sum(x^2) w.r.t. x = 2x
+let x = Parameter::new(Tensor::from_data(&[1.0, 2.0, 3.0], &[3]));
+let loss = (x.as_promise() * x.as_promise()).sum(0, false);
+let grads = loss.backward();
+assert_approx_eq!(grads[&x].data(), &[2.0, 4.0, 6.0]);
+
+// Chain rule: d/dx (3x + 1)^2 = 2(3x+1)*3 = 6(3x+1)
+let x = Parameter::new(Tensor::from_scalar(2.0, &[1]));
+let y = ((x.as_promise() * 3.0 + 1.0) * (x.as_promise() * 3.0 + 1.0)).sum(0, false);
+let grads = y.backward();
+assert_approx_eq!(grads[&x].data(), &[42.0]);
+
+// Gradient flows through matmul
+let w = Parameter::new(Tensor::from_scalar(1.0, &[3, 3]));
+let x = Tensor::from_scalar(1.0, &[2, 3]);
+let loss = linear(x, w, zeros(&[3])).sum(0, false).sum(0, false);
+let grads = loss.backward();
+assert_eq!(grads[&w].shape(), &[3, 3]);
+```
+
+### Documentation
+- Add an `Autodiff` section to `README.md`
+- Create `examples/gradient_descent.rs`: simple 1D regression for 10 steps
+- Document the gradient rule for each `OpKind`
+
+---
+
+## Phase 11 - Model Building Blocks
+
+**Goal:** Implement `Linear`, `Softmax`, and `LayerNorm` by composing the primitives
+from Phases 3–6.
+
+**Why here:** by this point matmul, broadcasting, reductions, activations, and the
+fusion rewriter are all in. Linear and Softmax become pure composition - and the
+fusion pass folds the resulting graphs much more aggressively than it could before
+Phase 9.
+
+**Also do here:** consolidate the macro explosion in `ops/impl_op.rs`. The
+`ComputationDef` trait already exists; the four `impl Add/Sub/Mul/Div` macros over
+`Tensor × Promise × CachedPromise × {ref, owned}` should collapse into one blanket
+impl per operator. The macro layer becomes optional sugar instead of load-bearing.
+
+### Tests
+```rust
+// Linear: [batch=2, in=3] @ [out=4, in=3]^T + [4] = [2, 4]
+let x      = Tensor::from_scalar(1.0, &[2, 3]);
+let weight = Tensor::from_scalar(1.0, &[4, 3]);
+let bias   = Tensor::from_scalar(0.5, &[4]);
+let out    = linear(x, weight, bias).materialize();
+assert_eq!(out.shape(), &[2, 4]);
+assert_approx_eq!(out.data(), &[3.5; 8]);
+
+// Softmax output sums to 1 along last axis
+let logits = Tensor::from_data(&[1.0, 2.0, 3.0, 1.0, 2.0, 3.0], &[2, 3]);
+let probs  = softmax(&logits, 1).materialize();
+let row0_sum: f64 = probs.data()[..3].iter().sum();
+assert_approx_eq!(row0_sum, 1.0);
+```
+
+### Documentation
+- Create `examples/linear_layer.rs` showing a single forward pass
+- Document each function with shape conventions
+
+---
+
+## Phase 12 - Quantization (fp16 / bf16)
+
+**Goal:** Add `f16` and `bf16` as supported element types.
+
+**Why here:** nearly free win on modern hardware - half the memory, similar accuracy
+for inference, often faster on tensor cores. Required dtype for any future CUDA work.
+The generic framework already supports any `NumberLike`; the missing piece is the
+kernels.
+
+### Implementation
+- Add `half::f16` and `half::bf16` `Dtype` impls.
+- MKL path: `cblas_h*gemm` for f16 where available; soft fallback otherwise.
+- Pure-Rust path: software arithmetic via `half` crate.
+- Mixed-precision matmul (`f16` inputs, `f32` accumulator) is the common production
+  shape - design the `MatMul` op to take separate input and accumulator dtypes.
+
+---
+
+## Phase 13 - ONNX Importer (subset)
+
+**Goal:** Load a useful subset of ONNX models - enough that someone with a real model
+can try Candela without transcribing by hand.
+
+**Why here:** the difference between "interesting engine" and "library people adopt"
+is whether you can load their model. Even a 30-op subset (`Gemm`, `Conv`, `LayerNorm`,
+`Softmax`, `ReLU`, `GeLU`, `Add`, `Mul`, `Reshape`, `Transpose`, etc.) covers the
+forward pass of most small transformers and CNNs.
+
+The graph IR is already DAG-shaped; the translation from ONNX nodes to `OpKind` is
+mechanical. The harder part is shape inference for ops Candela doesn't natively
+support (those become `unimplemented!()` errors with the op name in the message).
+
+---
+
+## Phase 14 - CUDA Backend
+
+Long-horizon. Depends on the backend abstraction from Phase 7. Each `OpKind` maps to a
+CUDA kernel; async execution uses CUDA streams.
+
+By this point: the `Backend` trait exists, the fusion rewriter exists, autodiff
+exists, and `f16`/`bf16` quantization exists. CUDA is the largest piece in absolute
+terms but the smallest in terms of architectural surprise - the design points are
+already pinned down.
+
+Open design question to settle in Phase 7: does `Backend::execute` return a future?
+If yes, the CPU path stays synchronous under an immediate-ready future; the GPU path
+gets real async without a retrofit. If no, GPU support requires changing the trait
+later. Decide before locking it in.
 
 ---
 
@@ -482,9 +674,9 @@ They test one function or one code path in isolation.
 Integration tests build graphs and materialize them end-to-end.
 All expected values should be hand-computed and commented.
 
-**`tests/ops.rs` — scalar ops**
+**`tests/ops.rs` - scalar ops**
 ```rust
-// One test per OpKindScalar arm — catches copy-paste regressions
+// One test per OpKindScalar arm - catches copy-paste regressions
 #[test] fn scalar_add() { /* ones(4) + 2.0 == [3;4] */ }
 #[test] fn scalar_sub() { /* ones(4) - 2.0 == [-1;4] */ }
 #[test] fn scalar_mul() { /* ones(4) * 3.0 == [3;4] */ }
@@ -508,7 +700,7 @@ All expected values should be hand-computed and commented.
 #[test] fn div_is_not_commutative() { /* similar */ }
 ```
 
-**`tests/ops.rs` — binary tensor ops**
+**`tests/ops.rs` - binary tensor ops**
 ```rust
 #[test] fn tensor_add() { /* [1,2,3] + [4,5,6] == [5,7,9] */ }
 #[test] fn tensor_sub() { /* [4,5,6] - [1,2,3] == [3,3,3] */ }
@@ -523,7 +715,7 @@ fn tensor_add_shape_mismatch_panics() {
 }
 ```
 
-**`tests/layout.rs` — shape operations**
+**`tests/layout.rs` - shape operations**
 ```rust
 #[test] fn view_zero_copy()       { /* same Arc pointer before and after */ }
 #[test] fn transpose_zero_copy()  { /* same Arc pointer */ }
@@ -535,7 +727,7 @@ fn tensor_add_shape_mismatch_panics() {
 #[test] fn as_contiguous_on_transposed_produces_correct_data() { }
 ```
 
-**`tests/graph.rs` — graph execution**
+**`tests/graph.rs` - graph execution**
 ```rust
 // A node used by two branches is computed exactly once
 #[test] fn shared_node_computed_once() {
@@ -716,11 +908,11 @@ criterion_main!(benches);
 
 The GitHub Actions workflow should run all of the following on every push:
 
-- [ ] `cargo fmt --check` — no formatting drift
-- [ ] `cargo clippy -- -D warnings` — no lint regressions
-- [ ] `cargo test` — all unit and integration tests pass
-- [ ] `cargo test --features debug_only_check` — validation paths also exercised
-- [ ] `cargo bench --no-run` — benchmarks compile (do not run timing on CI)
+- [ ] `cargo fmt --check` - no formatting drift
+- [ ] `cargo clippy -- -D warnings` - no lint regressions
+- [ ] `cargo test` - all unit and integration tests pass
+- [ ] `cargo test --features debug_only_check` - validation paths also exercised
+- [ ] `cargo bench --no-run` - benchmarks compile (do not run timing on CI)
 
 ---
 
@@ -739,15 +931,15 @@ Items that are not blocked on any phase but should be done incrementally.
 - [ ] Add doc comments (with `# Examples`) to the method macros in
       `src/tensor/ops/impl_op.rs`: `view`, `reshape`, `slice`, `transpose`,
       `transpose_axes`, `as_contiguous`, `exp`, `ln`, `log2`, and the scalar
-      arithmetic operators. These are safe to place inside the macro body —
+      arithmetic operators. These are safe to place inside the macro body -
       rustdoc picks them up for each expanded type (`Tensor`, `TensorPromise`,
       `CachedTensorPromise`)
 - [ ] Create `examples/` directory with at minimum:
-      - `lazy_eval.rs` — basic graph construction and materialization
-      - `fusion.rs` — scalar fusion collapsing a 20-op chain
-      - `cached_promise.rs` — shared preprocessing across multiple flows
-      - `matmul.rs` — matrix multiplication
-      - `gradient_descent.rs` — simple regression (after Phase 8)
+      - `lazy_eval.rs` - basic graph construction and materialization
+      - `fusion.rs` - scalar fusion collapsing a 20-op chain
+      - `cached_promise.rs` - shared preprocessing across multiple flows
+      - `matmul.rs` - matrix multiplication
+      - `gradient_descent.rs` - simple regression (after Phase 8)
 - [ ] Conformance tests against NumPy for every op: generate inputs in Python, export
       as JSON, import in Rust tests and compare outputs within floating-point tolerance
 - [ ] Add `benches/` with at minimum:
