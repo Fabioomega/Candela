@@ -1,6 +1,6 @@
 mod common;
 
-use candela::errors::OpError;
+use candela::OpError;
 use candela::{Dimension, FloatLikeTensorElement, Tensor, srange};
 use common::{assert_approx_eq, tensor_of};
 use rstest::rstest;
@@ -51,7 +51,10 @@ fn sum_axis_0_1d<T: FloatLikeTensorElement>(#[case] _t: T) {
 fn sum_axis_0_2d<T: FloatLikeTensorElement>(#[case] _t: T) {
     // [[1,2],[3,4]] sum axis 0 → [4, 6]
     let t = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
-    assert_approx_eq(t.sum_axis(0, false).unwrap().materialize().data(), &[4.0, 6.0]);
+    assert_approx_eq(
+        t.sum_axis(0, false).unwrap().materialize().data(),
+        &[4.0, 6.0],
+    );
 }
 
 #[rstest]
@@ -60,7 +63,10 @@ fn sum_axis_0_2d<T: FloatLikeTensorElement>(#[case] _t: T) {
 fn sum_axis_1_2d<T: FloatLikeTensorElement>(#[case] _t: T) {
     // [[1,2],[3,4]] sum axis 1 → [3, 7]
     let t = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
-    assert_approx_eq(t.sum_axis(1, false).unwrap().materialize().data(), &[3.0, 7.0]);
+    assert_approx_eq(
+        t.sum_axis(1, false).unwrap().materialize().data(),
+        &[3.0, 7.0],
+    );
 }
 
 #[rstest]
@@ -80,7 +86,10 @@ fn sum_axis_keepdim<T: FloatLikeTensorElement>(#[case] _t: T) {
 fn sum_axis_negative<T: FloatLikeTensorElement>(#[case] _t: T) {
     // axis=-1 on [2,2] resolves to axis 1: same as sum_axis_1_2d
     let t = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
-    assert_approx_eq(t.sum_axis(-1, false).unwrap().materialize().data(), &[3.0, 7.0]);
+    assert_approx_eq(
+        t.sum_axis(-1, false).unwrap().materialize().data(),
+        &[3.0, 7.0],
+    );
 }
 
 #[rstest]
@@ -89,7 +98,10 @@ fn sum_axis_negative<T: FloatLikeTensorElement>(#[case] _t: T) {
 fn sum_axis_uniform<T: FloatLikeTensorElement>(#[case] _t: T) {
     // 3×3 of 4.0, sum axis 0 → [12, 12, 12]
     let t = Tensor::from_scalar(T::from_f64(4.0), &[3, 3]);
-    assert_approx_eq(t.sum_axis(0, false).unwrap().materialize().data(), &[12.0; 3]);
+    assert_approx_eq(
+        t.sum_axis(0, false).unwrap().materialize().data(),
+        &[12.0; 3],
+    );
 }
 
 #[test]
@@ -254,7 +266,10 @@ fn mean_axis_0_1d<T: FloatLikeTensorElement>(#[case] _t: T) {
 fn mean_axis_0_2d<T: FloatLikeTensorElement>(#[case] _t: T) {
     // [[1,2],[3,4]] mean axis 0 → [2, 3]
     let t = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
-    assert_approx_eq(t.mean_axis(0, false).unwrap().materialize().data(), &[2.0, 3.0]);
+    assert_approx_eq(
+        t.mean_axis(0, false).unwrap().materialize().data(),
+        &[2.0, 3.0],
+    );
 }
 
 #[rstest]
@@ -263,7 +278,10 @@ fn mean_axis_0_2d<T: FloatLikeTensorElement>(#[case] _t: T) {
 fn mean_axis_1_2d<T: FloatLikeTensorElement>(#[case] _t: T) {
     // [[1,2],[3,4]] mean axis 1 → [1.5, 3.5]
     let t = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
-    assert_approx_eq(t.mean_axis(1, false).unwrap().materialize().data(), &[1.5, 3.5]);
+    assert_approx_eq(
+        t.mean_axis(1, false).unwrap().materialize().data(),
+        &[1.5, 3.5],
+    );
 }
 
 #[rstest]
@@ -283,7 +301,10 @@ fn mean_axis_keepdim<T: FloatLikeTensorElement>(#[case] _t: T) {
 fn mean_axis_negative<T: FloatLikeTensorElement>(#[case] _t: T) {
     // axis=-1 on [2,2] resolves to axis 1: same as mean_axis_1_2d
     let t = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
-    assert_approx_eq(t.mean_axis(-1, false).unwrap().materialize().data(), &[1.5, 3.5]);
+    assert_approx_eq(
+        t.mean_axis(-1, false).unwrap().materialize().data(),
+        &[1.5, 3.5],
+    );
 }
 
 #[rstest]
@@ -292,7 +313,10 @@ fn mean_axis_negative<T: FloatLikeTensorElement>(#[case] _t: T) {
 fn mean_axis_uniform<T: FloatLikeTensorElement>(#[case] _t: T) {
     // 3×3 of 4.0, mean axis 0 → [4, 4, 4]
     let t = Tensor::from_scalar(T::from_f64(4.0), &[3, 3]);
-    assert_approx_eq(t.mean_axis(0, false).unwrap().materialize().data(), &[4.0; 3]);
+    assert_approx_eq(
+        t.mean_axis(0, false).unwrap().materialize().data(),
+        &[4.0; 3],
+    );
 }
 
 #[test]

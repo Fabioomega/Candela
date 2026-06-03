@@ -14,7 +14,7 @@ pub fn assert_shape<D: Dimension>(t: &D, expected: &[usize]) {
 }
 
 pub fn tensor_data<T: FloatLikeTensorElement>(t: &Tensor<T>) -> Vec<T> {
-    t.data().clone()
+    t.data().to_vec()
 }
 
 /// Cast an `f64` slice to a typed `Vec<T>` via `T::from_f64`. Loses precision

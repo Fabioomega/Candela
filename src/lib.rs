@@ -34,10 +34,11 @@
 //! - `doc/layout.md` - strides, zero-copy views, and the `adj_stride` iteration trick.
 //! - `doc/backends.md` - the backend/dtype split and the `mkl` feature flag.
 
-pub mod tensor;
+mod tensor;
 
 pub use tensor::arange;
-pub use tensor::errors;
+pub(crate) use tensor::errors;
+pub use tensor::errors::OpError;
 pub use tensor::{CachedTensorPromise, Dimension, Layout, SliceRange, Tensor, TensorPromise};
 
 use std::ops::Neg;

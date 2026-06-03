@@ -11,8 +11,8 @@ fn main() {
     // TensorGraphEdge. The planner deduplicates by node ID so the shared input
     // is computed once and both branches read the same value.
     let t = Tensor::from_vec(vec![0.0_f64, 1.0, 2.0, 3.0], &[4]);
-    let lhs = &t * 2.0;         // 2t
-    let rhs = &t + 1.0;         // t + 1
+    let lhs = &t * 2.0; // 2t
+    let rhs = &t + 1.0; // t + 1
     let result = (lhs - rhs).materialize(); // 2t - (t+1) = t - 1
     assert_eq!(result.data(), &[-1.0, 0.0, 1.0, 2.0]);
 
@@ -21,13 +21,13 @@ fn main() {
     // independent .materialize() calls without recomputing the inner graph.
     // .get_cache() reads the stored value directly - useful for inspecting what
     // a preprocessing step produced without triggering a new computation.
-    let t = arange!(4);                          // [0.0, 1.0, 2.0, 3.0]
+    let t = arange!(4); // [0.0, 1.0, 2.0, 3.0]
     let preprocessed = (t * 2.0 + 1.0).cache(); // computes [1.0, 3.0, 5.0, 7.0] on first use
 
     assert!(preprocessed.get_cache().is_none()); // inner graph has not run yet
 
     let flow_a = (&preprocessed * 10.0).materialize(); // triggers computation
-    let flow_b = (&preprocessed - 1.0).materialize();  // reuses cached result directly
+    let flow_b = (&preprocessed - 1.0).materialize(); // reuses cached result directly
 
     assert_eq!(flow_a.data(), &[10.0, 30.0, 50.0, 70.0]);
     assert_eq!(flow_b.data(), &[0.0, 2.0, 4.0, 6.0]);

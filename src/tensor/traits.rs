@@ -67,8 +67,6 @@ pub trait Promising {
     type Output: Copy;
 
     fn compute(&self) -> TensorData<Self::Output>;
-
-    fn layout(&self) -> &Layout;
 }
 
 pub trait StreamingIterator {

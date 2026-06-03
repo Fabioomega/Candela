@@ -1,6 +1,6 @@
 mod common;
 
-use candela::{Tensor, errors::OpError, s};
+use candela::{OpError, Tensor, s};
 
 // ── get ───────────────────────────────────────────────────────────────────────
 

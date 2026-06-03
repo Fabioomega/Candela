@@ -18,7 +18,7 @@ proptest! {
         let tb = Tensor::from_slice(&b, &[n]);
         let ab = (ta.clone() + tb.clone()).materialize();
         let ba = (tb + ta).materialize();
-        assert_relative_eq!(ab.data().as_slice(), ba.data().as_slice(), max_relative = 1e-10);
+        assert_relative_eq!(ab.data(), ba.data(), max_relative = 1e-10);
     }
 
     // a * b == b * a
@@ -36,7 +36,7 @@ proptest! {
         let tb = Tensor::from_slice(&b, &[n]);
         let ab = (ta.clone() * tb.clone()).materialize();
         let ba = (tb * ta).materialize();
-        assert_relative_eq!(ab.data().as_slice(), ba.data().as_slice(), max_relative = 1e-10);
+        assert_relative_eq!(ab.data(), ba.data(), max_relative = 1e-10);
     }
 
     // a - b == -(b - a)
@@ -54,7 +54,7 @@ proptest! {
         let tb = Tensor::from_slice(&b, &[n]);
         let ab = (ta.clone() - tb.clone()).materialize();
         let neg_ba = ((tb - ta) * -1.0).materialize();
-        assert_relative_eq!(ab.data().as_slice(), neg_ba.data().as_slice(), max_relative = 1e-10);
+        assert_relative_eq!(ab.data(), neg_ba.data(), max_relative = 1e-10);
     }
 
     // a + 0 == a
@@ -63,7 +63,7 @@ proptest! {
         let n = a.len();
         let t = Tensor::from_slice(&a, &[n]);
         let result = (t + 0.0).materialize();
-        assert_relative_eq!(result.data().as_slice(), a.as_slice(), max_relative = 1e-10);
+        assert_relative_eq!(result.data(), a.as_slice(), max_relative = 1e-10);
     }
 
     // a * 1 == a
@@ -72,7 +72,7 @@ proptest! {
         let n = a.len();
         let t = Tensor::from_slice(&a, &[n]);
         let result = (t * 1.0).materialize();
-        assert_relative_eq!(result.data().as_slice(), a.as_slice(), max_relative = 1e-10);
+        assert_relative_eq!(result.data(), a.as_slice(), max_relative = 1e-10);
     }
 
     // Fused scalar chain matches per-element sequential computation
@@ -88,7 +88,7 @@ proptest! {
         let fused = (t * a + b - c).materialize();
         let sequential: Vec<f64> = data.iter().map(|&x| x * a + b - c).collect();
         assert_relative_eq!(
-            fused.data().as_slice(),
+            fused.data(),
             sequential.as_slice(),
             max_relative = 1e-8,
         );

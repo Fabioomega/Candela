@@ -757,7 +757,7 @@ macro_rules! impl_view {
             /// # Examples
             ///
             /// ```
-            /// use candela::Tensor;
+            /// use candela::{Tensor, Dimension};
             ///
             /// let t = Tensor::from_slice(&[4.0, 3.0, 2.0, 1.0], &[4]);
             /// // Shares the same underlying data as t
@@ -777,13 +777,14 @@ macro_rules! impl_view {
             /// Reinterprets the tensor's data as having shape `shape`,
             /// allocating if the tensor is not contiguous.
             ///
-            /// This always succeeds, as long as the total number of elements in the new shape is the
-            /// same as the original one - unlike [`.view()`][Self::view].
+            /// Unlike [`.view()`][Self::view], this never fails on a non-contiguous
+            /// tensor — it only requires that the new shape has the same total number
+            /// of elements as the original.
             ///
             /// # Examples
             ///
             /// ```
-            /// use candela::Tensor;
+            /// use candela::{Tensor, Dimension};
             ///
             /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
             /// let r = t.transpose().reshape(&[4]).unwrap().materialize();
@@ -812,6 +813,28 @@ macro_rules! impl_slice {
             T: Numeric,
             B: Backend,
         {
+            /// Selects a rectangular subregion of the tensor, without allocating.
+            ///
+            /// Each [`SliceRange`] picks a range along one axis, applied from the
+            /// outermost axis inward; axes you leave out are kept whole. Build the
+            /// ranges with the [`s!`] macro using ordinary range syntax — negative
+            /// bounds count from the end. The result is a view into the original buffer.
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::{Tensor, Dimension, s};
+            ///
+            /// let t = Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0], &[2, 3]);
+            /// let sub = t.slice(s![1..2, 0..2]).unwrap().materialize(); // row 1, cols 0..2
+            ///
+            /// assert_eq!(sub.shape(), &[1, 2]);
+            /// ```
+            ///
+            /// # Errors
+            ///
+            /// Returns [`OpError::AxesOutOfBounds`] if more ranges are given than the
+            /// tensor has axes, or [`OpError::SliceOutOfBounds`] if a range is empty.
             #[inline]
             pub fn slice(&self, shape: &[SliceRange]) -> Result<TensorPromise<T, B>, OpError> {
                 slice_impl(self, shape)
@@ -827,6 +850,25 @@ macro_rules! impl_transpose {
             T: Numeric,
             B: Backend,
         {
+            /// Reverses the order of every axis, without allocating.
+            ///
+            /// For a 2-D tensor this is the familiar matrix transpose; for higher
+            /// ranks it flips all axes at once (axis `i` becomes axis `rank - 1 - i`).
+            /// Only the layout changes — the data stays put until something forces a
+            /// copy, so reach for [`.as_contiguous()`][Self::as_contiguous] when you
+            /// need the transposed values in their own buffer. For an arbitrary
+            /// permutation, see [`.transpose_axes()`][Self::transpose_axes].
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::{Tensor, Dimension};
+            ///
+            /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+            /// let tt = t.transpose().materialize();
+            ///
+            /// assert_eq!(tt.shape(), &[3, 2]);
+            /// ```
             #[inline]
             pub fn transpose(&self) -> TensorPromise<T, B> {
                 transpose_impl(self)
@@ -842,6 +884,31 @@ macro_rules! impl_transpose_axes {
             T: Numeric,
             B: Backend,
         {
+            /// Reorders the axes by an explicit permutation, without allocating.
+            ///
+            /// `axes` must list every axis index exactly once: `transpose_axes(&[1, 0])`
+            /// is the plain 2-D [`.transpose()`][Self::transpose], while `&[0, 2, 1]`
+            /// swaps only the last two axes of a rank-3 tensor and leaves the first
+            /// alone. Like [`.transpose()`][Self::transpose] it only relabels the
+            /// layout — see [`.as_contiguous()`][Self::as_contiguous] to materialize
+            /// the reordered values.
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::{Tensor, Dimension};
+            ///
+            /// let t = Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0], &[1, 2, 3]);
+            /// let s = t.transpose_axes(&[0, 2, 1]).unwrap().materialize();
+            ///
+            /// assert_eq!(s.shape(), &[1, 3, 2]);
+            /// ```
+            ///
+            /// # Errors
+            ///
+            /// Returns [`OpError::NotEnoughAxes`] if `axes` doesn't have one entry per
+            /// axis, or [`OpError::AxesOutOfBounds`] if an index is out of range or
+            /// repeated (so the list isn't a valid permutation).
             #[inline]
             pub fn transpose_axes(&self, axes: &[usize]) -> Result<TensorPromise<T, B>, OpError> {
                 transpose_axes_impl(self, axes)
@@ -857,6 +924,28 @@ macro_rules! impl_as_contiguous {
             T: Numeric,
             B: Backend,
         {
+            /// Packs the tensor into a fresh contiguous buffer in row-major order.
+            ///
+            /// Layout-only ops like [`.transpose()`][Self::transpose] and
+            /// [`.slice()`][Self::slice] leave the data where it is and only change
+            /// how it's addressed. `as_contiguous` turns such a view back into a
+            /// densely laid-out tensor. If the input is already contiguous it costs
+            /// nothing — the call collapses to a no-op. Candela also inserts it
+            /// automatically wherever an op needs contiguous memory (a BLAS matmul, a
+            /// [`.view()`][Self::view]), so you rarely call it by hand.
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::{Tensor, Dimension};
+            ///
+            /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+            /// // transpose is a view; as_contiguous lays the transposed values out for real.
+            /// let c = t.transpose().as_contiguous().materialize();
+            ///
+            /// assert!(c.is_contiguous());
+            /// assert_eq!(c.data(), &[1.0, 3.0, 2.0, 4.0]);
+            /// ```
             #[inline]
             pub fn as_contiguous(&self) -> TensorPromise<T, B> {
                 as_contiguous_impl(self)
@@ -872,6 +961,31 @@ macro_rules! impl_broadcast {
             T: Numeric,
             B: Backend,
         {
+            /// Expands the tensor to a larger shape by repeating elements along new
+            /// or size-1 axes, without allocating.
+            ///
+            /// Broadcasting follows NumPy's right-aligned rules: a target axis must
+            /// either match the source or expand from size 1, and extra leading axes
+            /// are added on the left. No data is copied — the repeated axes are faked
+            /// with zero strides. The arithmetic operators broadcast on their own, so
+            /// you mostly need this only to force a specific shape up front.
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::{Tensor, Dimension};
+            ///
+            /// let row = Tensor::from_slice(&[1.0, 2.0, 3.0], &[1, 3]);
+            /// let b = row.broadcast(&[2, 3]).unwrap().materialize();
+            ///
+            /// assert_eq!(b.shape(), &[2, 3]);
+            /// ```
+            ///
+            /// # Errors
+            ///
+            /// Returns [`OpError::CannotBroadcast`] if the target shape has fewer axes
+            /// than the source, or an axis is neither equal to the source nor
+            /// expandable from 1.
             #[inline]
             pub fn broadcast(&self, shape: &[usize]) -> Result<TensorPromise<T, B>, OpError> {
                 broadcast_impl(self, shape)
@@ -991,6 +1105,10 @@ macro_rules! impl_div_scalar {
         {
             type Output = TensorPromise<T, B>;
 
+            /// # Panics
+            ///
+            /// Panics when the operator is applied — not at `.materialize()` — if
+            /// `rhs` is zero.
             #[inline]
             fn div(self, rhs: T) -> Self::Output {
                 div_scalar_impl(self, rhs)
@@ -1004,6 +1122,10 @@ macro_rules! impl_div_scalar {
         {
             type Output = TensorPromise<T, B>;
 
+            /// # Panics
+            ///
+            /// Panics when the operator is applied — not at `.materialize()` — if
+            /// `rhs` is zero.
             #[inline]
             fn div(self, rhs: T) -> Self::Output {
                 (&self).div(rhs)
@@ -1029,8 +1151,6 @@ macro_rules! impl_exp {
             /// let t = Tensor::from_slice(&[0.0_f64], &[1]);
             /// assert_eq!(t.exp().materialize().data(), &[1.0]); // e^0 == 1
             /// ```
-            // TODO: Add a small explanation about how it may be cheaper if used in
-            // conjunction with other elementwise operations because of fusion.
             #[inline]
             pub fn exp(&self) -> TensorPromise<T, B> {
                 exp_impl(self)
@@ -1058,8 +1178,6 @@ macro_rules! impl_ln {
             /// let t = Tensor::from_slice(&[1.0_f64], &[1]);
             /// assert_eq!(t.ln().materialize().data(), &[0.0]); // ln(1) == 0
             /// ```
-            // TODO: Add a small explanation about how it may be cheaper if used in
-            // conjunction with other elementwise operations because of fusion.
             #[inline]
             pub fn ln(&self) -> TensorPromise<T, B> {
                 ln_impl(self)
@@ -1087,8 +1205,6 @@ macro_rules! impl_log2 {
             /// let t = Tensor::from_slice(&[8.0_f64], &[1]);
             /// assert_eq!(t.log2().materialize().data(), &[3.0]); // log2(8) == 3
             /// ```
-            // TODO: Add a small explanation about how it may be cheaper if used in
-            // conjunction with other elementwise operations because of fusion.
             #[inline]
             pub fn log2(&self) -> TensorPromise<T, B> {
                 log2_impl(self)
@@ -1111,21 +1227,10 @@ macro_rules! impl_relu {
             /// ```
             /// use candela::Tensor;
             ///
-            /// // relu is equivalent to max(x, 0.0) per element.
-            /// let x = -3.0_f64;
-            /// let t = Tensor::from_scalar(x, &[1]);
-            /// assert_eq!(t.relu().materialize().item(), x.max(0.0));
-            /// ```
-            ///
-            /// ```
-            /// use candela::Tensor;
-            ///
             /// // Negative values clamp to zero; non-negative values pass through.
             /// let t = Tensor::from_slice(&[-2.0_f64, -0.5, 0.0, 1.5], &[4]);
             /// assert_eq!(t.relu().materialize().data(), &[0.0, 0.0, 0.0, 1.5]);
             /// ```
-            // TODO: Add a small explanation about how it may be cheaper if used in
-            // conjunction with other elementwise operations because of fusion.
             #[inline]
             pub fn relu(&self) -> TensorPromise<T, B> {
                 relu_impl(self)
@@ -1149,10 +1254,8 @@ macro_rules! impl_tanh {
             /// use candela::Tensor;
             ///
             /// let t = Tensor::from_scalar(0.0_f64, &[1]);
-            /// assert_eq!(t.tanh().materialize().item(), 0.0); // tanh(0) == 0
+            /// assert_eq!(*t.tanh().materialize().item(), 0.0); // tanh(0) == 0
             /// ```
-            // TODO: Add a small explanation about how it may be cheaper if used in
-            // conjunction with other elementwise operations because of fusion.
             #[inline]
             pub fn tanh(&self) -> TensorPromise<T, B> {
                 tanh_impl(self)
@@ -1351,6 +1454,51 @@ macro_rules! impl_matmul {
             T: CanMatMul,
             B: Backend,
         {
+            /// Matrix-multiplies, following NumPy's `matmul` conventions.
+            ///
+            /// For two 2-D tensors, it's as one would expect: `[m, k] @ [k, n]`
+            /// gives `[m, n]`, and the inner dimension `k` of both must agree.
+            ///
+            /// Higher ranks (3-D, 4-D, and so on) are treated as batches of 2-D
+            /// matrices, broadcasting the leading axes where needed. So `[b, m, k] @ [k, n]`
+            /// gives `[b, m, n]`, because it's the same as doing `[b, m, k] @ [b, k, n]`.
+            ///
+            /// A 1-D operand is promoted to 2-D for the operation, then the added
+            /// axis is dropped from the result:
+            /// - `[k] @ [k]` contracts to a one-element tensor (a dot product).
+            /// - `[k] @ [.., k, n]` gives `[.., n]` (vector times matrix).
+            /// - `[.., m, k] @ [k]` gives `[.., m]` (matrix times vector).
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::{Tensor, Dimension};
+            ///
+            /// let a = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+            /// let b = Tensor::from_slice(&[1.0, 0.0, 0.0, 1.0, 1.0, 0.0], &[3, 2]);
+            /// let c = a.matmul(&b).unwrap().materialize();
+            ///
+            /// assert_eq!(c.shape(), &[2, 2]);
+            /// assert_eq!(c.data(), &[4.0, 2.0, 10.0, 5.0]);
+            /// ```
+            ///
+            /// A 1-D right-hand side contracts the last axis away:
+            ///
+            /// ```
+            /// use candela::{Tensor, Dimension};
+            ///
+            /// let m = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+            /// let v = Tensor::from_slice(&[1.0, 1.0], &[2]);
+            /// let r = m.matmul(&v).unwrap().materialize();
+            ///
+            /// assert_eq!(r.shape(), &[2]);
+            /// assert_eq!(r.data(), &[3.0, 7.0]);
+            /// ```
+            ///
+            /// # Errors
+            ///
+            /// Returns [`OpError::CannotMatMul`] if the inner dimensions don't agree, or
+            /// [`OpError::CannotBroadcast`] if the batch axes aren't broadcast-compatible.
             #[inline]
             pub fn matmul<D>(&self, rhs: &D) -> Result<TensorPromise<T, B>, OpError>
             where
@@ -1371,6 +1519,19 @@ macro_rules! impl_sum {
             T: NumericOp,
             B: Backend,
         {
+            /// Sums every element, producing a one-element tensor.
+            ///
+            /// To reduce along a single axis instead, see
+            /// [`.sum_axis()`][Self::sum_axis].
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::Tensor;
+            ///
+            /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+            /// assert_eq!(t.sum().materialize().data(), &[10.0]);
+            /// ```
             #[inline]
             pub fn sum(&self) -> TensorPromise<T, B> {
                 sum_impl(self)
@@ -1386,6 +1547,33 @@ macro_rules! impl_sum_axis {
             T: NumericOp,
             B: Backend,
         {
+            /// Sums along a single axis.
+            ///
+            /// `axis` selects the axis to collapse and may be negative to count from
+            /// the end. With `keep_dims = false` that axis is removed from the shape;
+            /// with `keep_dims = true` it is kept as a size-1 axis, which leaves the
+            /// result broadcastable against the input. To reduce the whole tensor,
+            /// see [`.sum()`][Self::sum].
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::{Tensor, Dimension};
+            ///
+            /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+            ///
+            /// let dropped = t.sum_axis(0, false).unwrap().materialize();
+            /// assert_eq!(dropped.shape(), &[3]);
+            /// assert_eq!(dropped.data(), &[5.0, 7.0, 9.0]);
+            ///
+            /// // keep_dims = true leaves a size-1 axis in place.
+            /// let kept = t.sum_axis(0, true).unwrap().materialize();
+            /// assert_eq!(kept.shape(), &[1, 3]);
+            /// ```
+            ///
+            /// # Errors
+            ///
+            /// Returns [`OpError::AxesOutOfBounds`] if `axis` is outside the tensor's rank.
             #[inline]
             pub fn sum_axis(
                 &self,
@@ -1405,6 +1593,19 @@ macro_rules! impl_max {
             T: NumericOp,
             B: Backend,
         {
+            /// Returns the largest element, as a one-element tensor.
+            ///
+            /// To take the maximum along a single axis instead, see
+            /// [`.max_axis()`][Self::max_axis].
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::Tensor;
+            ///
+            /// let t = Tensor::from_slice(&[3.0, 1.0, 4.0, 1.0, 5.0, 2.0], &[2, 3]);
+            /// assert_eq!(t.max().materialize().data(), &[5.0]);
+            /// ```
             #[inline]
             pub fn max(&self) -> TensorPromise<T, B> {
                 max_impl(self)
@@ -1420,6 +1621,27 @@ macro_rules! impl_max_axis {
             T: NumericOp,
             B: Backend,
         {
+            /// Takes the maximum along a single axis.
+            ///
+            /// `axis` and `keep_dims` behave exactly as in
+            /// [`.sum_axis()`][Self::sum_axis]. To reduce the whole tensor, see
+            /// [`.max()`][Self::max].
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::{Tensor, Dimension};
+            ///
+            /// let t = Tensor::from_slice(&[3.0, 1.0, 4.0, 1.0, 5.0, 2.0], &[2, 3]);
+            /// let m = t.max_axis(1, false).unwrap().materialize();
+            ///
+            /// assert_eq!(m.shape(), &[2]);
+            /// assert_eq!(m.data(), &[4.0, 5.0]);
+            /// ```
+            ///
+            /// # Errors
+            ///
+            /// Returns [`OpError::AxesOutOfBounds`] if `axis` is outside the tensor's rank.
             #[inline]
             pub fn max_axis(
                 &self,
@@ -1439,6 +1661,19 @@ macro_rules! impl_mean {
             T: FloatLike,
             B: Backend,
         {
+            /// Averages every element, producing a one-element tensor.
+            ///
+            /// To average along a single axis instead, see
+            /// [`.mean_axis()`][Self::mean_axis].
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::Tensor;
+            ///
+            /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+            /// assert_eq!(t.mean().materialize().data(), &[2.5]);
+            /// ```
             #[inline]
             pub fn mean(&self) -> TensorPromise<T, B> {
                 mean_impl(self)
@@ -1454,6 +1689,27 @@ macro_rules! impl_mean_axis {
             T: FloatLike,
             B: Backend,
         {
+            /// Averages along a single axis.
+            ///
+            /// `axis` and `keep_dims` behave exactly as in
+            /// [`.sum_axis()`][Self::sum_axis]. To average the whole tensor, see
+            /// [`.mean()`][Self::mean].
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::{Tensor, Dimension};
+            ///
+            /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+            /// let m = t.mean_axis(1, false).unwrap().materialize();
+            ///
+            /// assert_eq!(m.shape(), &[2]);
+            /// assert_eq!(m.data(), &[2.0, 5.0]);
+            /// ```
+            ///
+            /// # Errors
+            ///
+            /// Returns [`OpError::AxesOutOfBounds`] if `axis` is outside the tensor's rank.
             #[inline]
             pub fn mean_axis(
                 &self,

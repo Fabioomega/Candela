@@ -2,7 +2,7 @@
 // If you read only one example, read this one - it covers the whole loop from
 // "make a tensor" to "get numbers back".
 
-use candela::{arange, ones, zeros, Dimension, Tensor};
+use candela::{Dimension, Tensor, arange, ones, zeros};
 
 fn main() {
     // --- Creating tensors ---

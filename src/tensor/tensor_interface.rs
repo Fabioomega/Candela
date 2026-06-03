@@ -12,19 +12,12 @@ use std::sync::Arc;
 
 /// Allocated tensor data exposed through the public API.
 ///
-/// Internally, a `Tensor<T>` is an `Arc<`[`TensorGraphEdge<T>`]`>`: a
-/// reference-counted leaf node that carries the concrete [`TensorData<T>`]
+/// Internally, a `Tensor<T>` is an `Arc<TensorGraphEdge<T>>`: a
+/// reference-counted leaf node that carries the concrete `TensorData<T>`
 /// (data buffer + [`Layout`]) and the unique ID that the execution planner uses
-/// to track this value in the graph. `Clone` is therefore a cheap Arc bump - the
-/// underlying storage is shared with the original. Call [`clone_deep`] when you
-/// need a fully independent buffer, or [`clone_detached`] when you want a shallow
-/// copy that the graph will treat as an unrelated tensor.
+/// to track this value in the graph.
 ///
-/// [`TensorGraphEdge<T>`]: crate::tensor::graph::TensorGraphEdge
-/// [`TensorData<T>`]: crate::tensor::storage::TensorData
 /// [`Layout`]: crate::tensor::mem_formats::layout::Layout
-/// [`clone_deep`]: Tensor::clone_deep
-/// [`clone_detached`]: Tensor::clone_detached
 ///
 /// # Examples
 ///
@@ -65,7 +58,9 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
 
     /// Create a tensor from `vector` interpreted with `shape`.
     ///
-    /// Panics if `vector.len()` does not equal the product of `shape`.
+    /// # Panics
+    ///
+    /// Panics if `vector` length does not equal the product of `shape`.
     #[inline]
     pub fn from_vec(vector: Vec<T>, shape: &[usize]) -> Self {
         Self {
@@ -77,13 +72,19 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
 
     /// Create a tensor by copying `data` into a buffer with the given `shape`.
     ///
-    /// Panics if `data.len()` does not equal the product of `shape`.
+    /// # Panics
+    ///
+    /// Panics if `data` length does not equal the product of `shape`.
     #[inline]
     pub fn from_slice(data: &[T], shape: &[usize]) -> Self {
         Self::from_vec(data.to_vec(), shape)
     }
 
     /// Create a tensor by collecting `iter` into a buffer with the given `shape`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `iter` length does not equal the product of `shape`.
     #[inline]
     pub fn from_iter<I>(iter: I, shape: &[usize]) -> Self
     where
@@ -93,37 +94,57 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
         Self::from_vec(vector, shape)
     }
 
+    /// Create an `n`×`m` matrix with ones on the main diagonal and zeros elsewhere.
+    ///
+    /// With `n == m` this is the identity matrix.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    /// let i: Tensor<f64> = Tensor::eye(2, 2);
+    /// assert_eq!(i.data(), &[1.0, 0.0, 0.0, 1.0]);
+    /// ```
     #[inline]
     pub fn eye(n: usize, m: usize) -> Self {
         let mut data: Vec<T> = vec![T::ZERO; n * m];
 
-        let mut acc: usize = 0;
-        for _ in 0..n {
-            data[acc] = T::ONE;
-            acc += m + 1;
+        let mut i: usize = 0;
+        while i < data.len() {
+            data[i] = T::ONE;
+            i += m + 1;
         }
 
         Self::from_vec(data, &[n, m])
     }
 }
 
-impl<T: Copy, B: Backend> Tensor<T, B> {
+impl<T: Clone, B: Backend> Tensor<T, B> {
     #[inline]
-    pub fn from_data(data: TensorData<T>) -> Self {
+    pub(crate) fn from_data(data: TensorData<T>) -> Self {
         Self {
             graph: Arc::new(TensorGraphEdge::from_tensor_data(data)),
         }
     }
 
-    /// Return a reference to the underlying data buffer.
-    /// Slices, transposition, etc will change the layout of the tensor
-    /// so this is not guaranteed to be what you expect
-    /// the tensor to logically contain.
+    /// Returns a reference to the underlying data buffer.
+    ///
+    /// Slicing, transposition, etc will change the layout of the tensor
+    /// so this is not guaranteed to be what you expect the tensor to
+    /// logically contain.
+    ///
+    /// Use [`.iter()`][Self::iter], to iterate over the whole tensor following
+    /// logical order or [`.index()`][Self::index] to access a single element by index.
     #[inline]
-    pub fn data(&self) -> &Vec<T> {
+    pub fn data(&self) -> &[T] {
         self.graph.get().data()
     }
 
+    /// Iterate over the tensor's elements in logical (row-major) order.
+    ///
+    /// Unlike [`.data()`][Self::data], this follows the tensor's layout, so a
+    /// sliced or transposed tensor yields its elements in the order its shape
+    /// implies.
     #[inline]
     pub fn iter(&self) -> SliceIter<'_, T> {
         self.graph.get().iter()
@@ -181,7 +202,6 @@ impl<T: Copy, B: Backend> Tensor<T, B> {
 impl<T: Numeric, B: Backend> Tensor<T, B> {
     /// Wrap this tensor as a [`TensorPromise`] without applying any transformation.
     ///
-    /// Creates a `NoOp` [`TensorGraphNode`] with the tensor's edge as its sole input.
     /// The primary use case is initializing a mutable accumulator that will have ops
     /// applied to it in a loop - as it needs a [`TensorPromise<T>`] on both sides
     /// of the assignment:
@@ -191,14 +211,13 @@ impl<T: Numeric, B: Backend> Tensor<T, B> {
     /// let t = arange!(4);         // [0.0, 1.0, 2.0, 3.0]
     /// let mut p = t.as_promise();
     /// for i in 0..5_u32 {
-    ///     p = p + i as f64;
+    ///     p += i as f64;
     /// }
     /// // each element gains 0+1+2+3+4 = 10
     /// assert_eq!(p.materialize().data(), &[10.0, 11.0, 12.0, 13.0]);
     /// ```
     ///
     /// [`TensorPromise<T>`]: crate::tensor::promise::TensorPromise
-    /// [`TensorGraphNode`]: crate::tensor::graph::TensorGraphNode
     #[inline]
     pub fn as_promise(&self) -> TensorPromise<T, B> {
         unsafe {
@@ -210,10 +229,21 @@ impl<T: Numeric, B: Backend> Tensor<T, B> {
         }
     }
 
+    /// Return a reference to the element at `index`, following the tensor's layout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::NotEnoughAxes`] if `index` doesn't have one entry per
+    /// axis, or [`OpError::IndexOutOfBounds`] if an index is past the end of its axis.
+    // TODO: Add support for negative indexing
     pub fn get(&self, index: &[usize]) -> Result<&T, OpError> {
         self.graph.get().get(index)
     }
 
+    /// Return a reference to the tensor's first element.
+    ///
+    /// Most useful for reading a one-element result, such as a full reduction like
+    /// [`.sum()`][Self::sum].
     pub fn item(&self) -> &T {
         self.graph.get().item()
     }

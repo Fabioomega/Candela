@@ -52,7 +52,9 @@ fn regression_sub_ordering_with_reusable_rhs<T: FloatLikeTensorElement>(#[case] 
 #[rstest]
 #[case::f64(0.0f64)]
 #[case::f32(0.0f32)]
-fn bug_redirect_timing_independent_consumer_before_as_contiguous<T: FloatLikeTensorElement>(#[case] _t: T) {
+fn bug_redirect_timing_independent_consumer_before_as_contiguous<T: FloatLikeTensorElement>(
+    #[case] _t: T,
+) {
     let t = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
     let transposed = t.transpose(); // node_1
     let contiguous = transposed.as_contiguous(); // node_2
@@ -113,10 +115,7 @@ fn regression_matmul_1d_2d_shape_mismatch() {
     let a = Tensor::from_slice(&[3.0_f64, 4.0], &[2]);
     let b = Tensor::from_slice(&[1.0_f64, 2.0], &[1, 2]);
     let result = a.matmul(&b);
-    assert!(matches!(
-        result,
-        Err(candela::errors::OpError::CannotMatMul(_, _))
-    ));
+    assert!(matches!(result, Err(candela::OpError::CannotMatMul(_, _))));
 }
 
 // Bug: `.cache()` wraps its input in a zero-copy NoOp, so the cache node shares

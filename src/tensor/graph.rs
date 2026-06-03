@@ -180,11 +180,6 @@ impl<T: Copy, B: Backend> Promising for TensorGraphEdge<T, B> {
     fn compute(&self) -> TensorData<T> {
         self.data.clone()
     }
-
-    #[inline]
-    fn layout(&self) -> &Layout {
-        self.data.layout()
-    }
 }
 
 impl<T, B: Backend> Debug for TensorGraphEdge<T, B> {
@@ -351,11 +346,6 @@ impl<T: NumberLike + ComputeFor<B>, B: Backend> Promising for TensorGraphNode<T,
         // is always Some. Can use unwrap_unchecked once the executor contract is verified.
         computation_cache.remove(&root_id).unwrap()
     }
-
-    #[inline]
-    fn layout(&self) -> &Layout {
-        &self.layout
-    }
 }
 
 impl<T: Debug, B: Backend> Debug for TensorGraphNode<T, B> {
@@ -448,11 +438,6 @@ impl<T: NumberLike + ComputeFor<B>, B: Backend> Promising for TensorGraphCacheNo
         // TODO: Once the cuda async is implemented, it would be ideal to change this to an async
         // OnceCell from tokio or some other library
         self.cache.get_or_init(|| self.node.compute()).clone()
-    }
-
-    #[inline]
-    fn layout(&self) -> &Layout {
-        &self.get_node().layout
     }
 }
 

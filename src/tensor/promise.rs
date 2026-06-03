@@ -34,7 +34,9 @@ use crate::tensor::traits::{Dimension, Numeric, Promising};
 /// let result = (t * 2.0 + 1.0).materialize();
 /// assert_eq!(result.data(), &vec![7.0; 4]);
 /// ```
-pub type TensorPromise<T, B = DefaultBackend> = RawTensorPromise<TensorGraphNode<T, B>>;
+pub struct TensorPromise<T, B: Backend = DefaultBackend> {
+    pub(crate) graph: Arc<TensorGraphNode<T, B>>,
+}
 
 /// A lazy computation whose result is kept alive after the first evaluation.
 ///
@@ -62,14 +64,8 @@ pub type TensorPromise<T, B = DefaultBackend> = RawTensorPromise<TensorGraphNode
 /// assert_eq!(r1.data(), &vec![6.0; 4]);
 /// assert_eq!(r2.data(), &vec![13.0; 4]);
 /// ```
-pub type CachedTensorPromise<T, B = DefaultBackend> = RawTensorPromise<TensorGraphCacheNode<T, B>>;
-
-/// The underlying generic promise struct, parameterised over the graph node type.
-///
-/// You won't normally use this type directly - work with the [`TensorPromise`]
-/// and [`CachedTensorPromise`] aliases instead.
-pub struct RawTensorPromise<P> {
-    pub(crate) graph: Arc<P>,
+pub struct CachedTensorPromise<T, B: Backend = DefaultBackend> {
+    pub(crate) graph: Arc<TensorGraphCacheNode<T, B>>,
 }
 
 impl<T: Numeric, B: Backend> TensorPromise<T, B> {
@@ -147,7 +143,7 @@ impl<T: Numeric, B: Backend> CachedTensorPromise<T, B> {
     }
 }
 
-impl<P: Promising<Output: NumberLike>> RawTensorPromise<P> {
+impl<T: NumberLike + ComputeFor<B>, B: Backend> TensorPromise<T, B> {
     /// Execute the computation graph and return the result as a [`Tensor`].
     ///
     /// This is where the work actually happens. The planner analyses the graph,
@@ -163,17 +159,15 @@ impl<P: Promising<Output: NumberLike>> RawTensorPromise<P> {
     /// let result = (t - 1.0).materialize();
     /// assert_eq!(result.data(), &vec![3.0; 3]);
     /// ```
-    pub fn materialize(self) -> Tensor<P::Output> {
-        let data = self.graph.compute();
-
-        Tensor::from_data(data)
+    pub fn materialize(self) -> Tensor<T> {
+        Tensor::from_data(self.graph.compute())
     }
 
     /// Execute the computation graph and return the result as a [`Tensor`].
     ///
     /// Same as [`.materialize()`] but does not consume self.
     ///
-    /// [`.materialize()`]: CachedTensorPromise::materialize
+    /// [`.materialize()`]: TensorPromise::materialize
     ///
     /// # Examples
     ///
@@ -185,10 +179,23 @@ impl<P: Promising<Output: NumberLike>> RawTensorPromise<P> {
     /// let result2 = t.materialize(); // consumes t
     /// assert_eq!(result1.data(), result2.data());
     /// ```
-    pub fn clone_and_materialize(&self) -> Tensor<P::Output> {
-        let data = self.graph.compute();
+    pub fn clone_and_materialize(&self) -> Tensor<T> {
+        Tensor::from_data(self.graph.compute())
+    }
+}
 
-        Tensor::from_data(data)
+impl<T, B: Backend> Dimension for TensorPromise<T, B> {
+    #[inline]
+    fn layout(&self) -> &Layout {
+        self.graph.layout()
+    }
+}
+
+impl<T, B: Backend> Clone for TensorPromise<T, B> {
+    fn clone(&self) -> Self {
+        Self {
+            graph: self.graph.clone(),
+        }
     }
 }
 
@@ -242,14 +249,28 @@ impl<T: Numeric + ComputeFor<B>, B: Backend> CachedTensorPromise<T, B> {
     }
 }
 
-impl<P: Promising> Dimension for RawTensorPromise<P> {
+impl<T: NumberLike + ComputeFor<B>, B: Backend> CachedTensorPromise<T, B> {
+    /// Execute the computation graph and return the result as a [`Tensor`].
+    ///
+    /// See [`TensorPromise::materialize`] for details.
+    pub fn materialize(self) -> Tensor<T> {
+        Tensor::from_data(self.graph.compute())
+    }
+
+    /// Same as [`.materialize()`](Self::materialize) but does not consume self.
+    pub fn clone_and_materialize(&self) -> Tensor<T> {
+        Tensor::from_data(self.graph.compute())
+    }
+}
+
+impl<T, B: Backend> Dimension for CachedTensorPromise<T, B> {
     #[inline]
     fn layout(&self) -> &Layout {
         self.graph.layout()
     }
 }
 
-impl<P: Promising> Clone for RawTensorPromise<P> {
+impl<T, B: Backend> Clone for CachedTensorPromise<T, B> {
     fn clone(&self) -> Self {
         Self {
             graph: self.graph.clone(),

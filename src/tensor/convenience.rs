@@ -1,21 +1,56 @@
+/// Build the [`SliceRange`](crate::SliceRange) list for [`slice`](crate::Tensor::slice), one entry per axis.
+///
+/// Accepts ordinary range syntax (`a..b`, `a..`, `..b`, `..`) and bare integers
+/// for single indices; negative bounds count from the end.
+///
+/// # Examples
+///
+/// ```
+/// use candela::{s, Dimension, Tensor};
+/// let t = Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0], &[2, 3]);
+/// let sub = t.slice(s![1..2, 0..2]).unwrap().materialize();
+/// assert_eq!(sub.shape(), &[1, 2]);
+/// ```
 #[macro_export]
 macro_rules! s {
     ($($range: expr),*) => {
-        &[$($crate::tensor::SliceRange::from($range)),*]
+        &[$($crate::SliceRange::from($range)),*]
     };
 }
 
+/// Build a tensor of the given shape filled with zeros.
+///
+/// The element type is inferred from the binding: `let t: Tensor<f64> = zeros!(&[2, 3]);`.
+///
+/// # Examples
+///
+/// ```
+/// use candela::{zeros, Tensor};
+/// let t: Tensor<f64> = zeros!(&[2, 2]);
+/// assert_eq!(t.data(), &[0.0; 4]);
+/// ```
 #[macro_export]
 macro_rules! zeros {
     ($shape:expr) => {
-        $crate::tensor::Tensor::from_scalar(0.0, $shape)
+        $crate::Tensor::from_scalar(0.0, $shape)
     };
 }
 
+/// Build a tensor of the given shape filled with ones.
+///
+/// The element type is inferred from the binding: `let t: Tensor<f64> = ones!(&[2, 3]);`.
+///
+/// # Examples
+///
+/// ```
+/// use candela::{ones, Tensor};
+/// let t: Tensor<f64> = ones!(&[3]);
+/// assert_eq!(t.data(), &[1.0, 1.0, 1.0]);
+/// ```
 #[macro_export]
 macro_rules! ones {
     ($shape:expr) => {
-        $crate::tensor::Tensor::from_scalar(1.0, $shape)
+        $crate::Tensor::from_scalar(1.0, $shape)
     };
 }
 
@@ -60,23 +95,51 @@ pub mod arange {
         };
     }
 
+    #[doc(hidden)]
     pub fn _arange_default<T: FromIndex + ComputeFor<DefaultBackend>>(size: usize) -> Tensor<T> {
         let v: Vec<T> = (0..size).map(T::from_index).collect();
         Tensor::from_vec(v, &[size])
     }
 
-    pub fn _arange_start<T: FromIndex + ComputeFor<DefaultBackend>>(start: usize, end: usize) -> Tensor<T> {
+    #[doc(hidden)]
+    pub fn _arange_start<T: FromIndex + ComputeFor<DefaultBackend>>(
+        start: usize,
+        end: usize,
+    ) -> Tensor<T> {
         let v: Vec<T> = (start..end).map(T::from_index).collect();
         let size = v.len();
         Tensor::from_vec(v, &[size])
     }
 
-    pub fn _arange_step<T: FromIndex + ComputeFor<DefaultBackend>>(start: usize, end: usize, step: usize) -> Tensor<T> {
+    #[doc(hidden)]
+    pub fn _arange_step<T: FromIndex + ComputeFor<DefaultBackend>>(
+        start: usize,
+        end: usize,
+        step: usize,
+    ) -> Tensor<T> {
         let v: Vec<T> = (start..end).step_by(step).map(T::from_index).collect();
         let size = v.len();
         Tensor::from_vec(v, &[size])
     }
 
+    /// Build a tensor of evenly spaced values and reshape it in one step.
+    ///
+    /// Like [`arange!`], but takes a target shape as the final argument and lays
+    /// the values out row-major into it. Panics if the number of values doesn't
+    /// equal the product of `shape`.
+    ///
+    /// - `srange!(size, shape)` - values `0..size`, reshaped to `shape`.
+    /// - `srange!(start, end, shape)` - values `start..end`, reshaped to `shape`.
+    /// - `srange!(start, end, step, shape)` - values `start..end` by `step`, reshaped to `shape`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::{srange, Dimension, Tensor};
+    /// let t: Tensor<f64> = srange![6, &[2, 3]];
+    /// assert_eq!(t.shape(), &[2, 3]);
+    /// assert_eq!(t.data(), &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    /// ```
     #[macro_export]
     macro_rules! srange {
         ($size: expr, $shape: expr) => {
@@ -92,11 +155,16 @@ pub mod arange {
         };
     }
 
-    pub fn _arange_default_shape<T: FromIndex + ComputeFor<DefaultBackend>>(size: usize, shape: &[usize]) -> Tensor<T> {
+    #[doc(hidden)]
+    pub fn _arange_default_shape<T: FromIndex + ComputeFor<DefaultBackend>>(
+        size: usize,
+        shape: &[usize],
+    ) -> Tensor<T> {
         let v: Vec<T> = (0..size).map(T::from_index).collect();
         Tensor::from_vec(v, shape)
     }
 
+    #[doc(hidden)]
     pub fn _arange_start_shape<T: FromIndex + ComputeFor<DefaultBackend>>(
         start: usize,
         end: usize,
@@ -106,6 +174,7 @@ pub mod arange {
         Tensor::from_vec(v, shape)
     }
 
+    #[doc(hidden)]
     pub fn _arange_step_shape<T: FromIndex + ComputeFor<DefaultBackend>>(
         start: usize,
         end: usize,

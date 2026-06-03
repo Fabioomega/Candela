@@ -1,16 +1,37 @@
+/// The error returned by fallible tensor operations.
+///
+/// Operations that can fail at runtime — `view`, `slice`, `matmul`, the axis
+/// reductions, and so on — return `Result<_, OpError>`. The error is produced
+/// when the operation is built, not at `.materialize()`, so a bad shape is
+/// caught at the call site rather than deep inside execution. `OpError`
+/// implements [`Error`](std::error::Error) and [`Display`](std::fmt::Display),
+/// so it composes with `?` and `Box<dyn Error>`.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum OpError {
+    /// A `view` was requested with a shape whose element count differs from the original.
     InvalidViewShape,
+    /// A `view` was requested on a non-contiguous tensor; use `reshape` instead.
     NonContiguousView,
+    /// A slice resolved to more elements than the tensor holds. Carries `(tensor_len, slice_len)`.
     InvalidSliceShape(usize, usize),
+    /// A slice range is empty — its end is not past its start.
     SliceOutOfBounds,
+    /// An index passed to `get` is past the end of its axis.
     IndexOutOfBounds,
+    /// An axis index is out of range, repeated, or there are more axes than the tensor has.
     AxesOutOfBounds,
+    /// The inner dimensions of a `matmul` don't agree. Carries the two mismatched sizes.
     CannotMatMul(usize, usize),
+    /// The shapes (or a `broadcast` target) aren't broadcast-compatible.
     CannotBroadcast,
+    /// An operation received the wrong number of axes or indices. Carries `(expected, got)`.
     NotEnoughAxes(usize, usize),
+    /// Two tensors in an elementwise op have incompatible shapes. Carries both shapes.
     NotSameShape(Box<[usize]>, Box<[usize]>),
+    /// Batched `matmul` operands have incompatible batch dimensions. Carries the two batch sizes.
     NotSameBatch(usize, usize),
+    /// A 0-D shape (`&[]`) was given; tensors must have rank >= 1.
     ZeroRankShape,
 }
 

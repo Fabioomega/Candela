@@ -3,8 +3,6 @@ use std::iter::zip;
 use std::ops::Index;
 use std::sync::Arc;
 
-use crate::SliceRange;
-use crate::errors::OpError;
 use crate::tensor::definitions::ChunkedIter;
 use crate::tensor::iter::{
     ChunkedContiguousIter, ChunkedSliceIter, ContiguousIter, InformedSliceIter, MutSliceIter,
@@ -12,6 +10,7 @@ use crate::tensor::iter::{
 };
 use crate::tensor::mem_formats::layout::{Layout, validate_shape};
 use crate::tensor::traits::Dimension;
+use crate::{OpError, SliceRange};
 
 pub enum IterImpl<C, N> {
     Contiguous(C),
@@ -55,7 +54,7 @@ impl<T: Clone> Storage<T> {
     }
 
     #[inline]
-    pub fn data(&self) -> &Vec<T> {
+    pub fn data(&self) -> &[T] {
         &self.buffer
     }
 
@@ -160,7 +159,7 @@ impl<T: Clone> TensorData<T> {
     }
 
     #[inline]
-    pub fn data(&self) -> &Vec<T> {
+    pub fn data(&self) -> &[T] {
         self.storage.data()
     }
 
