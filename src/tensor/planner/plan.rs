@@ -340,13 +340,18 @@ struct RootNode<'a, T, B: Backend> {
     resolved_inputs: Vec<&'a NodeKind<T, B>>,
 }
 
+struct PrePlan<'a, T, B: Backend> {
+    pre_plan: Vec<OpPlan<'a, T, B>>,
+    root: RootNode<'a, T, B>,
+}
+
 /// Topologically sort the graph and, in one walk, classify each node's aliasing,
 /// snapshot its resolved inputs, and record buffer lifetimes. Returns the staged
 /// [`OpPlan`]s and the resolved [`RootNode`]. The alias map is built and consumed
 /// entirely here; the buffer-assignment pass never sees it.
 fn pre_plan<'a, T: PartialEq, B: Backend>(
     base_node: &'a TensorGraphNode<T, B>,
-) -> (Vec<OpPlan<'a, T, B>>, RootNode<'a, T, B>) {
+) -> PrePlan<'a, T, B> {
     let dag_iter = topological_sort(base_node);
     let mut id_op: HashMap<usize, usize> = HashMap::with_capacity(32);
     let mut ops: Vec<OpPlan<'_, T, B>> = Vec::with_capacity(32);
@@ -359,6 +364,14 @@ fn pre_plan<'a, T: PartialEq, B: Backend>(
                 // nodes can find them when tracking lifetimes, but their end
                 // stays None (never deallocated).
                 id_op.insert(e.id, ops.len());
+                ops.push(OpPlan {
+                    node,
+                    resolved_inputs: Vec::new(),
+                    end: None,
+                });
+            }
+            NodeKind::Slot(s) => {
+                id_op.insert(s.id, ops.len());
                 ops.push(OpPlan {
                     node,
                     resolved_inputs: Vec::new(),
@@ -442,13 +455,13 @@ fn pre_plan<'a, T: PartialEq, B: Backend>(
         _ => base_node.id,
     };
 
-    (
-        ops,
-        RootNode {
+    PrePlan {
+        pre_plan: ops,
+        root: RootNode {
             id: root_id,
             resolved_inputs: resolve_inputs(&base_node.inputs, &alias_map),
         },
-    )
+    }
 }
 
 /// The output of [`plan_computation`]: the ordered execution schedule plus the id
@@ -463,6 +476,20 @@ pub(crate) struct Plan<'a, T, B: Backend> {
     /// `computation_cache` key holding the root result - the root node's id, or the
     /// resolved target when the root is a pure alias and emits no step of its own.
     pub(crate) root_id: usize,
+    /// Inputs that need to be added by an external source for the plan to run
+    pub(crate) external_inputs: Vec<usize>,
+}
+
+pub(crate) struct CorePlan<'a, T, B: Backend> {
+    /// Steps in dependency order. Each carries its [`OutputKind`], pre-resolved
+    /// input IDs, and the list of buffer IDs to drop once the step completes.
+    pub(crate) plan: Vec<ComputeKind<'a, T, B>>,
+    pub(crate) pre_plan: Vec<OpPlan<'a, T, B>>,
+    /// `computation_cache` key holding the root result - the root node's id, or the
+    /// resolved target when the root is a pure alias and emits no step of its own.
+    pub(crate) root_id: usize,
+    /// Inputs that need to be added by an external source for the plan to run
+    pub(crate) external_inputs: Vec<usize>,
 }
 
 /// Build a static execution plan for the subgraph rooted at `base_node`.
@@ -501,18 +528,22 @@ pub(crate) struct Plan<'a, T, B: Backend> {
         )
     )
 )]
-pub(crate) fn plan_computation<T: PartialEq, B: Backend>(
+pub(crate) fn core_plan_computation<T: PartialEq, B: Backend>(
     base_node: &TensorGraphNode<T, B>,
-) -> Plan<'_, T, B> {
+) -> CorePlan<'_, T, B> {
     let mut state: PlanState<'_, T, B> = PlanState::new();
-    let (ops, root) = pre_plan(base_node);
+    let PrePlan { pre_plan, root } = pre_plan(base_node);
+    let mut external_inputs: Vec<usize> = Vec::with_capacity(8);
 
-    let ops_len = ops.len();
+    let ops_len = pre_plan.len();
 
-    for (i, op) in ops.into_iter().enumerate() {
+    for (i, op) in pre_plan.iter().enumerate() {
         match op.node {
             NodeKind::Edge(e) => {
                 state.plan.push(ComputeKind::Leaf { edge: e });
+            }
+            NodeKind::Slot(s) => {
+                external_inputs.push(s.id);
             }
             NodeKind::Node(arc_node) => {
                 state.plan_node(i, op.end, arc_node, &op.resolved_inputs);
@@ -554,8 +585,27 @@ pub(crate) fn plan_computation<T: PartialEq, B: Backend>(
         }
     }
 
+    CorePlan {
+        plan,
+        pre_plan,
+        root_id: root.id,
+        external_inputs,
+    }
+}
+
+pub(crate) fn plan_computation<T: PartialEq, B: Backend>(
+    base_node: &TensorGraphNode<T, B>,
+) -> Plan<'_, T, B> {
+    let CorePlan {
+        plan,
+        root_id,
+        external_inputs,
+        ..
+    } = core_plan_computation(base_node);
+
     Plan {
         plan,
-        root_id: root.id,
+        root_id,
+        external_inputs,
     }
 }

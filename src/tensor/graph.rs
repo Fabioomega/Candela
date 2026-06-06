@@ -42,6 +42,7 @@ pub enum NodeKind<T, B: Backend> {
     Edge(Arc<TensorGraphEdge<T, B>>),
     Cache(Arc<TensorGraphCacheNode<T, B>>),
     Node(Arc<TensorGraphNode<T, B>>),
+    Slot(Arc<TensorGraphSlot<T, B>>),
 }
 
 impl<T, B: Backend> Clone for NodeKind<T, B> {
@@ -50,6 +51,7 @@ impl<T, B: Backend> Clone for NodeKind<T, B> {
             NodeKind::Edge(e) => NodeKind::Edge(e.clone()),
             NodeKind::Cache(c) => NodeKind::Cache(c.clone()),
             NodeKind::Node(n) => NodeKind::Node(n.clone()),
+            NodeKind::Slot(s) => NodeKind::Slot(s.clone()),
         }
     }
 }
@@ -60,6 +62,7 @@ impl<T: Debug, B: Backend> Debug for NodeKind<T, B> {
             NodeKind::Edge(e) => f.debug_tuple("Edge").field(e).finish(),
             NodeKind::Cache(c) => f.debug_tuple("Cache").field(c).finish(),
             NodeKind::Node(n) => f.debug_tuple("Node").field(n).finish(),
+            NodeKind::Slot(s) => f.debug_tuple("Node").field(s).finish(),
         }
     }
 }
@@ -75,6 +78,7 @@ pub(crate) fn get_inputs_layout<T: NumberLike, B: Backend>(
             NodeKind::Edge(edge) => edge.get().layout(),
             NodeKind::Node(node) => &node.layout,
             NodeKind::Cache(cache) => &cache.get_node().layout,
+            NodeKind::Slot(slot) => &slot.layout,
         })
         .collect()
 }
@@ -242,6 +246,13 @@ impl<T: Numeric, B: Backend> TensorGraphNode<T, B> {
     }
 }
 
+impl<T, B: Backend> TensorGraphNode<T, B> {
+    #[inline]
+    pub(crate) fn layout(&self) -> &Layout {
+        &self.layout
+    }
+}
+
 impl<T: NumberLike + ComputeFor<B>, B: Backend> Promising for TensorGraphNode<T, B> {
     type Output = T;
 
@@ -402,13 +413,6 @@ impl<T, B: Backend> TensorGraphCacheNode<T, B> {
     }
 }
 
-impl<T, B: Backend> TensorGraphNode<T, B> {
-    #[inline]
-    pub(crate) fn layout(&self) -> &Layout {
-        &self.layout
-    }
-}
-
 #[allow(private_bounds)]
 impl<T: Numeric, B: Backend> TensorGraphCacheNode<T, B> {
     pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>) -> Result<Self, OpError> {
@@ -454,3 +458,22 @@ impl<T: Debug, B: Backend> Debug for TensorGraphCacheNode<T, B> {
 }
 
 //////////////////////////////////////////////////////////////////////////////////
+
+pub struct TensorGraphSlot<T, B: Backend> {
+    pub(crate) id: usize,
+    pub(crate) layout: Layout,
+    marker: PhantomData<(T, B)>,
+}
+
+impl<T, B: Backend> TensorGraphSlot<T, B> {
+    #[inline]
+    pub(crate) fn layout(&self) -> &Layout {
+        &self.layout
+    }
+}
+
+impl<T: Debug, B: Backend> Debug for TensorGraphSlot<T, B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TensorGraphSlot {{ id: {},  }}", self.id)
+    }
+}

@@ -14,6 +14,7 @@ use crate::tensor::graph::NodeKind;
 pub(crate) fn get_id<T, B: Backend>(node: &NodeKind<T, B>) -> usize {
     match node {
         NodeKind::Edge(edge) => edge.id,
+        NodeKind::Slot(slot) => slot.id,
         NodeKind::Node(node) => node.id,
         NodeKind::Cache(cache) => cache.get_node().id,
     }

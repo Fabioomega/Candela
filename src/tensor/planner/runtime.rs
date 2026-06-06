@@ -103,7 +103,9 @@ pub(crate) fn classify<T, B: Backend>(
                 // never reclaimed, then this op aliases it eternally too.
                 None => ExecKind::ReferenceEternal { input_idx: 0 },
             },
-            NodeKind::Cache(_) | NodeKind::Edge(_) => ExecKind::ReferenceEternal { input_idx: 0 },
+            NodeKind::Cache(_) | NodeKind::Edge(_) | NodeKind::Slot(_) => {
+                ExecKind::ReferenceEternal { input_idx: 0 }
+            }
         },
         OpKind::AsContiguous => match &inputs[0] {
             NodeKind::Node(n) => {
@@ -153,6 +155,13 @@ pub(crate) fn classify<T, B: Backend>(
             }
             NodeKind::Edge(e) => {
                 if e.layout().is_contiguous() {
+                    ExecKind::ReferenceEternal { input_idx: 0 }
+                } else {
+                    assign_slot(slots, op_location, output_layout)
+                }
+            }
+            NodeKind::Slot(s) => {
+                if s.layout().is_contiguous() {
                     ExecKind::ReferenceEternal { input_idx: 0 }
                 } else {
                     assign_slot(slots, op_location, output_layout)
