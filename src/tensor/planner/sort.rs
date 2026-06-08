@@ -50,12 +50,15 @@ impl<'a, T, B: Backend> Iterator for TopologicalSortIter<'a, T, B> {
 
             match node {
                 NodeKind::Edge(_) | NodeKind::Slot(_) => {}
-                NodeKind::Node(n) => self.stack.extend(n.inputs.iter().rev().map(|i| (i, false))),
+                NodeKind::Node(n) => self.stack.extend(n.inputs.iter().map(|i| (i, false))),
                 NodeKind::Cache(cache) => {
                     if !cache.is_cache_filled() {
                         self.stack
                             .extend(cache.get_node().inputs.iter().rev().map(|i| (i, false)))
                     }
+                }
+                NodeKind::Compact(compact) => {
+                    self.stack.extend(compact.inputs.iter().map(|i| (i, false)));
                 }
             }
         }

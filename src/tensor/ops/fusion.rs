@@ -22,7 +22,7 @@ pub(crate) fn try_fuse<T: Numeric, B: Backend>(
 
     for (idx, inp) in inputs.iter().enumerate() {
         match inp {
-            NodeKind::Edge(_) | NodeKind::Slot(_) => continue,
+            NodeKind::Edge(_) | NodeKind::Slot(_) | NodeKind::Compact(_) => continue,
             NodeKind::Node(node) => {
                 let fused = compute_fusion(
                     &node.op,
@@ -263,6 +263,7 @@ where
                 NodeKind::Edge(node) => node.layout().is_contiguous(),
                 NodeKind::Slot(node) => node.layout().is_contiguous(),
                 NodeKind::Cache(cache) => cache.get_node().layout.is_contiguous(),
+                NodeKind::Compact(compact) => compact.layout().is_contiguous(),
             };
 
             if is_contiguous {

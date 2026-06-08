@@ -103,6 +103,16 @@ pub(crate) fn classify<T, B: Backend>(
                 // never reclaimed, then this op aliases it eternally too.
                 None => ExecKind::ReferenceEternal { input_idx: 0 },
             },
+            NodeKind::Compact(c) => match id_slot_map.get(&c.id) {
+                Some(slot_idx) => ExecKind::ReferenceSlot {
+                    slot_idx: *slot_idx,
+                    input_idx: 0,
+                },
+                // No slot means the input is itself an eternal reference (a chain of
+                // layout-only ops bottoming out at an edge/cache), so its buffer is
+                // never reclaimed, then this op aliases it eternally too.
+                None => ExecKind::ReferenceEternal { input_idx: 0 },
+            },
             NodeKind::Cache(_) | NodeKind::Edge(_) | NodeKind::Slot(_) => {
                 ExecKind::ReferenceEternal { input_idx: 0 }
             }
@@ -143,6 +153,28 @@ pub(crate) fn classify<T, B: Backend>(
                 } else {
                     id_slot_map
                         .get(&n.id)
+                        .filter(|&&s| slot_is_free(&slots[s], op_location, output_layout.len()))
+                        .copied()
+                        .map_or(assign_slot(slots, op_location, output_layout), |slot_idx| {
+                            ExecKind::InPlace {
+                                slot_idx,
+                                input_idx: 0,
+                            }
+                        })
+                }
+            }
+            NodeKind::Compact(c) => {
+                if c.layout().is_contiguous() {
+                    match id_slot_map.get(&c.id) {
+                        Some(slot_idx) => ExecKind::ReferenceSlot {
+                            slot_idx: *slot_idx,
+                            input_idx: 0,
+                        },
+                        None => ExecKind::ReferenceEternal { input_idx: 0 },
+                    }
+                } else {
+                    id_slot_map
+                        .get(&c.id)
                         .filter(|&&s| slot_is_free(&slots[s], op_location, output_layout.len()))
                         .copied()
                         .map_or(assign_slot(slots, op_location, output_layout), |slot_idx| {
