@@ -111,7 +111,7 @@ impl<'a, T, B: Backend> AliasMap<'a, T, B> {
 #[inline]
 fn is_node_op<T: PartialEq, B: Backend>(node: &NodeKind<T, B>, op: &OpKind<T>) -> bool {
     match node {
-        NodeKind::Edge(_) | NodeKind::Slot(_) | NodeKind::Compact(_) => false,
+        NodeKind::Edge(_) | NodeKind::Slot(_) | NodeKind::Baked(_) => false,
         NodeKind::Node(n) => n.op == *op,
         NodeKind::Cache(c) => c.get_node().op == *op,
     }

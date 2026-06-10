@@ -57,8 +57,8 @@ impl<'a, T, B: Backend> Iterator for TopologicalSortIter<'a, T, B> {
                             .extend(cache.get_node().inputs.iter().rev().map(|i| (i, false)))
                     }
                 }
-                NodeKind::Compact(compact) => {
-                    self.stack.extend(compact.inputs.iter().map(|i| (i, false)));
+                NodeKind::Baked(baked) => {
+                    self.stack.extend(baked.inputs.iter().map(|i| (i, false)));
                 }
             }
         }

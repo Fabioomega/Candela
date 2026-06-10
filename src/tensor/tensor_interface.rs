@@ -5,8 +5,9 @@ use crate::tensor::graph::{NodeKind, TensorGraphEdge};
 use crate::tensor::iter::{InformedSliceIter, SliceIter, StepInfo};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::promise::TensorPromise;
+use crate::tensor::skeleton::SkeletonSlot;
 use crate::tensor::storage::TensorData;
-use crate::tensor::traits::{Dimension, Numeric};
+use crate::tensor::traits::{Composable, Dimension, Numeric};
 use std::ops::Index;
 use std::sync::Arc;
 
@@ -247,12 +248,22 @@ impl<T: Numeric, B: Backend> Tensor<T, B> {
     pub fn item(&self) -> &T {
         self.graph.get().item()
     }
+
+    pub fn as_slot(&self) -> SkeletonSlot<T, B> {
+        SkeletonSlot::new(self.layout().clone())
+    }
 }
 
 impl<T, B: Backend> Dimension for Tensor<T, B> {
     #[inline]
     fn layout(&self) -> &super::mem_formats::layout::Layout {
         self.graph.layout()
+    }
+}
+
+impl<T, B: Backend> Composable<T, B> for Tensor<T, B> {
+    fn to_node(&self) -> NodeKind<T, B> {
+        NodeKind::Edge(self.graph.clone())
     }
 }
 

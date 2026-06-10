@@ -6,7 +6,7 @@ use crate::tensor::{
     mem_formats::slice::{SliceInfo, SliceRange},
 };
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Layout {
     pub(crate) shape: Box<[usize]>,
     pub(crate) stride: Box<[i32]>,
@@ -65,6 +65,8 @@ impl Layout {
 
     pub fn from_slice(shape: &[usize], stride: &[i32], offset: usize) -> Self {
         validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
+        debug_assert!(shape.len() == stride.len());
+
         let len: usize = shape.iter().product();
 
         Self {
@@ -321,6 +323,13 @@ impl Layout {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+}
+
+impl PartialEq for Layout {
+    fn eq(&self, other: &Self) -> bool {
+        // TODO: Is this even safe?
+        self.adj_stride == other.adj_stride
     }
 }
 

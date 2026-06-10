@@ -103,7 +103,7 @@ pub(crate) fn classify<T, B: Backend>(
                 // never reclaimed, then this op aliases it eternally too.
                 None => ExecKind::ReferenceEternal { input_idx: 0 },
             },
-            NodeKind::Compact(c) => match id_slot_map.get(&c.id) {
+            NodeKind::Baked(c) => match id_slot_map.get(&c.id) {
                 Some(slot_idx) => ExecKind::ReferenceSlot {
                     slot_idx: *slot_idx,
                     input_idx: 0,
@@ -163,7 +163,7 @@ pub(crate) fn classify<T, B: Backend>(
                         })
                 }
             }
-            NodeKind::Compact(c) => {
+            NodeKind::Baked(c) => {
                 if c.layout().is_contiguous() {
                     match id_slot_map.get(&c.id) {
                         Some(slot_idx) => ExecKind::ReferenceSlot {

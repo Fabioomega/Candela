@@ -19,6 +19,6 @@ pub(crate) fn get_id<T, B: Backend>(node: &NodeKind<T, B>) -> usize {
         NodeKind::Slot(slot) => slot.id,
         NodeKind::Node(node) => node.id,
         NodeKind::Cache(cache) => cache.get_node().id,
-        NodeKind::Compact(compact) => compact.id,
+        NodeKind::Baked(baked) => baked.id,
     }
 }

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::tensor::backend::Backend;
 use crate::tensor::graph::{
-    NodeKind, TensorGraphCacheNode, TensorGraphCompact, TensorGraphEdge, TensorGraphNode,
+    NodeKind, TensorGraphBaked, TensorGraphCacheNode, TensorGraphEdge, TensorGraphNode,
 };
 use crate::tensor::planner::alias::{self, AliasKind, AliasMap};
 use crate::tensor::planner::runtime::{ExecKind, Slot};
@@ -56,8 +56,8 @@ pub(crate) enum ComputeKind<'a, T, B: Backend> {
         resolved_inputs: Vec<usize>,
         dealloc_after: Vec<usize>,
     },
-    Compact {
-        compact: &'a Arc<TensorGraphCompact<T, B>>,
+    Baked {
+        baked: &'a Arc<TensorGraphBaked<T, B>>,
         resolved_inputs: Vec<usize>,
         dealloc_after: Vec<usize>,
     },
@@ -445,11 +445,11 @@ fn pre_plan<'a, T: PartialEq + Clone, B: Backend>(
                     _ => unreachable!("classify_cache always aliases or takes over"),
                 }
             }
-            NodeKind::Compact(compact) => {
-                let resolved_inputs = resolve_inputs(&compact.inputs, &alias_map);
+            NodeKind::Baked(baked) => {
+                let resolved_inputs = resolve_inputs(&baked.inputs, &alias_map);
                 let pos = ops.len();
 
-                id_op.insert(compact.id, pos);
+                id_op.insert(baked.id, pos);
 
                 track_lifetimes(&resolved_inputs, pos, &id_op, &mut ops);
 
@@ -573,19 +573,19 @@ pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
             NodeKind::Cache(cache) => {
                 state.plan_cache_node(i, cache, &op.resolved_inputs);
             }
-            NodeKind::Compact(compact) => {
+            NodeKind::Baked(baked) => {
                 let slot_idx = state.slots.len();
 
-                state.id_slot_map.insert(compact.id, slot_idx);
+                state.id_slot_map.insert(baked.id, slot_idx);
 
                 state.slots.push(Slot {
-                    id: compact.id,
-                    len: compact.layout().len(),
+                    id: baked.id,
+                    len: baked.layout().len(),
                     end: op.end,
                 });
 
-                state.plan.push(ComputeKind::Compact {
-                    compact,
+                state.plan.push(ComputeKind::Baked {
+                    baked,
                     resolved_inputs: op.resolved_inputs.iter().map(|n| get_id(*n)).collect(),
                     dealloc_after: Vec::new(),
                 });
@@ -609,7 +609,7 @@ pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
         match &mut plan[*end] {
             ComputeKind::Op { dealloc_after, .. }
             | ComputeKind::CachedOp { dealloc_after, .. }
-            | ComputeKind::Compact { dealloc_after, .. } => dealloc_after.push(*node_id),
+            | ComputeKind::Baked { dealloc_after, .. } => dealloc_after.push(*node_id),
             ComputeKind::Leaf { .. } => unreachable!(),
         }
     }
@@ -620,7 +620,7 @@ pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
         match &mut plan[end] {
             ComputeKind::Op { dealloc_after, .. }
             | ComputeKind::CachedOp { dealloc_after, .. }
-            | ComputeKind::Compact { dealloc_after, .. } => dealloc_after.push(slot.id),
+            | ComputeKind::Baked { dealloc_after, .. } => dealloc_after.push(slot.id),
             ComputeKind::Leaf { .. } => unreachable!(),
         }
     }

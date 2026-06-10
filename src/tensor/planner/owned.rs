@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::Layout;
 use crate::tensor::backend::Backend;
-use crate::tensor::graph::{TensorGraphCacheNode, TensorGraphCompact, TensorGraphEdge};
+use crate::tensor::graph::{TensorGraphCacheNode, TensorGraphEdge, TensorGraphBaked};
 use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::planner::plan::CorePlan;
 use crate::tensor::planner::{ComputeKind, OutputKind};
@@ -32,8 +32,8 @@ pub(crate) enum OwnedComputeKind<T, B: Backend> {
         resolved_inputs: Vec<usize>,
         dealloc_after: Vec<usize>,
     },
-    Compact {
-        compact: Arc<TensorGraphCompact<T, B>>,
+    Baked {
+        baked: Arc<TensorGraphBaked<T, B>>,
         resolved_inputs: Vec<usize>,
         dealloc_after: Vec<usize>,
     },
@@ -79,12 +79,12 @@ fn from_borrowed_compute_kind_to_owned<T: Clone, B: Backend>(
                 resolved_inputs,
                 dealloc_after,
             },
-            ComputeKind::Compact {
-                compact,
+            ComputeKind::Baked {
+                baked,
                 resolved_inputs,
                 dealloc_after,
-            } => OwnedComputeKind::Compact {
-                compact: compact.clone(),
+            } => OwnedComputeKind::Baked {
+                baked: baked.clone(),
                 resolved_inputs,
                 dealloc_after,
             },

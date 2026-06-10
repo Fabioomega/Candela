@@ -14,8 +14,9 @@ use crate::tensor::errors::OpError;
 use crate::tensor::graph::{NodeKind, TensorGraphCacheNode, TensorGraphNode};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKind;
+use crate::tensor::skeleton::{Skeleton, SkeletonSlot};
 use crate::tensor::tensor_interface::Tensor;
-use crate::tensor::traits::{Dimension, Numeric, Promising};
+use crate::tensor::traits::{Composable, Dimension, Numeric, Promising};
 
 /// A lazy computation that runs when you call [`.materialize()`].
 ///
@@ -36,36 +37,6 @@ use crate::tensor::traits::{Dimension, Numeric, Promising};
 /// ```
 pub struct TensorPromise<T, B: Backend = DefaultBackend> {
     pub(crate) graph: Arc<TensorGraphNode<T, B>>,
-}
-
-/// A lazy computation whose result is kept alive after the first evaluation.
-///
-/// Once [`.materialize()`] has been called (directly or through a derived
-/// promise), the result is cached. Every subsequent call returns the stored
-/// value without re-running the graph.
-///
-/// Use this when the same promise feeds into multiple independent downstream
-/// graphs that materialise at different times. You pay the memory cost of
-/// keeping the tensor alive, which is why caching is opt-in.
-///
-/// [`.materialize()`]: CachedTensorPromise::materialize
-///
-/// # Examples
-///
-/// ```
-/// use candela::Tensor;
-///
-/// let t = Tensor::from_scalar(1.0_f64, &[4]);
-/// let cached = (t + 2.0).cache();
-///
-/// // Two separate materializations - the inner graph runs only once.
-/// let r1 = (&cached * 2.0).materialize();
-/// let r2 = (&cached + 10.0).materialize();
-/// assert_eq!(r1.data(), &vec![6.0; 4]);
-/// assert_eq!(r2.data(), &vec![13.0; 4]);
-/// ```
-pub struct CachedTensorPromise<T, B: Backend = DefaultBackend> {
-    pub(crate) graph: Arc<TensorGraphCacheNode<T, B>>,
 }
 
 impl<T: Numeric, B: Backend> TensorPromise<T, B> {
@@ -118,31 +89,6 @@ impl<T: Numeric, B: Backend> TensorPromise<T, B> {
     }
 }
 
-impl<T: Numeric, B: Backend> CachedTensorPromise<T, B> {
-    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>) -> Result<Self, OpError> {
-        let node = TensorGraphCacheNode::new(op, inputs);
-
-        match node {
-            Ok(node) => Ok(Self {
-                graph: Arc::new(node),
-            }),
-            Err(err) => Err(err),
-        }
-    }
-
-    pub fn with_layout(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>, layout: Layout) -> Self {
-        Self {
-            graph: Arc::new(TensorGraphCacheNode::with_layout(op, inputs, layout)),
-        }
-    }
-
-    pub fn from_node(node: TensorGraphCacheNode<T, B>) -> Self {
-        Self {
-            graph: Arc::new(node),
-        }
-    }
-}
-
 impl<T: NumberLike + ComputeFor<B>, B: Backend> TensorPromise<T, B> {
     /// Execute the computation graph and return the result as a [`Tensor`].
     ///
@@ -182,6 +128,16 @@ impl<T: NumberLike + ComputeFor<B>, B: Backend> TensorPromise<T, B> {
     pub fn clone_and_materialize(&self) -> Tensor<T> {
         Tensor::from_data(self.graph.compute())
     }
+
+    pub fn as_slot(&self) -> SkeletonSlot<T, B> {
+        SkeletonSlot::new(self.layout().clone())
+    }
+}
+
+impl<T, B: Backend> Composable<T, B> for TensorPromise<T, B> {
+    fn to_node(&self) -> NodeKind<T, B> {
+        NodeKind::Node(self.graph.clone())
+    }
 }
 
 impl<T, B: Backend> Dimension for TensorPromise<T, B> {
@@ -199,7 +155,64 @@ impl<T, B: Backend> Clone for TensorPromise<T, B> {
     }
 }
 
-impl<T: Numeric + ComputeFor<B>, B: Backend> CachedTensorPromise<T, B> {
+//////////////////////////////////////////////////////////////////////////////////
+
+/// A lazy computation whose result is kept alive after the first evaluation.
+///
+/// Once [`.materialize()`] has been called (directly or through a derived
+/// promise), the result is cached. Every subsequent call returns the stored
+/// value without re-running the graph.
+///
+/// Use this when the same promise feeds into multiple independent downstream
+/// graphs that materialise at different times. You pay the memory cost of
+/// keeping the tensor alive, which is why caching is opt-in.
+///
+/// [`.materialize()`]: CachedTensorPromise::materialize
+///
+/// # Examples
+///
+/// ```
+/// use candela::Tensor;
+///
+/// let t = Tensor::from_scalar(1.0_f64, &[4]);
+/// let cached = (t + 2.0).cache();
+///
+/// // Two separate materializations - the inner graph runs only once.
+/// let r1 = (&cached * 2.0).materialize();
+/// let r2 = (&cached + 10.0).materialize();
+/// assert_eq!(r1.data(), &vec![6.0; 4]);
+/// assert_eq!(r2.data(), &vec![13.0; 4]);
+/// ```
+pub struct CachedTensorPromise<T, B: Backend = DefaultBackend> {
+    pub(crate) graph: Arc<TensorGraphCacheNode<T, B>>,
+}
+
+impl<T: Numeric, B: Backend> CachedTensorPromise<T, B> {
+    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>) -> Result<Self, OpError> {
+        let node = TensorGraphCacheNode::new(op, inputs);
+
+        match node {
+            Ok(node) => Ok(Self {
+                graph: Arc::new(node),
+            }),
+            Err(err) => Err(err),
+        }
+    }
+
+    pub fn with_layout(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>, layout: Layout) -> Self {
+        Self {
+            graph: Arc::new(TensorGraphCacheNode::with_layout(op, inputs, layout)),
+        }
+    }
+
+    pub fn from_node(node: TensorGraphCacheNode<T, B>) -> Self {
+        Self {
+            graph: Arc::new(node),
+        }
+    }
+}
+
+impl<T: NumberLike + ComputeFor<B>, B: Backend> CachedTensorPromise<T, B> {
     /// Return the cached result if it has already been computed, or `None` if
     /// [`.materialize()`] has not been called yet.
     ///
@@ -247,9 +260,7 @@ impl<T: Numeric + ComputeFor<B>, B: Backend> CachedTensorPromise<T, B> {
             self.clone_and_materialize()
         }
     }
-}
 
-impl<T: NumberLike + ComputeFor<B>, B: Backend> CachedTensorPromise<T, B> {
     /// Execute the computation graph and return the result as a [`Tensor`].
     ///
     /// See [`TensorPromise::materialize`] for details.
@@ -260,6 +271,16 @@ impl<T: NumberLike + ComputeFor<B>, B: Backend> CachedTensorPromise<T, B> {
     /// Same as [`.materialize()`](Self::materialize) but does not consume self.
     pub fn clone_and_materialize(&self) -> Tensor<T> {
         Tensor::from_data(self.graph.compute())
+    }
+
+    pub fn as_slot(&self) -> SkeletonSlot<T, B> {
+        SkeletonSlot::new(self.layout().clone())
+    }
+}
+
+impl<T, B: Backend> Composable<T, B> for CachedTensorPromise<T, B> {
+    fn to_node(&self) -> NodeKind<T, B> {
+        NodeKind::Cache(self.graph.clone())
     }
 }
 

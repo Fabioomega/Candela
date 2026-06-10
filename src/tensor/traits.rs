@@ -1,23 +1,7 @@
+use crate::tensor::backend::Backend;
+use crate::tensor::graph::NodeKind;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::storage::TensorData;
-
-pub(crate) trait FromIndex {
-    fn from_index(i: usize) -> Self;
-}
-
-impl FromIndex for f64 {
-    #[inline]
-    fn from_index(i: usize) -> Self {
-        i as f64
-    }
-}
-
-impl FromIndex for f32 {
-    #[inline]
-    fn from_index(i: usize) -> Self {
-        i as f32
-    }
-}
 
 pub trait Dimension {
     fn layout(&self) -> &Layout;
@@ -64,9 +48,13 @@ pub trait Dimension {
 }
 
 pub trait Promising {
-    type Output: Copy;
+    type Output;
 
     fn compute(&self) -> TensorData<Self::Output>;
+}
+
+pub(crate) trait Composable<T, B: Backend>: Dimension {
+    fn to_node(&self) -> NodeKind<T, B>;
 }
 
 pub trait StreamingIterator {
@@ -134,4 +122,22 @@ impl Numeric for f32 {
     const ONE: Self = 1.0;
     const ZERO: Self = 0.0;
     const MIN: Self = f32::NEG_INFINITY;
+}
+
+pub(crate) trait FromIndex {
+    fn from_index(i: usize) -> Self;
+}
+
+impl FromIndex for f64 {
+    #[inline]
+    fn from_index(i: usize) -> Self {
+        i as f64
+    }
+}
+
+impl FromIndex for f32 {
+    #[inline]
+    fn from_index(i: usize) -> Self {
+        i as f32
+    }
 }
