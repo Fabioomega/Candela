@@ -53,9 +53,20 @@ pub trait Promising {
     fn compute(&self) -> TensorData<Self::Output>;
 }
 
-pub(crate) trait Composable<T, B: Backend>: Dimension {
+/// Represents any graph type that can take part in an op: it produces a graph node and
+/// carries a layout. Implemented by every operand kind - `Tensor`,
+/// `TensorPromise`, `CachedTensorPromise`, `BakedPromise`, `SkeletonSlot`,
+/// `SkeletonPromise` - plus internal intermediates.
+pub(crate) trait Operand<T, B: Backend>: Dimension {
     fn to_node(&self) -> NodeKind<T, B>;
 }
+
+/// A "materializable" subset of [`Operand`]: values that are legal as
+/// concrete inputs when binding a skeleton via `compose`. `SkeletonSlot` and
+/// `SkeletonPromise` are `Operand`s but not `Composable`. This
+/// exclusion guarantees that no unbound slot appears in a the materialization
+/// path.
+pub(crate) trait Composable<T, B: Backend>: Operand<T, B> {}
 
 pub trait StreamingIterator {
     type Item<'a>

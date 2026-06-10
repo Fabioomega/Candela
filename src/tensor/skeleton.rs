@@ -6,7 +6,7 @@ use crate::tensor::executor::{owned_step, run_plan};
 use crate::tensor::graph::{NodeKind, TensorGraphBaked, TensorGraphNode, TensorGraphSlot};
 use crate::tensor::planner::{OwnedCorePlan, core_plan_computation, from_borrowed_core_to_owned};
 use crate::tensor::storage::TensorData;
-use crate::tensor::traits::{Composable, Numeric, Promising};
+use crate::tensor::traits::{Composable, Numeric, Operand, Promising};
 use crate::{Dimension, Layout, OpError, Tensor, TensorPromise};
 
 pub struct SkeletonSlot<T, B: Backend> {
@@ -71,11 +71,13 @@ impl<T, B: Backend> Dimension for BakedPromise<T, B> {
     }
 }
 
-impl<T, B: Backend> Composable<T, B> for BakedPromise<T, B> {
+impl<T, B: Backend> Operand<T, B> for BakedPromise<T, B> {
     fn to_node(&self) -> NodeKind<T, B> {
         NodeKind::Baked(self.graph.clone())
     }
 }
+
+impl<T, B: Backend> Composable<T, B> for BakedPromise<T, B> {}
 
 //////////////////////////////////////////////////////////////////////////////////
 

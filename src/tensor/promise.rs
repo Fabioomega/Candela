@@ -16,7 +16,7 @@ use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::skeleton::{Skeleton, SkeletonSlot};
 use crate::tensor::tensor_interface::Tensor;
-use crate::tensor::traits::{Composable, Dimension, Numeric, Promising};
+use crate::tensor::traits::{Composable, Dimension, Numeric, Operand, Promising};
 
 /// A lazy computation that runs when you call [`.materialize()`].
 ///
@@ -134,11 +134,13 @@ impl<T: NumberLike + ComputeFor<B>, B: Backend> TensorPromise<T, B> {
     }
 }
 
-impl<T, B: Backend> Composable<T, B> for TensorPromise<T, B> {
+impl<T, B: Backend> Operand<T, B> for TensorPromise<T, B> {
     fn to_node(&self) -> NodeKind<T, B> {
         NodeKind::Node(self.graph.clone())
     }
 }
+
+impl<T, B: Backend> Composable<T, B> for TensorPromise<T, B> {}
 
 impl<T, B: Backend> Dimension for TensorPromise<T, B> {
     #[inline]
@@ -278,11 +280,13 @@ impl<T: NumberLike + ComputeFor<B>, B: Backend> CachedTensorPromise<T, B> {
     }
 }
 
-impl<T, B: Backend> Composable<T, B> for CachedTensorPromise<T, B> {
+impl<T, B: Backend> Operand<T, B> for CachedTensorPromise<T, B> {
     fn to_node(&self) -> NodeKind<T, B> {
         NodeKind::Cache(self.graph.clone())
     }
 }
+
+impl<T, B: Backend> Composable<T, B> for CachedTensorPromise<T, B> {}
 
 impl<T, B: Backend> Dimension for CachedTensorPromise<T, B> {
     #[inline]

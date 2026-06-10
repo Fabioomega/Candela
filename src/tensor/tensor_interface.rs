@@ -7,7 +7,7 @@ use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::promise::TensorPromise;
 use crate::tensor::skeleton::SkeletonSlot;
 use crate::tensor::storage::TensorData;
-use crate::tensor::traits::{Composable, Dimension, Numeric};
+use crate::tensor::traits::{Composable, Dimension, Numeric, Operand};
 use std::ops::Index;
 use std::sync::Arc;
 
@@ -261,11 +261,13 @@ impl<T, B: Backend> Dimension for Tensor<T, B> {
     }
 }
 
-impl<T, B: Backend> Composable<T, B> for Tensor<T, B> {
+impl<T, B: Backend> Operand<T, B> for Tensor<T, B> {
     fn to_node(&self) -> NodeKind<T, B> {
         NodeKind::Edge(self.graph.clone())
     }
 }
+
+impl<T, B: Backend> Composable<T, B> for Tensor<T, B> {}
 
 impl<T, B: Backend> Clone for Tensor<T, B> {
     /// Shallow copy sharing the same underlying buffer and graph identity.
