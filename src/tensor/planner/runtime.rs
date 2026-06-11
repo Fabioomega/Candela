@@ -42,6 +42,14 @@ fn slot_is_free(slot: &Slot, op_location: usize, required_len: usize) -> bool {
         .is_some_and(|e| e < op_location && slot.len == required_len)
 }
 
+/// Whether the op at `op_location` is the last reader of `slot`.
+/// This is the condition for overwriting an input in place: the op reads the buffer
+/// and nothing reads it afterwards.
+#[inline]
+fn slot_is_last_read(slot: &Slot, op_location: usize, required_len: usize) -> bool {
+    slot.end == Some(op_location) && slot.len == required_len
+}
+
 #[inline]
 fn assign_slot(slots: &[Slot], op_location: usize, output_layout: &Layout) -> ExecKind {
     let slot = find_slot(slots, op_location, output_layout.len());
@@ -206,7 +214,7 @@ pub(crate) fn classify<T, B: Backend>(
 
             id_slot_map
                 .get(&id)
-                .filter(|&&s| slot_is_free(&slots[s], op_location, output_layout.len()))
+                .filter(|&&s| slot_is_last_read(&slots[s], op_location, output_layout.len()))
                 .copied()
                 .map_or(assign_slot(slots, op_location, output_layout), |slot_idx| {
                     ExecKind::InPlace {
@@ -220,7 +228,7 @@ pub(crate) fn classify<T, B: Backend>(
 
             id_slot_map
                 .get(&id)
-                .filter(|&&s| slot_is_free(&slots[s], op_location, output_layout.len()))
+                .filter(|&&s| slot_is_last_read(&slots[s], op_location, output_layout.len()))
                 .copied()
                 .map_or(assign_slot(slots, op_location, output_layout), |slot_idx| {
                     ExecKind::InPlace {
@@ -232,10 +240,22 @@ pub(crate) fn classify<T, B: Backend>(
         OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Div => {
             for (i, inp) in inputs.iter().enumerate() {
                 let id = get_id(inp);
+
+                // Guards against same node in 2 inputs (i. e. t + t).
+                // In that case InPlaceIdx cannot happen as the backends needs
+                // the storage Arc to be unique to be able to reuse a buffer in-place.
+                if inputs
+                    .iter()
+                    .enumerate()
+                    .any(|(j, other)| j != i && get_id(other) == id)
+                {
+                    continue;
+                }
+
                 let slot_idx = id_slot_map.get(&id);
 
                 if let Some(idx) = slot_idx
-                    && slot_is_free(&slots[*idx], op_location, output_layout.len())
+                    && slot_is_last_read(&slots[*idx], op_location, output_layout.len())
                 {
                     return ExecKind::InPlace {
                         slot_idx: *idx,

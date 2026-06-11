@@ -60,7 +60,22 @@ fn execute_output<T: NumberLike + ComputeFor<B>, B: Backend>(
 
             B::compute(op, output_buffer, layout, &inputs)
         }
-        OutputKind::InPlaceIdx(idx) | OutputKind::Reference(idx) => {
+        OutputKind::InPlaceIdx(idx) => {
+            let inputs: Vec<TensorData<T>> = resolved_inputs
+                .iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    if i == *idx {
+                        computation_cache.remove(id).unwrap()
+                    } else {
+                        computation_cache.get(id).unwrap().clone()
+                    }
+                })
+                .collect();
+
+            B::compute_inplace(op, layout, inputs, *idx)
+        }
+        OutputKind::Reference(idx) => {
             let inputs = build_inputs(computation_cache, resolved_inputs);
 
             B::compute_inplace(op, layout, inputs, *idx)

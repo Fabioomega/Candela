@@ -360,6 +360,8 @@ struct RootNode<'a, T, B: Backend> {
 struct PrePlan<'a, T, B: Backend> {
     pre_plan: Vec<OpPlan<'a, T, B>>,
     root: RootNode<'a, T, B>,
+    /// Inputs that need to be added by an external source for the plan to run
+    external_inputs: Vec<usize>,
 }
 
 /// Topologically sort the graph and, in one walk, classify each node's aliasing,
@@ -373,6 +375,7 @@ fn pre_plan<'a, T: PartialEq + Clone, B: Backend>(
     let mut id_op: HashMap<usize, usize> = HashMap::with_capacity(32);
     let mut ops: Vec<OpPlan<'_, T, B>> = Vec::with_capacity(32);
     let mut alias_map: AliasMap<'_, T, B> = AliasMap::new();
+    let mut external_inputs: Vec<usize> = Vec::with_capacity(8);
 
     for node in dag_iter {
         match node {
@@ -388,12 +391,10 @@ fn pre_plan<'a, T: PartialEq + Clone, B: Backend>(
                 });
             }
             NodeKind::Slot(s) => {
-                id_op.insert(s.id, ops.len());
-                ops.push(OpPlan {
-                    node,
-                    resolved_inputs: Vec::new(),
-                    end: None,
-                });
+                // Slots produce no plan step - their buffer arrives from outside - so
+                // they're recorded as external inputs and deliberately kept out of
+                // `ops`.
+                external_inputs.push(s.id);
             }
             NodeKind::Node(n) => match alias::classify(&n.op, &n.inputs, &alias_map) {
                 AliasKind::NoAlias => {
@@ -471,6 +472,8 @@ fn pre_plan<'a, T: PartialEq + Clone, B: Backend>(
         }
     }
 
+    let root_resolved = resolve_inputs(&base_node.inputs, &alias_map);
+
     let root_id = match alias::classify(&base_node.op, &base_node.inputs, &alias_map) {
         AliasKind::Alias(target, _) => {
             // Root is a pure alias: the result IS the target's buffer. Force it to
@@ -483,15 +486,20 @@ fn pre_plan<'a, T: PartialEq + Clone, B: Backend>(
             id
         }
 
-        _ => base_node.id,
+        _ => {
+            let root_pos = ops.len();
+            track_lifetimes(&root_resolved, root_pos, &id_op, &mut ops);
+            base_node.id
+        }
     };
 
     PrePlan {
         pre_plan: ops,
         root: RootNode {
             id: root_id,
-            resolved_inputs: resolve_inputs(&base_node.inputs, &alias_map),
+            resolved_inputs: root_resolved,
         },
+        external_inputs,
     }
 }
 
@@ -563,8 +571,11 @@ pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
     base_node: &TensorGraphNode<T, B>,
 ) -> CorePlan<'_, T, B> {
     let mut state: PlanState<'_, T, B> = PlanState::new();
-    let PrePlan { pre_plan, root } = pre_plan(base_node);
-    let mut external_inputs: Vec<usize> = Vec::with_capacity(8);
+    let PrePlan {
+        pre_plan,
+        root,
+        external_inputs,
+    } = pre_plan(base_node);
 
     let ops_len = pre_plan.len();
 
@@ -572,9 +583,6 @@ pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
         match op.node {
             NodeKind::Edge(e) => {
                 state.plan.push(ComputeKind::Leaf { edge: e });
-            }
-            NodeKind::Slot(s) => {
-                external_inputs.push(s.id);
             }
             NodeKind::Node(node) => {
                 state.plan_node(i, op.end, node, &op.resolved_inputs);
@@ -589,6 +597,7 @@ pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
                     dealloc_after: Vec::new(),
                 });
             }
+            NodeKind::Slot(_) => unreachable!("slots are pre-plan only nodes"),
         }
     }
 
