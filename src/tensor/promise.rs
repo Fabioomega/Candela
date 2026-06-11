@@ -14,7 +14,7 @@ use crate::tensor::errors::OpError;
 use crate::tensor::graph::{NodeKind, TensorGraphCacheNode, TensorGraphNode};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKind;
-use crate::tensor::skeleton::{Skeleton, SkeletonSlot};
+use crate::tensor::skeleton::{Clean, SkeletonSlot, Tainting};
 use crate::tensor::tensor_interface::Tensor;
 use crate::tensor::traits::{Composable, Dimension, Numeric, Operand, Promising};
 
@@ -138,6 +138,10 @@ impl<T, B: Backend> Operand<T, B> for TensorPromise<T, B> {
     fn to_node(&self) -> NodeKind<T, B> {
         NodeKind::Node(self.graph.clone())
     }
+}
+
+impl<T, B: Backend> Tainting for TensorPromise<T, B> {
+    type Mark = Clean;
 }
 
 impl<T, B: Backend> Composable<T, B> for TensorPromise<T, B> {}
@@ -284,6 +288,10 @@ impl<T, B: Backend> Operand<T, B> for CachedTensorPromise<T, B> {
     fn to_node(&self) -> NodeKind<T, B> {
         NodeKind::Cache(self.graph.clone())
     }
+}
+
+impl<T, B: Backend> Tainting for CachedTensorPromise<T, B> {
+    type Mark = Clean;
 }
 
 impl<T, B: Backend> Composable<T, B> for CachedTensorPromise<T, B> {}

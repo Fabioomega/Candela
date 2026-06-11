@@ -1,11 +1,12 @@
 #![allow(private_bounds)]
-use crate::errors::OpError;
+use crate::OpError;
 use crate::tensor::backend::{Backend, ComputeFor, DefaultBackend};
 use crate::tensor::graph::{NodeKind, TensorGraphEdge};
 use crate::tensor::iter::{InformedSliceIter, SliceIter, StepInfo};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::promise::TensorPromise;
 use crate::tensor::skeleton::SkeletonSlot;
+use crate::tensor::skeleton::{Clean, Tainting};
 use crate::tensor::storage::TensorData;
 use crate::tensor::traits::{Composable, Dimension, Numeric, Operand};
 use std::ops::Index;
@@ -265,6 +266,10 @@ impl<T, B: Backend> Operand<T, B> for Tensor<T, B> {
     fn to_node(&self) -> NodeKind<T, B> {
         NodeKind::Edge(self.graph.clone())
     }
+}
+
+impl<T, B: Backend> Tainting for Tensor<T, B> {
+    type Mark = Clean;
 }
 
 impl<T, B: Backend> Composable<T, B> for Tensor<T, B> {}

@@ -10,6 +10,9 @@ use crate::tensor::mem_formats::slice::SliceRange;
 use crate::tensor::ops::capabilities::{CanMatMul, FloatLike, NumericOp};
 use crate::tensor::ops::compute_layout;
 use crate::tensor::ops::def_op::{OpKind, OpKindScalar};
+use crate::tensor::skeleton::{
+    BakedPromise, BinaryResult, Clean, SkeletonPromise, SkeletonSlot, Tainting, UnaryResult,
+};
 use crate::tensor::traits::{Dimension, Numeric, Operand};
 use crate::tensor::{CachedTensorPromise, Tensor, TensorPromise};
 
@@ -30,6 +33,10 @@ impl<T: Numeric, B: Backend> Operand<T, B> for NodeWithLayout<T, B> {
     fn to_node(&self) -> NodeKind<T, B> {
         self.node.clone()
     }
+}
+
+impl<T: Numeric, B: Backend> Tainting for NodeWithLayout<T, B> {
+    type Mark = Clean;
 }
 
 //////////////////////////////////////////////////////////////
@@ -227,10 +234,7 @@ where
     ))
 }
 
-fn broadcast_impl<T, B, D>(
-    source: &D,
-    shape: &[usize],
-) -> Result<TensorPromise<T, B>, OpError>
+fn broadcast_impl<T, B, D>(source: &D, shape: &[usize]) -> Result<TensorPromise<T, B>, OpError>
 where
     T: Numeric,
     B: Backend,
@@ -246,10 +250,7 @@ where
     ))
 }
 
-fn reshape_impl<T, B, D>(
-    source: &D,
-    shape: &[usize],
-) -> Result<TensorPromise<T, B>, OpError>
+fn reshape_impl<T, B, D>(source: &D, shape: &[usize]) -> Result<TensorPromise<T, B>, OpError>
 where
     T: Numeric,
     B: Backend,
@@ -266,10 +267,7 @@ where
     ))
 }
 
-fn slice_impl<T, B, D>(
-    source: &D,
-    range: &[SliceRange],
-) -> Result<TensorPromise<T, B>, OpError>
+fn slice_impl<T, B, D>(source: &D, range: &[SliceRange]) -> Result<TensorPromise<T, B>, OpError>
 where
     T: Numeric,
     B: Backend,
@@ -296,10 +294,7 @@ where
     unsafe { TensorPromise::new(OpKind::Transpose, input).unwrap_unchecked() }
 }
 
-fn transpose_axes_impl<T, B, D>(
-    source: &D,
-    axes: &[usize],
-) -> Result<TensorPromise<T, B>, OpError>
+fn transpose_axes_impl<T, B, D>(source: &D, axes: &[usize]) -> Result<TensorPromise<T, B>, OpError>
 where
     T: Numeric,
     B: Backend,
@@ -385,10 +380,7 @@ where
 
     unsafe {
         TensorPromise::new(
-            OpKind::ScalarOp(OpKindScalar::AxBy(
-                T::MUL_NEUTRAL / rhs,
-                T::SUM_NEUTRAL,
-            )),
+            OpKind::ScalarOp(OpKindScalar::AxBy(T::MUL_NEUTRAL / rhs, T::SUM_NEUTRAL)),
             Box::new([lhs.to_node()]),
         )
         .unwrap_unchecked()
@@ -607,12 +599,7 @@ where
         },
         |x| broadcast_impl(x, unsafe { &target.as_ref().unwrap_unchecked().0 }),
         |x| broadcast_impl(x, unsafe { &target.as_ref().unwrap_unchecked().1 }),
-        |l1, l2| {
-            compute_layout(
-                &OpKind::<T>::MatMul(T::MUL_NEUTRAL),
-                &[l1, l2],
-            )
-        },
+        |l1, l2| compute_layout(&OpKind::<T>::MatMul(T::MUL_NEUTRAL), &[l1, l2]),
     )?;
 
     Ok(TensorPromise::with_layout(
@@ -625,10 +612,7 @@ where
 // Drop the dim at position `len - 1 - from_end` via a metadata-only View.
 // Used by matmul's 1-D promotion to strip the size-1 dim introduced by
 // promoting a vector operand to a matrix.
-fn drop_dim_from_end<T, B, D>(
-    source: &D,
-    from_end: usize,
-) -> Result<TensorPromise<T, B>, OpError>
+fn drop_dim_from_end<T, B, D>(source: &D, from_end: usize) -> Result<TensorPromise<T, B>, OpError>
 where
     T: Numeric,
     B: Backend,
@@ -639,10 +623,7 @@ where
     view_impl(source, &new_shape)
 }
 
-fn matmul_tensor_impl<T, B, D1, D2>(
-    lhs: &D1,
-    rhs: &D2,
-) -> Result<TensorPromise<T, B>, OpError>
+fn matmul_tensor_impl<T, B, D1, D2>(lhs: &D1, rhs: &D2) -> Result<TensorPromise<T, B>, OpError>
 where
     T: Numeric,
     B: Backend,
@@ -790,8 +771,11 @@ macro_rules! impl_view {
             ///
             /// Returns [`OpError::NonContiguousView`] if the tensor is not contiguous or [`OpError::InvalidViewShape`] if the shape is invalid.
             #[inline]
-            pub fn view(&self, shape: &[usize]) -> Result<TensorPromise<T, B>, OpError> {
-                view_impl(self, shape)
+            pub fn view(
+                &self,
+                shape: &[usize],
+            ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
+                view_impl(self, shape).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
 
             /// Reinterprets the tensor's data as having shape `shape`,
@@ -819,8 +803,11 @@ macro_rules! impl_view {
             /// Returns [`OpError::InvalidViewShape`] if `shape` does not have the same
             /// total number of elements as the original.
             #[inline]
-            pub fn reshape(&self, shape: &[usize]) -> Result<TensorPromise<T, B>, OpError> {
-                reshape_impl(self, shape)
+            pub fn reshape(
+                &self,
+                shape: &[usize],
+            ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
+                reshape_impl(self, shape).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }
     };
@@ -856,8 +843,11 @@ macro_rules! impl_slice {
             /// Returns [`OpError::AxesOutOfBounds`] if more ranges are given than the
             /// tensor has axes, or [`OpError::SliceOutOfBounds`] if a range is empty.
             #[inline]
-            pub fn slice(&self, shape: &[SliceRange]) -> Result<TensorPromise<T, B>, OpError> {
-                slice_impl(self, shape)
+            pub fn slice(
+                &self,
+                shape: &[SliceRange],
+            ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
+                slice_impl(self, shape).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }
     };
@@ -890,8 +880,8 @@ macro_rules! impl_transpose {
             /// assert_eq!(tt.shape(), &[3, 2]);
             /// ```
             #[inline]
-            pub fn transpose(&self) -> TensorPromise<T, B> {
-                transpose_impl(self)
+            pub fn transpose(&self) -> <$ty<T, B> as UnaryResult<T, B>>::Output {
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(transpose_impl(self))
             }
         }
     };
@@ -930,8 +920,11 @@ macro_rules! impl_transpose_axes {
             /// axis, or [`OpError::AxesOutOfBounds`] if an index is out of range or
             /// repeated (so the list isn't a valid permutation).
             #[inline]
-            pub fn transpose_axes(&self, axes: &[usize]) -> Result<TensorPromise<T, B>, OpError> {
-                transpose_axes_impl(self, axes)
+            pub fn transpose_axes(
+                &self,
+                axes: &[usize],
+            ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
+                transpose_axes_impl(self, axes).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }
     };
@@ -967,8 +960,8 @@ macro_rules! impl_as_contiguous {
             /// assert_eq!(c.data(), &[1.0, 3.0, 2.0, 4.0]);
             /// ```
             #[inline]
-            pub fn as_contiguous(&self) -> TensorPromise<T, B> {
-                as_contiguous_impl(self)
+            pub fn as_contiguous(&self) -> <$ty<T, B> as UnaryResult<T, B>>::Output {
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(as_contiguous_impl(self))
             }
         }
     };
@@ -1007,8 +1000,11 @@ macro_rules! impl_broadcast {
             /// than the source, or an axis is neither equal to the source nor
             /// expandable from 1.
             #[inline]
-            pub fn broadcast(&self, shape: &[usize]) -> Result<TensorPromise<T, B>, OpError> {
-                broadcast_impl(self, shape)
+            pub fn broadcast(
+                &self,
+                shape: &[usize],
+            ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
+                broadcast_impl(self, shape).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }
     };
@@ -1033,11 +1029,11 @@ macro_rules! impl_add_scalar {
             T: NumericOp,
             B: Backend,
         {
-            type Output = TensorPromise<T, B>;
+            type Output = <$ty<T, B> as UnaryResult<T, B>>::Output;
 
             #[inline]
             fn add(self, rhs: T) -> Self::Output {
-                add_scalar_impl(self, rhs)
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(add_scalar_impl(self, rhs))
             }
         }
 
@@ -1046,7 +1042,7 @@ macro_rules! impl_add_scalar {
             T: NumericOp,
             B: Backend,
         {
-            type Output = TensorPromise<T, B>;
+            type Output = <$ty<T, B> as UnaryResult<T, B>>::Output;
 
             #[inline]
             fn add(self, rhs: T) -> Self::Output {
@@ -1063,11 +1059,11 @@ macro_rules! impl_sub_scalar {
             T: NumericOp + Neg<Output = T>,
             B: Backend,
         {
-            type Output = TensorPromise<T, B>;
+            type Output = <$ty<T, B> as UnaryResult<T, B>>::Output;
 
             #[inline]
             fn sub(self, rhs: T) -> Self::Output {
-                sub_scalar_impl(self, rhs)
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(sub_scalar_impl(self, rhs))
             }
         }
 
@@ -1076,7 +1072,7 @@ macro_rules! impl_sub_scalar {
             T: NumericOp + Neg<Output = T>,
             B: Backend,
         {
-            type Output = TensorPromise<T, B>;
+            type Output = <$ty<T, B> as UnaryResult<T, B>>::Output;
 
             #[inline]
             fn sub(self, rhs: T) -> Self::Output {
@@ -1093,11 +1089,11 @@ macro_rules! impl_mul_scalar {
             T: NumericOp,
             B: Backend,
         {
-            type Output = TensorPromise<T, B>;
+            type Output = <$ty<T, B> as UnaryResult<T, B>>::Output;
 
             #[inline]
             fn mul(self, rhs: T) -> Self::Output {
-                mul_scalar_impl(self, rhs)
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(mul_scalar_impl(self, rhs))
             }
         }
 
@@ -1106,7 +1102,7 @@ macro_rules! impl_mul_scalar {
             T: NumericOp,
             B: Backend,
         {
-            type Output = TensorPromise<T, B>;
+            type Output = <$ty<T, B> as UnaryResult<T, B>>::Output;
 
             #[inline]
             fn mul(self, rhs: T) -> Self::Output {
@@ -1123,7 +1119,7 @@ macro_rules! impl_div_scalar {
             T: NumericOp,
             B: Backend,
         {
-            type Output = TensorPromise<T, B>;
+            type Output = <$ty<T, B> as UnaryResult<T, B>>::Output;
 
             /// # Panics
             ///
@@ -1131,7 +1127,7 @@ macro_rules! impl_div_scalar {
             /// `rhs` is zero.
             #[inline]
             fn div(self, rhs: T) -> Self::Output {
-                div_scalar_impl(self, rhs)
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(div_scalar_impl(self, rhs))
             }
         }
 
@@ -1140,7 +1136,7 @@ macro_rules! impl_div_scalar {
             T: NumericOp,
             B: Backend,
         {
-            type Output = TensorPromise<T, B>;
+            type Output = <$ty<T, B> as UnaryResult<T, B>>::Output;
 
             /// # Panics
             ///
@@ -1172,8 +1168,8 @@ macro_rules! impl_exp {
             /// assert_eq!(t.exp().materialize().data(), &[1.0]); // e^0 == 1
             /// ```
             #[inline]
-            pub fn exp(&self) -> TensorPromise<T, B> {
-                exp_impl(self)
+            pub fn exp(&self) -> <$ty<T, B> as UnaryResult<T, B>>::Output {
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(exp_impl(self))
             }
         }
     };
@@ -1199,8 +1195,8 @@ macro_rules! impl_ln {
             /// assert_eq!(t.ln().materialize().data(), &[0.0]); // ln(1) == 0
             /// ```
             #[inline]
-            pub fn ln(&self) -> TensorPromise<T, B> {
-                ln_impl(self)
+            pub fn ln(&self) -> <$ty<T, B> as UnaryResult<T, B>>::Output {
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(ln_impl(self))
             }
         }
     };
@@ -1226,8 +1222,8 @@ macro_rules! impl_log2 {
             /// assert_eq!(t.log2().materialize().data(), &[3.0]); // log2(8) == 3
             /// ```
             #[inline]
-            pub fn log2(&self) -> TensorPromise<T, B> {
-                log2_impl(self)
+            pub fn log2(&self) -> <$ty<T, B> as UnaryResult<T, B>>::Output {
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(log2_impl(self))
             }
         }
     };
@@ -1252,8 +1248,8 @@ macro_rules! impl_relu {
             /// assert_eq!(t.relu().materialize().data(), &[0.0, 0.0, 0.0, 1.5]);
             /// ```
             #[inline]
-            pub fn relu(&self) -> TensorPromise<T, B> {
-                relu_impl(self)
+            pub fn relu(&self) -> <$ty<T, B> as UnaryResult<T, B>>::Output {
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(relu_impl(self))
             }
         }
     };
@@ -1277,8 +1273,8 @@ macro_rules! impl_tanh {
             /// assert_eq!(*t.tanh().materialize().item(), 0.0); // tanh(0) == 0
             /// ```
             #[inline]
-            pub fn tanh(&self) -> TensorPromise<T, B> {
-                tanh_impl(self)
+            pub fn tanh(&self) -> <$ty<T, B> as UnaryResult<T, B>>::Output {
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(tanh_impl(self))
             }
         }
     };
@@ -1382,10 +1378,14 @@ macro_rules! impl_tensor_binop {
         where
             T: NumericOp,
             B: Backend,
+            $lhs<T, B>: BinaryResult<$rhs<T, B>, T, B>,
         {
-            type Output = TensorPromise<T, B>;
+            type Output = <$lhs<T, B> as BinaryResult<$rhs<T, B>, T, B>>::Output;
 
             /// Applies the operation element-wise, broadcasting if the shapes are compatible.
+            ///
+            /// A `SkeletonSlot` anywhere in either operand makes the result a
+            /// [`SkeletonPromise`] instead of a [`TensorPromise`].
             ///
             /// # Panics
             ///
@@ -1393,7 +1393,7 @@ macro_rules! impl_tensor_binop {
             /// shapes are not broadcast-compatible.
             #[inline]
             fn $method(self, rhs: &$rhs<T, B>) -> Self::Output {
-                $impl_fn(self, rhs)
+                <$lhs<T, B> as BinaryResult<$rhs<T, B>, T, B>>::wrap($impl_fn(self, rhs))
             }
         }
 
@@ -1401,8 +1401,9 @@ macro_rules! impl_tensor_binop {
         where
             T: NumericOp,
             B: Backend,
+            $lhs<T, B>: BinaryResult<$rhs<T, B>, T, B>,
         {
-            type Output = TensorPromise<T, B>;
+            type Output = <$lhs<T, B> as BinaryResult<$rhs<T, B>, T, B>>::Output;
 
             /// Applies the operation element-wise, broadcasting if the shapes are compatible.
             ///
@@ -1412,7 +1413,7 @@ macro_rules! impl_tensor_binop {
             /// shapes are not broadcast-compatible.
             #[inline]
             fn $method(self, rhs: $rhs<T, B>) -> Self::Output {
-                $impl_fn(self, &rhs)
+                <$lhs<T, B> as BinaryResult<$rhs<T, B>, T, B>>::wrap($impl_fn(self, &rhs))
             }
         }
 
@@ -1420,8 +1421,9 @@ macro_rules! impl_tensor_binop {
         where
             T: NumericOp,
             B: Backend,
+            $lhs<T, B>: BinaryResult<$rhs<T, B>, T, B>,
         {
-            type Output = TensorPromise<T, B>;
+            type Output = <$lhs<T, B> as BinaryResult<$rhs<T, B>, T, B>>::Output;
 
             /// Applies the operation element-wise, broadcasting if the shapes are compatible.
             ///
@@ -1431,7 +1433,7 @@ macro_rules! impl_tensor_binop {
             /// shapes are not broadcast-compatible.
             #[inline]
             fn $method(self, rhs: &$rhs<T, B>) -> Self::Output {
-                $impl_fn(&self, rhs)
+                <$lhs<T, B> as BinaryResult<$rhs<T, B>, T, B>>::wrap($impl_fn(&self, rhs))
             }
         }
 
@@ -1439,8 +1441,9 @@ macro_rules! impl_tensor_binop {
         where
             T: NumericOp,
             B: Backend,
+            $lhs<T, B>: BinaryResult<$rhs<T, B>, T, B>,
         {
-            type Output = TensorPromise<T, B>;
+            type Output = <$lhs<T, B> as BinaryResult<$rhs<T, B>, T, B>>::Output;
 
             /// Applies the operation element-wise, broadcasting if the shapes are compatible.
             ///
@@ -1450,7 +1453,7 @@ macro_rules! impl_tensor_binop {
             /// shapes are not broadcast-compatible.
             #[inline]
             fn $method(self, rhs: $rhs<T, B>) -> Self::Output {
-                $impl_fn(&self, &rhs)
+                <$lhs<T, B> as BinaryResult<$rhs<T, B>, T, B>>::wrap($impl_fn(&self, &rhs))
             }
         }
     };
@@ -1462,6 +1465,21 @@ macro_rules! impl_tensor_ops {
         impl_tensor_binop!(Sub, sub, sub_tensor_impl, $lhs, $rhs);
         impl_tensor_binop!(Mul, mul, mul_tensor_impl, $lhs, $rhs);
         impl_tensor_binop!(Div, div, div_tensor_impl, $lhs, $rhs);
+    };
+}
+
+// Cross product: every operand against every operand. The taint algebra
+// (`BinaryResult`) decides each cell's output type, so a `SkeletonSlot` on
+// either side yields a `SkeletonPromise`.
+macro_rules! impl_tensor_ops_cross {
+    ([$($ty:ident),+ $(,)?]) => {
+        impl_tensor_ops_cross!(@rows [$($ty),+] [$($ty),+]);
+    };
+    (@rows [$($lhs:ident),+] $rhs:tt) => {
+        $( impl_tensor_ops_cross!(@row $lhs $rhs); )+
+    };
+    (@row $lhs:ident [$($rhs:ident),+]) => {
+        $( impl_tensor_ops!($lhs, $rhs); )+
     };
 }
 
@@ -1520,11 +1538,15 @@ macro_rules! impl_matmul {
             /// Returns [`OpError::CannotMatMul`] if the inner dimensions don't agree, or
             /// [`OpError::CannotBroadcast`] if the batch axes aren't broadcast-compatible.
             #[inline]
-            pub fn matmul<D>(&self, rhs: &D) -> Result<TensorPromise<T, B>, OpError>
+            pub fn matmul<D>(
+                &self,
+                rhs: &D,
+            ) -> Result<<$ty<T, B> as BinaryResult<D, T, B>>::Output, OpError>
             where
                 D: Operand<T, B>,
+                $ty<T, B>: BinaryResult<D, T, B>,
             {
-                matmul_tensor_impl(self, rhs)
+                matmul_tensor_impl(self, rhs).map(<$ty<T, B> as BinaryResult<D, T, B>>::wrap)
             }
         }
     };
@@ -1553,8 +1575,8 @@ macro_rules! impl_sum {
             /// assert_eq!(t.sum().materialize().data(), &[10.0]);
             /// ```
             #[inline]
-            pub fn sum(&self) -> TensorPromise<T, B> {
-                sum_impl(self)
+            pub fn sum(&self) -> <$ty<T, B> as UnaryResult<T, B>>::Output {
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(sum_impl(self))
             }
         }
     };
@@ -1599,8 +1621,8 @@ macro_rules! impl_sum_axis {
                 &self,
                 axis: isize,
                 keep_dims: bool,
-            ) -> Result<TensorPromise<T, B>, OpError> {
-                sum_axis_impl(self, axis, keep_dims)
+            ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
+                sum_axis_impl(self, axis, keep_dims).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }
     };
@@ -1627,8 +1649,8 @@ macro_rules! impl_max {
             /// assert_eq!(t.max().materialize().data(), &[5.0]);
             /// ```
             #[inline]
-            pub fn max(&self) -> TensorPromise<T, B> {
-                max_impl(self)
+            pub fn max(&self) -> <$ty<T, B> as UnaryResult<T, B>>::Output {
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(max_impl(self))
             }
         }
     };
@@ -1667,8 +1689,8 @@ macro_rules! impl_max_axis {
                 &self,
                 axis: isize,
                 keep_dims: bool,
-            ) -> Result<TensorPromise<T, B>, OpError> {
-                max_axis_impl(self, axis, keep_dims)
+            ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
+                max_axis_impl(self, axis, keep_dims).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }
     };
@@ -1695,8 +1717,8 @@ macro_rules! impl_mean {
             /// assert_eq!(t.mean().materialize().data(), &[2.5]);
             /// ```
             #[inline]
-            pub fn mean(&self) -> TensorPromise<T, B> {
-                mean_impl(self)
+            pub fn mean(&self) -> <$ty<T, B> as UnaryResult<T, B>>::Output {
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(mean_impl(self))
             }
         }
     };
@@ -1735,8 +1757,8 @@ macro_rules! impl_mean_axis {
                 &self,
                 axis: isize,
                 keep_dims: bool,
-            ) -> Result<TensorPromise<T, B>, OpError> {
-                mean_axis_impl(self, axis, keep_dims)
+            ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
+                mean_axis_impl(self, axis, keep_dims).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }
     };
@@ -1781,60 +1803,40 @@ macro_rules! impl_tensor_assign_ops {
 
 //////////////////////////////////////////////////////////////
 
-impl_reshape_like!(Tensor);
-impl_reshape_like!(TensorPromise);
-impl_reshape_like!(CachedTensorPromise);
+macro_rules! impl_all_ops {
+    ($ty:ident) => {
+        impl_reshape_like!($ty);
+        impl_unary_scalar_ops!($ty);
+        impl_op_scalar!($ty);
+        impl_matmul!($ty);
+        impl_sum!($ty);
+        impl_sum_axis!($ty);
+        impl_max!($ty);
+        impl_max_axis!($ty);
+        impl_mean!($ty);
+        impl_mean_axis!($ty);
+    };
+}
 
-impl_unary_scalar_ops!(Tensor);
-impl_unary_scalar_ops!(TensorPromise);
-impl_unary_scalar_ops!(CachedTensorPromise);
+impl_all_ops!(Tensor);
+impl_all_ops!(TensorPromise);
+impl_all_ops!(CachedTensorPromise);
+impl_all_ops!(BakedPromise);
+impl_all_ops!(SkeletonSlot);
+impl_all_ops!(SkeletonPromise);
 
-impl_op_scalar!(Tensor);
-impl_op_scalar!(TensorPromise);
-impl_op_scalar!(CachedTensorPromise);
-
-impl_matmul!(Tensor);
-impl_matmul!(TensorPromise);
-impl_matmul!(CachedTensorPromise);
-
-impl_tensor_ops!(Tensor, Tensor);
-impl_tensor_ops!(Tensor, TensorPromise);
-impl_tensor_ops!(Tensor, CachedTensorPromise);
-
-impl_tensor_ops!(TensorPromise, Tensor);
-impl_tensor_ops!(TensorPromise, TensorPromise);
-impl_tensor_ops!(TensorPromise, CachedTensorPromise);
-
-impl_tensor_ops!(CachedTensorPromise, Tensor);
-impl_tensor_ops!(CachedTensorPromise, TensorPromise);
-impl_tensor_ops!(CachedTensorPromise, CachedTensorPromise);
+impl_tensor_ops_cross!([
+    Tensor,
+    TensorPromise,
+    CachedTensorPromise,
+    BakedPromise,
+    SkeletonSlot,
+    SkeletonPromise,
+]);
 
 impl_op_assign_scalar!(TensorPromise);
 
 impl_tensor_assign_ops!(Tensor);
 impl_tensor_assign_ops!(TensorPromise);
 impl_tensor_assign_ops!(CachedTensorPromise);
-
-impl_sum!(Tensor);
-impl_sum!(TensorPromise);
-impl_sum!(CachedTensorPromise);
-
-impl_sum_axis!(Tensor);
-impl_sum_axis!(TensorPromise);
-impl_sum_axis!(CachedTensorPromise);
-
-impl_max!(Tensor);
-impl_max!(TensorPromise);
-impl_max!(CachedTensorPromise);
-
-impl_max_axis!(Tensor);
-impl_max_axis!(TensorPromise);
-impl_max_axis!(CachedTensorPromise);
-
-impl_mean!(Tensor);
-impl_mean!(TensorPromise);
-impl_mean!(CachedTensorPromise);
-
-impl_mean_axis!(Tensor);
-impl_mean_axis!(TensorPromise);
-impl_mean_axis!(CachedTensorPromise);
+impl_tensor_assign_ops!(BakedPromise);

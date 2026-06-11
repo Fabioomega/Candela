@@ -17,12 +17,14 @@
 //! assert_eq!(y.data(), &[1.0, 3.0, 5.0, 7.0]);
 //! ```
 //!
-//! # The three types
+//! # The types
 //!
 //! - [`Tensor`] - a materialized buffer with a shape and stride.
 //! - [`TensorPromise`] - an unevaluated computation graph; `.materialize()` runs it.
 //! - [`CachedTensorPromise`] - a promise that keeps its result alive for reuse
 //!   across separate materializations.
+//! - [`Skeleton`] - a graph compiled once over [`SkeletonSlot`] placeholders and
+//!   run many times against new data, skipping per-call planning.
 //!
 //! # Concepts
 //!
@@ -33,13 +35,16 @@
 //! - `doc/planner.md` - the execution planner: ordering, buffer reuse, and aliasing.
 //! - `doc/layout.md` - strides, zero-copy views, and the `adj_stride` iteration trick.
 //! - `doc/backends.md` - the backend/dtype split and the `mkl` feature flag.
+//! - `doc/skeleton.md` - compile-once/run-many skeletons and the slot taint system.
 
 mod tensor;
 
 pub use tensor::arange;
-pub(crate) use tensor::errors;
 pub use tensor::errors::OpError;
-pub use tensor::{CachedTensorPromise, Dimension, Layout, SliceRange, Tensor, TensorPromise};
+pub use tensor::{
+    BakedPromise, CachedTensorPromise, Dimension, Layout, MemoryMetrics, Skeleton, SkeletonPromise,
+    SkeletonSlot, SliceRange, Tensor, TensorPromise,
+};
 
 use std::ops::Neg;
 

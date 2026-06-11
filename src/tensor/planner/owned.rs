@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::Layout;
 use crate::tensor::backend::Backend;
-use crate::tensor::graph::{TensorGraphCacheNode, TensorGraphEdge, TensorGraphBaked};
+use crate::tensor::graph::{TensorGraphBaked, TensorGraphCacheNode, TensorGraphEdge};
 use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::planner::plan::CorePlan;
 use crate::tensor::planner::{ComputeKind, OutputKind};

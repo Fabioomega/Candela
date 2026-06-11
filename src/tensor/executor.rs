@@ -60,7 +60,7 @@ fn execute_output<T: NumberLike + ComputeFor<B>, B: Backend>(
 
             B::compute(op, output_buffer, layout, &inputs)
         }
-        OutputKind::InPlaceIdx(idx) => {
+        OutputKind::InPlaceIdx(idx) | OutputKind::Reference(idx) => {
             let inputs = build_inputs(computation_cache, resolved_inputs);
 
             B::compute_inplace(op, layout, inputs, *idx)
@@ -214,6 +214,7 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
                 output,
                 resolved_inputs,
                 dealloc_after,
+                ..
             } => {
                 let result =
                     execute_output(op, layout, output, resolved_inputs, &mut computation_cache);
@@ -243,7 +244,7 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
                         .insert(cache.get_node().id, cache.cache.get().unwrap().clone());
 
                     match output {
-                        OutputKind::Allocate(_) => {}
+                        OutputKind::Allocate(_) | OutputKind::Reference(_) => {}
                         OutputKind::Buffer(id) => {
                             computation_cache.remove(id);
                         }

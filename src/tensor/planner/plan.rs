@@ -26,6 +26,15 @@ pub(crate) enum OutputKind {
     /// Overwrite input at position `idx` in-place. The planner guarantees the
     /// input's buffer is not aliased by any other live node.
     InPlaceIdx(usize),
+    /// Alias the input at position `idx` at this node's layout, producing no new
+    /// buffer. The executor runs this exactly like [`InPlaceIdx`] - a layout-only
+    /// op just passes the buffer through - but unlike `InPlaceIdx` the input keeps
+    /// its own buffer ownership: nothing is allocated, freed, or renamed. The
+    /// distinction matters only to consumers that account for allocation, like the
+    /// skeleton memory report.
+    ///
+    /// [`InPlaceIdx`]: OutputKind::InPlaceIdx
+    Reference(usize),
     /// Allocate a fresh `Vec<T>` of this length.
     Allocate(usize),
 }
@@ -208,7 +217,7 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                 let resolved_inputs = build_resolved_inputs(resolved_inputs);
                 self.plan.push(ComputeKind::Op {
                     node,
-                    output: OutputKind::InPlaceIdx(input_idx),
+                    output: OutputKind::Reference(input_idx),
                     resolved_inputs,
                     dealloc_after: Vec::new(),
                 });
@@ -225,7 +234,7 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                 let resolved_inputs = build_resolved_inputs(resolved_inputs);
                 self.plan.push(ComputeKind::Op {
                     node,
-                    output: OutputKind::InPlaceIdx(input_idx),
+                    output: OutputKind::Reference(input_idx),
                     resolved_inputs,
                     dealloc_after: Vec::new(),
                 });
@@ -315,7 +324,7 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                 let resolved_inputs = build_resolved_inputs(resolved_inputs);
                 self.plan.push(ComputeKind::CachedOp {
                     cache,
-                    output: OutputKind::InPlaceIdx(input_idx),
+                    output: OutputKind::Reference(input_idx),
                     resolved_inputs,
                     dealloc_after: Vec::new(),
                 });
@@ -330,7 +339,7 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                 let resolved_inputs = build_resolved_inputs(resolved_inputs);
                 self.plan.push(ComputeKind::CachedOp {
                     cache,
-                    output: OutputKind::InPlaceIdx(input_idx),
+                    output: OutputKind::Reference(input_idx),
                     resolved_inputs,
                     dealloc_after: Vec::new(),
                 });
@@ -574,16 +583,6 @@ pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
                 state.plan_cache_node(i, cache, &op.resolved_inputs);
             }
             NodeKind::Baked(baked) => {
-                let slot_idx = state.slots.len();
-
-                state.id_slot_map.insert(baked.id, slot_idx);
-
-                state.slots.push(Slot {
-                    id: baked.id,
-                    len: baked.layout().len(),
-                    end: op.end,
-                });
-
                 state.plan.push(ComputeKind::Baked {
                     baked,
                     resolved_inputs: op.resolved_inputs.iter().map(|n| get_id(*n)).collect(),
