@@ -23,6 +23,17 @@ impl<T, B: Backend> SkeletonSlot<T, B> {
             graph: Arc::new(TensorGraphSlot::new(layout)),
         }
     }
+
+    /// A deep clone of a Slot
+    ///
+    /// Equivalent to creating a new slot with the same layout as the old one.
+    /// If you just need to reuse the slot use [`clone`] instead.
+    ///
+    /// [`clone`]: Tensor::clone
+    #[inline]
+    pub fn clone_deep(&self) -> Self {
+        Self::new(self.graph.layout().clone())
+    }
 }
 
 impl<T> SkeletonSlot<T, DefaultBackend> {
@@ -46,6 +57,20 @@ impl<T, B: Backend> Operand<T, B> for SkeletonSlot<T, B> {
 
 impl<T, B: Backend> Tainting for SkeletonSlot<T, B> {
     type Mark = Tainted;
+}
+
+impl<T, B: Backend> Clone for SkeletonSlot<T, B> {
+    /// A shallow clone of a Slot
+    ///
+    /// The copy is equivalent to the slot it was copied from. If you want
+    /// a new slot with the same layout, use [`clone_deep`] instead.
+    ///
+    /// [`clone_deep`]: Tensor::clone_deep
+    fn clone(&self) -> Self {
+        Self {
+            graph: self.graph.clone(),
+        }
+    }
 }
 
 //////////////////////////////////////////////////////////////////////////////////
@@ -284,7 +309,7 @@ impl<T: Clone + PartialEq + ComputeFor<B>, B: Backend> Skeleton<T, B> {
         })
     }
 
-    pub fn run(&self, inputs: &[Tensor<T, B>]) -> Result<Tensor<T, B>, OpError> {
+    pub fn run(&self, inputs: &[&Tensor<T, B>]) -> Result<Tensor<T, B>, OpError> {
         if inputs.len() != self.declared_slots.len() {
             return Err(OpError::IncorrectSlotAmount(
                 self.declared_slots.len(),
@@ -313,7 +338,7 @@ impl<T: Clone + PartialEq + ComputeFor<B>, B: Backend> Skeleton<T, B> {
 
     pub fn compose<C: Composable<T, B>>(
         &self,
-        inputs: &[C],
+        inputs: &[&C],
     ) -> Result<BakedPromise<T, B>, OpError> {
         if inputs.len() != self.declared_slots.len() {
             return Err(OpError::IncorrectSlotAmount(

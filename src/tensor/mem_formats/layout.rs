@@ -1,4 +1,4 @@
-use std::iter::zip;
+use std::{hash::Hash, iter::zip};
 
 use crate::tensor::{
     errors::OpError,
@@ -328,8 +328,16 @@ impl Layout {
 
 impl PartialEq for Layout {
     fn eq(&self, other: &Self) -> bool {
-        // TODO: Is this even safe?
-        self.adj_stride == other.adj_stride
+        self.shape == other.shape && self.stride == other.stride
+    }
+}
+
+impl Eq for Layout {}
+
+impl Hash for Layout {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.shape.hash(state);
+        self.stride.hash(state);
     }
 }
 
