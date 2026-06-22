@@ -66,7 +66,7 @@ pub(crate) trait Operand<T, B: Backend>: Dimension {
 /// `SkeletonPromise` are `Operand`s but not `Composable`. This
 /// exclusion guarantees that no unbound slot appears in a the materialization
 /// path.
-pub(crate) trait Composable<T, B: Backend>: Operand<T, B> {}
+pub trait Composable<T, B: Backend>: Operand<T, B> {}
 
 pub trait StreamingIterator {
     type Item<'a>
