@@ -69,7 +69,7 @@ impl<T: Clone> Storage<T> {
     }
 
     #[inline]
-    pub fn clone_deep(&self) -> Self {
+    pub fn deep_clone(&self) -> Self {
         let buffer = self.buffer.to_vec();
         Storage::from_vec(buffer)
     }
@@ -225,9 +225,9 @@ impl<T: Clone> TensorData<T> {
     }
 
     #[inline]
-    pub fn clone_deep(&self) -> Self {
+    pub fn deep_clone(&self) -> Self {
         Self {
-            storage: self.storage.clone_deep(),
+            storage: self.storage.deep_clone(),
             layout: self.layout.clone(),
         }
     }
@@ -270,7 +270,7 @@ impl<T: Clone> TensorData<T> {
         if !self.is_contiguous() {
             Self::from_iter(self.iter().cloned(), self.shape())
         } else {
-            self.clone_deep()
+            self.deep_clone()
         }
     }
 

@@ -42,7 +42,6 @@ pub(crate) enum OwnedComputeKind<T, B: Backend> {
 pub(crate) struct OwnedCorePlan<T, B: Backend> {
     pub(crate) plan: Vec<OwnedComputeKind<T, B>>,
     pub(crate) root_id: usize,
-    pub(crate) external_inputs: Vec<usize>,
 }
 
 #[inline]
@@ -99,6 +98,5 @@ pub(crate) fn from_borrowed_core_to_owned<T: Clone, B: Backend>(
     OwnedCorePlan {
         plan: from_borrowed_compute_kind_to_owned(core.plan),
         root_id: core.root_id,
-        external_inputs: core.external_inputs.clone(),
     }
 }

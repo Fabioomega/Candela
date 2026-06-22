@@ -31,7 +31,7 @@ impl<T, B: Backend> SkeletonSlot<T, B> {
     ///
     /// [`clone`]: Tensor::clone
     #[inline]
-    pub fn clone_deep(&self) -> Self {
+    pub fn deep_clone(&self) -> Self {
         Self::new(self.graph.layout().clone())
     }
 }
@@ -63,9 +63,9 @@ impl<T, B: Backend> Clone for SkeletonSlot<T, B> {
     /// A shallow clone of a Slot
     ///
     /// The copy is equivalent to the slot it was copied from. If you want
-    /// a new slot with the same layout, use [`clone_deep`] instead.
+    /// a new slot with the same layout, use [`deep_clone`] instead.
     ///
-    /// [`clone_deep`]: Tensor::clone_deep
+    /// [`deep_clone`]: Tensor::deep_clone
     fn clone(&self) -> Self {
         Self {
             graph: self.graph.clone(),
@@ -268,7 +268,7 @@ where
 }
 
 //////////////////////////////////////////////////////////////////////////////////
-pub struct Skeleton<T, B: Backend> {
+pub struct Skeleton<T, B: Backend = DefaultBackend> {
     plan: Arc<OwnedCorePlan<T, B>>,
     declared_slots: Vec<(usize, Layout)>,
     layout: Layout,
@@ -387,11 +387,7 @@ pub struct MemoryMetrics {
 }
 
 impl<T, B: Backend> Skeleton<T, B> {
-    fn memory_report_plan(
-        &self,
-        root_id: usize,
-        plan: &Vec<OwnedComputeKind<T, B>>,
-    ) -> MemoryMetrics {
+    fn memory_report_plan(&self, root_id: usize, plan: &[OwnedComputeKind<T, B>]) -> MemoryMetrics {
         let mut allocated_slots: HashMap<usize, usize> = HashMap::new();
         let mut allocated_buffers_size: Vec<usize> = Vec::new();
         let mut total_memory_allocated: usize = 0;

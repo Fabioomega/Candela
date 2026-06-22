@@ -89,10 +89,10 @@ fn clone_shared_buffer() {
 }
 
 #[test]
-fn clone_deep_separate_buffer() {
-    // clone_deep allocates a fresh buffer with same values
+fn deep_clone_separate_buffer() {
+    // deep_clone allocates a fresh buffer with same values
     let a = Tensor::from_slice(&[1.0, 2.0, 3.0], &[3]);
-    let b = a.clone_deep();
+    let b = a.deep_clone();
     assert_ne!(a.data().as_ptr(), b.data().as_ptr());
     assert_eq!(a.data(), b.data());
 }

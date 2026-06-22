@@ -80,7 +80,7 @@ fn skeleton_compose_promise<T: FloatLikeTensorElement>(#[case] _t: T) {
     let promise_output2 = promise2.clone_and_materialize();
 
     let slot = base.as_slot();
-    let slot2 = slot.clone_deep();
+    let slot2 = slot.deep_clone();
 
     let sk = (&slot + &slot2).into_skeleton(&[slot, slot2]).unwrap();
 
@@ -103,7 +103,7 @@ fn skeleton_compose_promise_same_input<T: FloatLikeTensorElement>(#[case] _t: T)
     let promise_output = promise.clone_and_materialize();
 
     let slot = base.as_slot();
-    let slot2 = slot.clone();
+    let slot2 = slot.deep_clone();
 
     let sk = (&slot + &slot2).into_skeleton(&[slot, slot2]).unwrap();
 

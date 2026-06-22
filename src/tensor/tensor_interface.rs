@@ -174,11 +174,11 @@ impl<T: Clone, B: Backend> Tensor<T, B> {
 
     /// Makes a deep copy of this tensor.
     #[inline]
-    pub fn clone_deep(&self) -> Self {
+    pub fn deep_clone(&self) -> Self {
         let data = self.graph.get();
 
         Self {
-            graph: Arc::new(TensorGraphEdge::from_tensor_data(data.clone_deep())),
+            graph: Arc::new(TensorGraphEdge::from_tensor_data(data.deep_clone())),
         }
     }
 
@@ -187,10 +187,10 @@ impl<T: Clone, B: Backend> Tensor<T, B> {
     /// The underlying buffer is shared with the original, but the new tensor carries a fresh
     /// graph ID. The planner treats it as an unrelated input - no connection is maintained to
     /// any live promises that reference the original. Use [`Tensor::clone`] to preserve that
-    /// connection, or [`Tensor::clone_deep`] for a fully independent buffer.
+    /// connection, or [`Tensor::deep_clone`] for a fully independent buffer.
     ///
     /// [`Tensor::clone`]: Tensor::clone
-    /// [`Tensor::clone_deep`]: Tensor::clone_deep
+    /// [`Tensor::deep_clone`]: Tensor::deep_clone
     #[inline]
     pub fn clone_detached(&self) -> Self {
         let data = self.graph.get();
@@ -280,10 +280,10 @@ impl<T, B: Backend> Clone for Tensor<T, B> {
     /// Equivalent to bumping an `Arc` reference count. The copy is connected to all promises
     /// that reference the original - the planner sees them as the same input node. For a copy
     /// the graph treats as unrelated, use [`clone_detached`]. For an independent buffer, use
-    /// [`clone_deep`].
+    /// [`deep_clone`].
     ///
     /// [`clone_detached`]: Tensor::clone_detached
-    /// [`clone_deep`]: Tensor::clone_deep
+    /// [`deep_clone`]: Tensor::deep_clone
     #[inline]
     fn clone(&self) -> Self {
         Self {
