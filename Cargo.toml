@@ -4,7 +4,7 @@ version = "0.1.1"
 edition = "2024"
 
 [features]
-default = ["tracing"]
+
 tracing = []
 # Enables the Intel MKL backend and makes it the `DefaultBackend`. Off by
 # default so the pure-Rust build skips compiling/linking MKL entirely.
@@ -12,7 +12,6 @@ mkl = ["dep:intel-mkl-src", "dep:intel-mkl-sys", "dep:cblas", "dep:cblas-sys"]
 
 [dev-dependencies]
 tracing-subscriber = "0.3.23"
-approx = "0.5"
 proptest = "1"
 rstest = "0.26.1"
 rstest_reuse = "0.7"
