@@ -44,9 +44,9 @@ trait EvictionPolicy {
 
 //////////////////////////////////////////////////////////////
 
-struct Unbounded;
+struct UnboundedPolicy;
 
-impl EvictionPolicy for Unbounded {
+impl EvictionPolicy for UnboundedPolicy {
     fn new(_: usize) -> Self {
         Self {}
     }
@@ -111,7 +111,7 @@ impl EvictionPolicy for LRUPolicy {
         }
 
         let [Some(recent), Some(head)] = self.order.get_disjoint_mut([&idx, &self.head]) else {
-            panic!()
+            unreachable!("on_get should only be called if we are sure that the idx exists")
         };
 
         let recent_next = recent.next;
@@ -126,7 +126,7 @@ impl EvictionPolicy for LRUPolicy {
                 .order
                 .get_disjoint_mut([&recent_previous, &recent_next])
             else {
-                panic!()
+                unreachable!("on_get should only be called if we are sure that the idx exists")
             };
 
             previous.next = recent_next;
@@ -342,6 +342,8 @@ where
     }
 }
 
+type BuildFunction<T, B> = Box<dyn Fn(&[Layout]) -> Skeleton<T, B>>;
+
 impl<P, T, B> SkeletonCache<Box<[Layout]>, P, T, B>
 where
     P: EvictionPolicy,
@@ -351,25 +353,27 @@ where
     pub fn run(
         &self,
         inputs: &[&Tensor<T, B>],
-        on_miss: &Box<dyn Fn(&[&Tensor<T, B>]) -> Skeleton<T, B>>,
+        on_miss: &BuildFunction<T, B>,
     ) -> Result<Tensor<T, B>, OpError> {
         let input_layouts: Box<[Layout]> = inputs.iter().map(|&t| t.layout().clone()).collect();
 
-        let sk: Arc<Skeleton<T, B>> = self.get_or_insert_with(&input_layouts, || on_miss(inputs));
+        let sk: Arc<Skeleton<T, B>> =
+            self.get_or_insert_with(&input_layouts, || on_miss(&input_layouts));
         sk.run(inputs)
     }
 
     pub fn compose<C>(
         &self,
         inputs: &[&C],
-        on_miss: &Box<dyn Fn(&[&C]) -> Skeleton<T, B>>,
+        on_miss: &BuildFunction<T, B>,
     ) -> Result<BakedPromise<T, B>, OpError>
     where
         C: Composable<T, B>,
     {
         let input_layouts: Box<[Layout]> = inputs.iter().map(|&t| t.layout().clone()).collect();
 
-        let sk: Arc<Skeleton<T, B>> = self.get_or_insert_with(&input_layouts, || on_miss(inputs));
+        let sk: Arc<Skeleton<T, B>> =
+            self.get_or_insert_with(&input_layouts, || on_miss(&input_layouts));
         sk.compose(inputs)
     }
 }
@@ -378,7 +382,7 @@ where
 
 struct DynamicSkeleton<T, B: Backend> {
     cache: SkeletonCache<Box<[Layout]>, LRUPolicy, T, B>,
-    build: Box<dyn Fn(&[&Tensor<T, B>]) -> Skeleton<T, B>>,
+    build: BuildFunction<T, B>,
 }
 
 impl<T, B: Backend> DynamicSkeleton<T, B>
@@ -386,7 +390,7 @@ where
     T: ComputeFor<B>,
     B: Backend,
 {
-    fn new(cache_size: usize, build: Box<dyn Fn(&[&Tensor<T, B>]) -> Skeleton<T, B>>) -> Self {
+    fn new(cache_size: usize, build: BuildFunction<T, B>) -> Self {
         Self {
             cache: SkeletonCache::new(cache_size),
             build,
@@ -395,6 +399,44 @@ where
 
     pub fn run(&self, inputs: &[&Tensor<T, B>]) -> Result<Tensor<T, B>, OpError> {
         self.cache.run(inputs, &self.build)
+    }
+
+    pub fn compose<C>(&self, inputs: &[&C]) -> Result<BakedPromise<T, B>, OpError>
+    where
+        C: Composable<T, B>,
+    {
+        self.cache.compose(inputs, &self.build)
+    }
+}
+
+//////////////////////////////////////////////////////////////
+
+struct UnboundedDynamicSkeleton<T, B: Backend> {
+    cache: SkeletonCache<Box<[Layout]>, UnboundedPolicy, T, B>,
+    build: BuildFunction<T, B>,
+}
+
+impl<T, B: Backend> UnboundedDynamicSkeleton<T, B>
+where
+    T: ComputeFor<B>,
+    B: Backend,
+{
+    fn new(cache_size: usize, build: BuildFunction<T, B>) -> Self {
+        Self {
+            cache: SkeletonCache::new(cache_size),
+            build,
+        }
+    }
+
+    pub fn run(&self, inputs: &[&Tensor<T, B>]) -> Result<Tensor<T, B>, OpError> {
+        self.cache.run(inputs, &self.build)
+    }
+
+    pub fn compose<C>(&self, inputs: &[&C]) -> Result<BakedPromise<T, B>, OpError>
+    where
+        C: Composable<T, B>,
+    {
+        self.cache.compose(inputs, &self.build)
     }
 }
 
