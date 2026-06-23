@@ -2,10 +2,8 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
-use candela::{
-    Backend, BakedPromise, Composable, ComputeFor, DefaultBackend, Dimension, Layout, OpError,
-    Skeleton, Tensor,
-};
+use candela::backend::{Backend, ComputeFor, DefaultBackend};
+use candela::{BakedPromise, Composable, Dimension, Layout, OpError, Skeleton, Tensor};
 
 trait EvictionPolicy {
     /// The constructor of the policy
@@ -17,7 +15,7 @@ trait EvictionPolicy {
     /// The get action
     ///
     /// Is called when an element is being read. This element is guaranteed
-    /// to be exist in the cache.
+    /// to exist in the cache.
     fn on_get(&mut self, idx: usize);
 
     /// The insert action
@@ -276,7 +274,7 @@ where
         }
     }
 
-    fn new(cache_size: usize) -> Self {
+    pub fn new(cache_size: usize) -> Self {
         let mut v: Vec<Option<Slot<Key, T, B>>> = Vec::with_capacity(cache_size);
         v.resize(cache_size, None);
 
@@ -292,7 +290,7 @@ where
         }))
     }
 
-    fn get_or_insert_with<F>(&self, key: &Key, build: F) -> Arc<Skeleton<T, B>>
+    pub fn get_or_insert_with<F>(&self, key: &Key, build: F) -> Arc<Skeleton<T, B>>
     where
         F: FnOnce() -> Skeleton<T, B>,
     {
@@ -324,7 +322,7 @@ where
         sk
     }
 
-    fn remove(&self, key: &Key) -> Option<Arc<Skeleton<T, B>>> {
+    pub fn remove(&self, key: &Key) -> Option<Arc<Skeleton<T, B>>> {
         let mut lock = self.0.lock().unwrap();
 
         let idx = lock.cache.map.remove(key)?;
@@ -335,7 +333,7 @@ where
         Some(slot.unwrap().sk)
     }
 
-    fn contains_key(&self, key: &Key) -> bool {
+    pub fn contains_key(&self, key: &Key) -> bool {
         let lock = self.0.lock().unwrap();
 
         lock.cache.map.contains_key(key)
@@ -380,17 +378,58 @@ where
 
 //////////////////////////////////////////////////////////////
 
-struct DynamicSkeleton<T, B: Backend> {
-    cache: SkeletonCache<Box<[Layout]>, LRUPolicy, T, B>,
+/// A cache (group) of skeletons with different shapes
+///
+/// This is a hashmap abstraction on top of a [`Skeleton`] to enable dynamic shapes.
+/// It calls the [`BuildFunction`] every time a group of tensors with never-before-seen
+/// layouts arrives, and stores the result in the cache. The cache size and eviction
+/// behaviour are determined by the chosen policy, which must implement [`EvictionPolicy`].
+///
+/// The build function must bind its slots in the same order as the layouts it receives,
+/// returning a [`Skeleton`] that supports that shape.
+struct DynamicSkeleton<T, B: Backend = DefaultBackend, P: EvictionPolicy = LRUPolicy> {
+    cache: SkeletonCache<Box<[Layout]>, P, T, B>,
     build: BuildFunction<T, B>,
 }
 
-impl<T, B: Backend> DynamicSkeleton<T, B>
+impl<P: EvictionPolicy, T, B: Backend> DynamicSkeleton<T, B, P>
 where
     T: ComputeFor<B>,
     B: Backend,
 {
-    fn new(cache_size: usize, build: BuildFunction<T, B>) -> Self {
+    /// Creates a new dynamic skeleton
+    ///
+    /// Creates a cache of at least `cache_size` items, where each entry maps a
+    /// `Layout` to a [`Skeleton`].
+    ///
+    /// On a miss it calls `build` to create and cache a new skeleton; the slots bound
+    /// in `build` must be in the same order as its `inputs` argument.
+    ///
+    /// # Examples
+    /// ```
+    /// use candela::{DynamicSkeleton, Layout, Skeleton, SkeletonSlot, Tensor};
+    /// use std::error::Error;
+    ///
+    /// fn build(inputs: &[Layout]) -> Skeleton<f32> {
+    ///     let a = SkeletonSlot::new(inputs[0].clone());
+    ///     (&a * 2.0).into_skeleton(&[a]).unwrap()
+    /// }
+    ///
+    /// fn main() -> Result<(), Box<dyn Error>> {
+    ///     let a = Tensor::from_scalar(0.3, &[4]);
+    ///     let b = Tensor::from_scalar(0.3, &[8]);
+    ///
+    ///     let sk: DynamicSkeleton<f32> = DynamicSkeleton::new(12, Box::new(build));
+    ///     let out_a = sk.run(&[&a])?;
+    ///     let out_b = sk.run(&[&b])?;
+    ///
+    ///     println!("{out_a}");
+    ///     println!("{out_b}");
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn new(cache_size: usize, build: BuildFunction<T, B>) -> Self {
         Self {
             cache: SkeletonCache::new(cache_size),
             build,
@@ -407,41 +446,33 @@ where
     {
         self.cache.compose(inputs, &self.build)
     }
+
+    // TODO: Is contains_key, remove, insert and get useful here?
+    // If a usecase ever presents itself we can add them here.
 }
+
+type UnboundedDynamicSkeleton<T, B> = DynamicSkeleton<T, B, UnboundedPolicy>;
 
 //////////////////////////////////////////////////////////////
 
-struct UnboundedDynamicSkeleton<T, B: Backend> {
-    cache: SkeletonCache<Box<[Layout]>, UnboundedPolicy, T, B>,
-    build: BuildFunction<T, B>,
+use candela::SkeletonSlot;
+use std::error::Error;
+
+fn build(inputs: &[Layout]) -> Skeleton<f32> {
+    let a = SkeletonSlot::new(inputs[0].clone());
+    (&a * 2.0).into_skeleton(&[a]).unwrap()
 }
 
-impl<T, B: Backend> UnboundedDynamicSkeleton<T, B>
-where
-    T: ComputeFor<B>,
-    B: Backend,
-{
-    fn new(cache_size: usize, build: BuildFunction<T, B>) -> Self {
-        Self {
-            cache: SkeletonCache::new(cache_size),
-            build,
-        }
-    }
+fn main() -> Result<(), Box<dyn Error>> {
+    let a = Tensor::from_scalar(0.3, &[4]);
+    let b = Tensor::from_scalar(0.3, &[8]);
 
-    pub fn run(&self, inputs: &[&Tensor<T, B>]) -> Result<Tensor<T, B>, OpError> {
-        self.cache.run(inputs, &self.build)
-    }
+    let sk: DynamicSkeleton<f32> = DynamicSkeleton::new(12, Box::new(build));
+    let out_a = sk.run(&[&a])?;
+    let out_b = sk.run(&[&b])?;
 
-    pub fn compose<C>(&self, inputs: &[&C]) -> Result<BakedPromise<T, B>, OpError>
-    where
-        C: Composable<T, B>,
-    {
-        self.cache.compose(inputs, &self.build)
-    }
-}
+    println!("{out_a}");
+    println!("{out_b}");
 
-//////////////////////////////////////////////////////////////
-
-fn main() {
-    println!("Hello, World");
+    Ok(())
 }

@@ -97,3 +97,9 @@ pub trait Backend: Sized + Debug {
 pub type DefaultBackend = cpu_mkl::CpuMkl;
 #[cfg(not(feature = "mkl"))]
 pub type DefaultBackend = cpu_pure::CpuPure;
+
+pub mod implementation {
+    #[cfg(feature = "mkl")]
+    pub use crate::tensor::backend::cpu_mkl::CpuMkl;
+    pub use crate::tensor::backend::cpu_pure::CpuPure;
+}

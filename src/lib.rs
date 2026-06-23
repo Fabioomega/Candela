@@ -40,7 +40,6 @@
 mod tensor;
 
 pub use tensor::arange;
-pub use tensor::backend::{Backend, ComputeFor, DefaultBackend};
 pub use tensor::errors::OpError;
 pub use tensor::traits::Composable;
 pub use tensor::{
@@ -48,8 +47,14 @@ pub use tensor::{
     SkeletonSlot, SliceRange, Tensor, TensorPromise,
 };
 
+pub mod backend {
+    pub use crate::tensor::backend::implementation::*;
+    pub use crate::tensor::backend::{Backend, ComputeFor, DefaultBackend};
+}
+
 use std::ops::Neg;
 
+use crate::backend::{ComputeFor, DefaultBackend};
 use crate::tensor::FromIndex;
 use crate::tensor::definitions::NumberLike;
 use crate::tensor::ops::CanMatMul;
