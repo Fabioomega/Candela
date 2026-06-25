@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
+use crate::skeleton::Skeleton;
 use crate::tensor::backend::{Backend, ComputeFor, DefaultBackend};
-use crate::{Composable, Layout, OpError, Tensor};
+use crate::{Composable, Dimension, Layout, OpError, Tensor};
 
 use super::cache::{BuildFunction, EvictionPolicy, LRUPolicy, SkeletonCache, UnboundedPolicy};
 use super::frame::BakedPromise;
@@ -9,7 +12,7 @@ use super::frame::BakedPromise;
 /// This is a hashmap abstraction on top of a [`Skeleton`] to enable dynamic shapes.
 /// It calls the [`BuildFunction`] every time a group of tensors with never-before-seen
 /// layouts arrives, and stores the result in the cache. The cache size and eviction
-/// behaviour are determined by the chosen policy, which must implement [`EvictionPolicy`].
+/// behavior are determined by the chosen policy, which must implement [`EvictionPolicy`].
 ///
 /// The build function must bind its slots in the same order as the layouts it receives,
 /// returning a [`Skeleton`] that supports that shape.
@@ -60,6 +63,7 @@ where
     ///     Ok(())
     /// }
     /// ```
+    #[inline]
     pub fn new(cache_size: usize, build: BuildFunction<T, B>) -> Self {
         Self {
             cache: SkeletonCache::new(cache_size),
@@ -67,10 +71,12 @@ where
         }
     }
 
+    #[inline]
     pub fn run(&self, inputs: &[&Tensor<T, B>]) -> Result<Tensor<T, B>, OpError> {
         self.cache.run(inputs, &self.build)
     }
 
+    #[inline]
     pub fn compose<C>(&self, inputs: &[&C]) -> Result<BakedPromise<T, B>, OpError>
     where
         C: Composable<T, B>,
@@ -78,8 +84,39 @@ where
         self.cache.compose(inputs, &self.build)
     }
 
-    // TODO: Is contains_key, remove, insert and get useful here?
-    // If a usecase ever presents itself we can add them here.
+    /// Removes the entry for `key`
+    ///
+    /// Returns the skeleton that was stored, or `None` if `key` was not present. The
+    /// freed slot is returned to the cache for reuse.
+    #[inline]
+    pub fn remove(&self, key: &[&Tensor<T, B>]) -> Option<Arc<Skeleton<T, B>>> {
+        let layouts: Box<[Layout]> = key.iter().map(|&x| x.layout().clone()).collect();
+
+        self.cache.remove(&layouts)
+    }
+
+    /// Removes the entry for `key` via layout
+    ///
+    /// Same as [`Self::remove`] but using layouts instead.
+    #[inline]
+    pub fn remove_by_layout(&self, key: &[Layout]) -> Option<Arc<Skeleton<T, B>>> {
+        self.cache.remove(key)
+    }
+
+    /// Returns whether `key` currently has an entry in the cache
+    #[inline]
+    pub fn contains_key(&self, key: &[&Tensor<T, B>]) -> bool {
+        let layouts: Box<[Layout]> = key.iter().map(|&x| x.layout().clone()).collect();
+
+        self.cache.contains_key(&layouts)
+    }
+
+    /// Returns whether `key` currently has an entry in the cache
+    /// by layout
+    #[inline]
+    pub fn contains_key_by_layout(&self, key: &[Layout]) -> bool {
+        self.cache.contains_key(key)
+    }
 }
 
 pub type UnboundedDynamicSkeleton<T, B> = DynamicSkeleton<T, B, UnboundedPolicy>;

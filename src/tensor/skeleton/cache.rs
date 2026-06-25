@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
@@ -349,7 +350,11 @@ where
     ///
     /// Returns the skeleton that was stored, or `None` if `key` was not present. The
     /// freed slot is returned to the cache for reuse.
-    pub fn remove(&self, key: &Key) -> Option<Arc<Skeleton<T, B>>> {
+    pub fn remove<Q>(&self, key: &Q) -> Option<Arc<Skeleton<T, B>>>
+    where
+        Key: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let mut lock = self.0.lock().unwrap();
 
         let idx = lock.cache.map.remove(key)?;
@@ -361,7 +366,11 @@ where
     }
 
     /// Returns whether `key` currently has an entry in the cache
-    pub fn contains_key(&self, key: &Key) -> bool {
+    pub fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        Key: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
         let lock = self.0.lock().unwrap();
 
         lock.cache.map.contains_key(key)
@@ -386,6 +395,9 @@ where
         inputs: &[&Tensor<T, B>],
         on_miss: &BuildFunction<T, B>,
     ) -> Result<Tensor<T, B>, OpError> {
+        // TODO: this clones every input layout on each call, even on a cache hit where
+        // nothing owned is needed. A raw_entry-based lookup could build the owned key only
+        // on a miss and skip the allocation entirely on hits.
         let input_layouts: Box<[Layout]> = inputs.iter().map(|&t| t.layout().clone()).collect();
 
         let sk: Arc<Skeleton<T, B>> =
