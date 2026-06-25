@@ -103,7 +103,7 @@ impl<T: Numeric, B: Backend> BakedPromise<T, B> {
         // The promise can always be unwrapped as it's a noop
         unsafe {
             TensorPromise::new(
-                super::ops::def_op::OpKind::NoOp,
+                crate::tensor::ops::def_op::OpKind::NoOp,
                 Box::new([NodeKind::Baked(self.graph.clone())]),
             )
             .unwrap_unchecked()
@@ -309,6 +309,36 @@ impl<T: Clone + PartialEq + ComputeFor<B>, B: Backend> Skeleton<T, B> {
         })
     }
 
+    /// Executes the compiled plan against `inputs` and returns the result.
+    ///
+    /// `inputs` supplies one [`Tensor`] per declared slot, in the order the
+    /// slots were passed to [`into_skeleton`]. No planning happens here: the
+    /// stored `OwnedCorePlan` is run directly.
+    ///
+    /// [`into_skeleton`]: SkeletonPromise::into_skeleton
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::IncorrectSlotAmount`] if `inputs.len()` differs from
+    /// the number of declared slots, or [`OpError::NotSameLayoutAtSlot`] if an
+    /// input's [`Layout`] does not match the layout its slot was declared with.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::SkeletonSlot;
+    /// use candela::{Layout, Tensor};
+    ///
+    /// // The same compiled plan, executed against two different inputs.
+    /// let slot = SkeletonSlot::new(Layout::from_shape(&[4], 0));
+    /// let skeleton = (&slot * 2.0 + 1.0).into_skeleton(std::slice::from_ref(&slot))?;
+    ///
+    /// let a = skeleton.run(&[&Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0], &[4])])?;
+    /// let b = skeleton.run(&[&Tensor::from_scalar(5.0, &[4])])?;
+    /// assert_eq!(a.data(), &[1.0, 3.0, 5.0, 7.0]);
+    /// assert_eq!(b.data(), &[11.0; 4]);
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     pub fn run(&self, inputs: &[&Tensor<T, B>]) -> Result<Tensor<T, B>, OpError> {
         if inputs.len() != self.declared_slots.len() {
             return Err(OpError::IncorrectSlotAmount(
@@ -336,6 +366,50 @@ impl<T: Clone + PartialEq + ComputeFor<B>, B: Backend> Skeleton<T, B> {
         Ok(Tensor::from_data(output))
     }
 
+    /// Embeds the compiled plan as a single node in a larger graph.
+    ///
+    /// Where [`run`] executes the plan and hands back a finished [`Tensor`],
+    /// `compose` wires `inputs` into the skeleton's slots and returns a
+    /// [`BakedPromise`]. The embedded plan is opaque to the surrounding graph:
+    /// the outer planner treats it as one already-optimized node and does not
+    /// re-plan or fuse across the boundary.
+    ///
+    /// The inputs are [`Composable`] operands ([`Tensor`], [`TensorPromise`],
+    /// another [`BakedPromise`]); a [`SkeletonSlot`] is not `Composable`, so a
+    /// composed graph never carries an unbound slot into materialization.
+    /// `inputs` supplies one operand per declared slot, in the order the slots
+    /// were passed to [`into_skeleton`].
+    ///
+    /// [`run`]: Skeleton::run
+    /// [`into_skeleton`]: SkeletonPromise::into_skeleton
+    /// [`Composable`]: crate::Composable
+    /// [`TensorPromise`]: crate::TensorPromise
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::IncorrectSlotAmount`] if `inputs.len()` differs from
+    /// the number of declared slots, or [`OpError::NotSameLayoutAtSlot`] if an
+    /// input's [`Layout`] does not match the layout its slot was declared with.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::SkeletonSlot;
+    /// use candela::{Layout, Tensor};
+    ///
+    /// let lhs = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[4]);
+    /// let rhs = Tensor::from_scalar(10.0, &[4]);
+    ///
+    /// // Compile `a + b` over two slots, then splice it into a bigger expression.
+    /// let a = SkeletonSlot::new(Layout::from_shape(&[4], 0));
+    /// let b = a.deep_clone();
+    /// let sum = (&a + &b).into_skeleton(&[a, b])?;
+    ///
+    /// let baked = sum.compose(&[&lhs, &rhs])?;
+    /// let result = (baked * 2.0).materialize();
+    /// assert_eq!(result.data(), &[22.0, 24.0, 26.0, 28.0]);
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     pub fn compose<C: Composable<T, B>>(
         &self,
         inputs: &[&C],
@@ -374,15 +448,15 @@ impl<T, B: Backend> Dimension for Skeleton<T, B> {
 //////////////////////////////////////////////////////////////////////////////////
 #[derive(Debug)]
 pub struct MemoryMetrics {
-    // peak memory usage in bytes
+    /// peak memory usage in bytes
     pub peak_memory_usage: usize,
-    // number of allocations performed
+    /// number of allocations performed
     pub total_number_of_allocations: usize,
-    // the sizes, in bytes, of all allocated buffers
+    /// the sizes, in bytes, of all allocated buffers
     pub allocated_buffers_size: Vec<usize>,
-    // total memory allocated in bytes
+    /// total memory allocated in bytes
     pub total_memory_allocated: usize,
-    // the size, in bytes, of the output node
+    /// the size, in bytes, of the output node
     pub output_memory_usage: usize,
 }
 

@@ -23,7 +23,7 @@
 //! - [`TensorPromise`] - an unevaluated computation graph; `.materialize()` runs it.
 //! - [`CachedTensorPromise`] - a promise that keeps its result alive for reuse
 //!   across separate materializations.
-//! - [`Skeleton`] - a graph compiled once over [`SkeletonSlot`] placeholders and
+//! - [`Skeleton`](skeleton::Skeleton) - a graph compiled once over [`SkeletonSlot`](skeleton::SkeletonSlot) placeholders and
 //!   run many times against new data, skipping per-call planning.
 //!
 //! # Concepts
@@ -42,14 +42,19 @@ mod tensor;
 pub use tensor::arange;
 pub use tensor::errors::OpError;
 pub use tensor::traits::Composable;
-pub use tensor::{
-    BakedPromise, CachedTensorPromise, Dimension, Layout, MemoryMetrics, Skeleton, SkeletonPromise,
-    SkeletonSlot, SliceRange, Tensor, TensorPromise,
-};
+pub use tensor::{CachedTensorPromise, Dimension, Layout, SliceRange, Tensor, TensorPromise};
 
 pub mod backend {
     pub use crate::tensor::backend::implementation::*;
     pub use crate::tensor::backend::{Backend, ComputeFor, DefaultBackend};
+}
+
+pub mod skeleton {
+    pub use crate::tensor::skeleton::{
+        BakedPromise, BuildFunction, DynamicSkeleton, EvictionPolicy, LRUPolicy, MemoryMetrics,
+        Skeleton, SkeletonCache, SkeletonPromise, SkeletonSlot, UnboundedDynamicSkeleton,
+        UnboundedPolicy,
+    };
 }
 
 use std::ops::Neg;

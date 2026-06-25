@@ -49,7 +49,7 @@ let tensor = Tensor::from_scalar(2.0, &[8]);
 let slot = tensor.as_slot();
 
 // A slot created from thin air
-let i_am_different = Slot::new(Layout::from_shape(&[8], 0));
+let i_am_different = SkeletonSlot::new(Layout::from_shape(&[8], 0));
 ```
 
 ## SkeletonPromise

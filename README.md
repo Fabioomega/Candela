@@ -102,6 +102,8 @@ You pay the memory cost of keeping the cache alive, which is why this is opt-in.
 - Activation ops - `relu`, `tanh` (more landing incrementally)
 - Full stride/offset layout system for non-contiguous tensors
 - Opt-in result caching via `CachedTensorPromise`
+- Plan-once / run-many skeletons - pre-planned graphs over slot placeholders
+  (see [doc/skeleton.md](doc/skeleton.md))
 - Built-in `tracing` instrumentation (feature-gated)
 - `arange!`, `srange!`, `zeros!`, `ones!` convenience macros
 
@@ -135,6 +137,7 @@ If you want to understand how things work under the hood:
 - [doc/planner.md](doc/planner.md) - the execution planner: how Candela decides what to compute, in what order, and which buffers to reuse
 - [doc/layout.md](doc/layout.md) - the memory layout system: strides, zero-copy views, and the `adj_stride` iteration trick
 - [doc/backends.md](doc/backends.md) - the backend/dtype split: how `Tensor<T, B>` decouples element type from compute device, the `mkl` feature flag, and how to add a backend
+- [doc/skeleton.md](doc/skeleton.md) - skeletons: compile a graph once, run it many times, and the slot/taint machinery that makes forgetting a slot a compile error
 
 ---
 

@@ -10,7 +10,7 @@ mod iter;
 mod macros;
 mod mem_formats;
 mod planner;
-mod skeleton;
+pub(crate) mod skeleton;
 mod storage;
 pub(crate) mod traits;
 
@@ -23,7 +23,6 @@ pub use convenience::*;
 pub use mem_formats::layout::Layout;
 pub use mem_formats::slice::SliceRange;
 pub use promise::{CachedTensorPromise, TensorPromise};
-pub use skeleton::{BakedPromise, MemoryMetrics, Skeleton, SkeletonPromise, SkeletonSlot};
 pub use tensor_interface::Tensor;
 pub use traits::Dimension;
 pub(crate) use traits::FromIndex;
