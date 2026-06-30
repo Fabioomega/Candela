@@ -1,11 +1,11 @@
 [package]
 name = "candela"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 
 [features]
 
-tracing = []
+tracing = ["dep:tracing"]
 # Enables the Intel MKL backend and makes it the `DefaultBackend`. Off by
 # default so the pure-Rust build skips compiling/linking MKL entirely.
 mkl = ["dep:intel-mkl-src", "dep:intel-mkl-sys", "dep:cblas", "dep:cblas-sys"]
@@ -17,7 +17,7 @@ rstest = "0.26.1"
 rstest_reuse = "0.7"
 
 [dependencies]
-tracing = "0.1.44"
+tracing = { version = "0.1.44", optional = true }
 intel-mkl-src = { version = "0.8.1", features = [
     "mkl-static-lp64-iomp",
 ], optional = true }

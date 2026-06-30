@@ -37,17 +37,17 @@ pub trait ComputeFor<B: Backend>: Dtype {
 
 /// Compute strategy used by [`Tensor`](crate::tensor::Tensor) and the planner
 /// to execute graph nodes. A `Backend` impl is a zero-sized policy type; all
-/// state lives in the [`TensorData`] buffers passed through `compute`.
+/// state lives in the `TensorData` buffers passed through `compute`.
 ///
 /// # Required behaviour
 ///
 /// Implementations must accept stride-0 batch axes in
-/// [`OpKind::MatMul`](crate::tensor::ops::def_op::OpKind::MatMul). A batched
+/// `OpKind::MatMul`. A batched
 /// matmul whose leading axis has stride 0 is computed by re-reading the same
 /// matrix per batch iteration; the op layer relies on this to skip
 /// materializing batch broadcasts.
 pub trait Backend: Sized + Debug {
-    /// `true` if [`OpKind::MatMul`](crate::tensor::ops::def_op::OpKind::MatMul)
+    /// `true` if `OpKind::MatMul`
     /// accepts a 2D input whose strides describe a transposed view
     /// (`row_stride == 1`, `col_stride > 1`) - i.e. the underlying GEMM is
     /// invoked with a trans-flag and no copy is required. The fast path is
@@ -57,7 +57,7 @@ pub trait Backend: Sized + Debug {
     /// When `false`, the op layer inserts an `AsContiguous` on any matmul
     /// input that is not already contiguous.
     const SUPPORTS_2D_TRANSPOSED_MATMUL: bool = Self::SUPPORTS_NON_CONTIGUOUS_MATMUL;
-    /// `true` if [`OpKind::MatMul`](crate::tensor::ops::def_op::OpKind::MatMul)
+    /// `true` if `OpKind::MatMul`
     /// accepts any memory configuration as long the last 2 axis are contiguous.
     ///
     /// When `false`, the op layer inserts an `AsContiguous` on any matmul
@@ -65,7 +65,7 @@ pub trait Backend: Sized + Debug {
     const SUPPORTS_NON_CONTIGUOUS_MATMUL: bool;
 
     /// Run `op` over `inputs` into a fresh allocation. `output_buffer` is the
-    /// destination `Vec<T>`; the returned [`TensorData`] wraps it with
+    /// destination `Vec<T>`; the returned `TensorData` wraps it with
     /// `output_layout`.
     fn compute<T>(
         op: &OpKind<T>,

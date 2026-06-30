@@ -21,8 +21,7 @@ use crate::tensor::traits::{Composable, Dimension, Numeric, Operand, Promising};
 /// A lazy computation that runs when you call [`.materialize()`].
 ///
 /// Building a `TensorPromise` chain allocates no intermediate tensors - the
-/// graph is constructed, not evaluated. Compatible scalar operations are fused
-/// during construction so the work is already minimised before execution begins.
+/// graph is constructed, not evaluated.
 ///
 /// [`.materialize()`]: TensorPromise::materialize
 ///
@@ -129,6 +128,12 @@ impl<T: NumberLike + ComputeFor<B>, B: Backend> TensorPromise<T, B> {
         Tensor::from_data(self.graph.compute())
     }
 
+    /// Creates a [`SkeletonSlot`] shaped like this promise's output.
+    ///
+    /// The slot is an input placeholder for a [`Skeleton`]. It has the promise's
+    /// [`Layout`] but holds no data.
+    ///
+    /// [`Skeleton`]: crate::skeleton::Skeleton
     pub fn as_slot(&self) -> SkeletonSlot<T, B> {
         SkeletonSlot::new(self.layout().clone())
     }
@@ -279,6 +284,12 @@ impl<T: NumberLike + ComputeFor<B>, B: Backend> CachedTensorPromise<T, B> {
         Tensor::from_data(self.graph.compute())
     }
 
+    /// Creates a [`SkeletonSlot`] shaped like this promise's output.
+    ///
+    /// The slot is an input placeholder for a [`Skeleton`]. It has the promise's
+    /// [`Layout`] but holds no data.
+    ///
+    /// [`Skeleton`]: crate::skeleton::Skeleton
     pub fn as_slot(&self) -> SkeletonSlot<T, B> {
         SkeletonSlot::new(self.layout().clone())
     }

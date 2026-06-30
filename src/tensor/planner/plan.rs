@@ -26,14 +26,10 @@ pub(crate) enum OutputKind {
     /// Overwrite input at position `idx` in-place. The planner guarantees the
     /// input's buffer is not aliased by any other live node.
     InPlaceIdx(usize),
-    /// Alias the input at position `idx` at this node's layout, producing no new
-    /// buffer. The executor runs this exactly like [`InPlaceIdx`] - a layout-only
-    /// op just passes the buffer through - but unlike `InPlaceIdx` the input keeps
-    /// its own buffer ownership: nothing is allocated, freed, or renamed. The
-    /// distinction matters only to consumers that account for allocation, like the
-    /// skeleton memory report.
-    ///
-    /// [`InPlaceIdx`]: OutputKind::InPlaceIdx
+    /// Alias the input at position `idx` at this node's layout, copying no
+    /// elements. The executor clones the input's handle and re-points its layout;
+    /// the input keeps its buffer ownership and stays in the live-buffer cache, so
+    /// nothing is allocated, freed, or renamed.
     Reference(usize),
     /// Allocate a fresh `Vec<T>` of this length.
     Allocate(usize),

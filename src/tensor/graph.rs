@@ -210,13 +210,15 @@ impl<T: NumberLike + ComputeFor<B>, B: Backend> Promising for TensorGraphNode<T,
     /// listed in `dealloc_after` immediately so intermediate buffers are freed as
     /// soon as they're no longer needed.
     ///
-    /// Three [`OutputKind`] variants drive execution:
+    /// Four [`OutputKind`] variants drive execution:
     /// - **Allocate** - allocate a fresh buffer and compute into it.
     /// - **Buffer reuse** - extract a previously freed buffer from the cache and
     ///   compute into it without allocating.
-    /// - **In-place** - mutate one of the op's inputs directly. Layout-only ops
-    ///   (`View`, `Slice`, `Transpose`) also use this path; they share the input
-    ///   buffer at a new layout without running any computation.
+    /// - **In-place** - take one of the op's inputs out of the cache and mutate its
+    ///   buffer directly; only valid when that buffer is uniquely owned.
+    /// - **Reference** - layout-only ops (`View`, `Slice`, `Transpose`) re-point an
+    ///   input at a new layout, copying no elements. The input's handle is cloned and
+    ///   its buffer stays in the cache, shared with the other nodes that read it.
     ///
     /// All alias resolution is performed at plan time. Each step's
     /// `resolved_inputs` contains the concrete `computation_cache` IDs to use.

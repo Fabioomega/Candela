@@ -250,6 +250,12 @@ impl<T: Numeric, B: Backend> Tensor<T, B> {
         self.graph.get().item()
     }
 
+    /// Creates a [`SkeletonSlot`] shaped like this tensor.
+    ///
+    /// The slot is an input placeholder for a [`Skeleton`]. It has the tensor's
+    /// [`Layout`] but holds no data.
+    ///
+    /// [`Skeleton`]: crate::skeleton::Skeleton
     pub fn as_slot(&self) -> SkeletonSlot<T, B> {
         SkeletonSlot::new(self.layout().clone())
     }

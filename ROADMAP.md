@@ -1,8 +1,100 @@
 # Candela - Roadmap
 
-Phases are ordered by dependency. Complete earlier phases before starting later ones.
+Phases are ordered by dependency: complete earlier phases before starting later ones.
+Versions group phases into releases - see the Release Plan below.
 
 Status markers: `[ ]` not started · `[~]` in progress · `[x]` done
+
+---
+
+## Release Plan
+
+Phases answer "what must exist before what." Versions answer "what ships together,
+and what's the story." Every release should have a pitch that fits in one line.
+
+| Version | Story | Contents |
+|---------|-------|----------|
+| 0.1 | A correct lazy tensor engine | Phases 1–7 (shipped) |
+| 0.2 | Skeletons: compile once, run many, know your costs | Phase 8 + slot ergonomics + `memory_report` + skeleton cache (details below) |
+| 0.3 | Measurement, and the speedups it unlocks | Benchmark suite, rayon, tiled contiguous fusion, skeleton buffer pool, external output buffers (details below) |
+| 0.4 | The fusion rewrite | Phase 9 |
+| 0.5 | Runs a real model on CPU | Phases 10 + 11 (blocks + safetensors I/O) |
+| 0.6 | CUDA | Phase 12 |
+| 0.7 | fp16 / bf16 | Phase 13 |
+| 0.8 | Gradients | Phase 14 (gradients + Stitch multi-output) |
+| 0.9 | ONNX import | Phase 15 |
+| 1.0 | Stability promise | No new features - the API stops moving |
+
+### Versioning policy
+
+Pre-1.0, Cargo treats `0.x → 0.(x+1)` as breaking and `0.x.y → 0.x.(y+1)` as
+compatible. So: a **minor bump is a release arc** and is allowed to break the API;
+a **patch bump is fixes and small additive features** between arcs. Don't agonize
+over whether a feature is "major" - before 1.0 there's no such thing, and each
+release's notes simply say whether it broke anything. CUDA possibly changing the
+`Backend` trait is a normal 0.x bump like every other arc.
+
+A feature that no phase mentions ships with the version whose *story* it serves:
+benchmarks and rayon belong to 0.3 because that arc is about measurement; tensor
+saving belongs to 0.5 because that arc is about real models. A feature that serves
+no planned story waits, or goes out as a patch if it's small and additive.
+
+`1.0` is a promise, not a feature: it lands after a full arc completes without
+needing an API break. ONNX import is purely additive, so if the API is stable by
+0.8, 1.0 can land before the importer rather than after - the table shows the
+conservative order.
+
+### v0.2 in detail (the current arc)
+
+Beyond finishing Phase 8 (tests, rustdoc - see the phase):
+
+- **Slot ergonomics.** `SkeletonSlot::from_shape(&[4])` locked to `DefaultBackend`
+  (mirroring the tensor constructors) so `T` infers from use; a
+  `B = DefaultBackend` type-parameter default so the type is writable as
+  `SkeletonSlot<f64>`; settle the `into_skeleton` naming before the API freezes
+  (`into_` conventionally consumes, but it borrows today).
+- **`Skeleton::memory_report()`.** Peak bytes, allocation count, buffer sizes -
+  read straight off the compiled plan, which already knows all three. Turns the
+  README's "Candela can tell you the resources before it runs" into present tense.
+- **Skeleton cache.** Dynamic shapes by keyed recompilation, built entirely on the
+  public API as both a usable default and a reference for custom versions. Key is
+  the tuple of *all* slot layouts (everything `run` validates), a builder closure
+  fires on miss, and eviction is a small `EvictionPolicy` trait - LRU and
+  unbounded ship; anything fancier is a user impl.
+
+Memory *pooling* is deliberately not here: it's a performance claim, and 0.2 has
+no benchmarks to back it. It moves to 0.3.
+
+### v0.3 in detail
+
+`doc/performance.md`'s order of operations, with the benchmark suite promoted to
+first - nothing after it is provable without it:
+
+1. Benchmark suite (`benches/`, criterion; workload set from `doc/performance.md`)
+2. Rayon parallelism for elementwise + reductions, threshold-gated
+3. Tiled fusion on the contiguous `FusedScalar` path
+4. Per-skeleton buffer pool (deferred from 0.2; opt-in, per the allocation philosophy)
+5. External output buffers (`bind`): the caller supplies the destination memory a
+   computation writes into - the dual of the input-slot mechanism, and the same
+   subsystem as the pool above seen from the user's end (the pool is the skeleton
+   bringing reusable buffers; `bind` is the caller bringing them)
+
+Each item lands with the benchmark that justifies it. The fusion *rewrite* is not
+in this arc - it's the architecturally risky one and gets 0.4 to itself.
+
+**External buffers in detail.** `bind` on any promise marks a node as an output
+boundary - a buffer-less `Binded` marker, discovered by the same graph walk that
+already collects input slots, so there's no parallel list to maintain. A separate
+`materialize_with_binded` (and a skeleton `run` variant) takes the buffers and hands
+back a struct of the filled, *owned* buffers, addressed by a handle `bind` mints -
+never a user-invented string - or positionally for a small static set. Ownership is
+the safety story: the buffer is moved in, opaque while bound, and returned only once
+the write is done, so there's no lock and no aliasing window. It unlocks
+user-allocated arenas and skeleton introspection (bind any intermediate to read it
+afterwards - at the cost of forfeiting that node's early reclaim), and `memory_report`
+grows an internal-vs-external split: what the skeleton allocates, and what memory it
+expects you to bring. It's benchmark-gated like the rest of this arc - the arena/reuse
+win is a perf claim, and 0.3 is where it becomes provable.
 
 ---
 
@@ -52,8 +144,7 @@ assert_eq!(result.data(), &[-1.0, 0.0, 1.0, 2.0]);
 
 ### Documentation (Done)
 - Document the execution plan struct and the liveness analysis algorithm
-- Add a doc comment to `TensorGrap`
-- hNode::compute` explaining the execution model
+- Add a doc comment to `TensorGraphNode::compute` explaining the execution model
 
 ---
 
@@ -244,7 +335,7 @@ assert_eq!(t.max(0, false).materialize().data(), &[5.0]);
 
 ---
 
-## Phase 6 - f32 Support and Activation Ops (~Done)
+## Phase 6 - f32 Support and Activation Ops (Done, except `sigmoid`)
 
 **Goal:** Support `f32` tensors in addition to `f64`, and add `relu`, `sigmoid`, and
 `tanh` as first-class ops.
@@ -253,7 +344,10 @@ assert_eq!(t.max(0, false).materialize().data(), &[5.0]);
 expand usability. Being scalar ops, activations automatically participate in fusion
 without any new fusion rules.
 
-**Status:** f32 support is in. Activation ops (`relu`, `sigmoid`, `tanh`) still to land.
+**Status:** f32 support is in. `relu` and `tanh` landed (see
+`examples/activations.rs`). `sigmoid` is deferred: it decomposes into a fused
+chain once cross-kind fusion exists (`doc/performance.md`, item 5), so landing it
+now would mean a custom path that gets rewritten anyway.
 
 ### Tests
 ```rust
@@ -335,7 +429,7 @@ assert_eq!((t * 3.0).materialize().data(), &[6.0; 4]);
 
 ---
 
-## Phase 8 - PromiseSkeleton
+## Phase 8 - Skeletons (v0.2) (Done)
 
 **Goal:** Pre-compile the execution plan once for a fixed graph topology and reuse it
 across iterations with different data, avoiding the cost of re-planning on every call.
@@ -345,38 +439,73 @@ Skeletons let benchmarks measure compute alone - necessary for honest numbers be
 autodiff piles more nodes onto every graph. Skeletons also unlock real production
 patterns (preprocessing pipelines, repeated inference) that don't require autograd.
 
-**What this also gives us:** a natural home for caching the topological sort and the
-fusion-pass result (both of which currently re-run on every `.materialize()`), and
-for amortising buffer allocation via a per-skeleton memory pool.
+**What shipped** (the API grew past the original `PromiseSkeleton` sketch - see
+`doc/skeleton.md` for the full story):
 
-### Tests
+- `SkeletonSlot` - a typed hole in the graph: a `Layout` with no data behind it.
+  Built from a `Layout` directly or borrowed from an existing tensor/promise via
+  `.as_slot()`.
+- `SkeletonPromise` - what any op chain containing a slot becomes. Enforced at
+  the type level (the "taint algebra"): an expression with a slot anywhere in
+  its lineage has no `.materialize()`; the only exit is `into_skeleton`.
+- `Skeleton` - the compiled template: an owned plan plus the declared slot list.
+  `run(&[Tensor])` executes it; slots bind by identity, in declaration order.
+- `BakedPromise` - a skeleton bound over concrete inputs via `Skeleton::compose`,
+  embedding the compiled plan as a single `Baked` node inside a larger graph.
+
+**Still open:** caching the fusion-pass result and amortising buffer allocation via
+a per-skeleton memory pool. Right now the *plan* is reused across `run` calls but
+the buffers are re-allocated each time. Plan introspection (peak memory, allocation
+count - the plan already knows both) would make the README's "Candela can tell you
+the resources before it runs" promise real, nearly for free.
+
+### Tests (to do)
+- [X] Every error path: `IncorrectSlotAmount`, `NotSameSlot`, `NotSameLayoutAtSlot`
+- [X] Multi-slot expressions; the same slot used twice in one expression
+- [X] Re-running one skeleton with different data reuses the plan and matches
+      `.materialize()` on the equivalent graph
+- [X] A skeleton containing matmul and a reduction, not just scalar chains
+- [X] `compose` + `BakedPromise::as_promise().materialize()` round-trip
+- [X] Layout strictness: a same-shape but transposed input is rejected at `run`
+
 ```rust
-// Skeleton and materialize produce identical results
-let t_slot = Slot::new(&[4]);
-let skeleton = (t_slot.as_promise() * 2.0 + 1.0).into_skeleton();
+// Skeleton and materialize produce identical results (real API)
+let slot = SkeletonSlot::<f64, _>::new(Layout::from_shape(&[4], 0));
+let skeleton = (&slot * 2.0 + 1.0).into_skeleton(std::slice::from_ref(&slot))?;
 
-let input = arange(4);
-let from_skeleton    = skeleton.run(&[&input]);
+let input = Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0], &[4]);
+let from_skeleton    = skeleton.run(std::slice::from_ref(&input))?;
 let from_materialize = (input.as_promise() * 2.0 + 1.0).materialize();
 assert_eq!(from_skeleton.data(), from_materialize.data());
 
 // Re-running with different data uses the same plan
 let input2  = Tensor::from_scalar(5.0, &[4]);
-let result2 = skeleton.run(&[&input2]);
+let result2 = skeleton.run(std::slice::from_ref(&input2))?;
 assert_eq!(result2.data(), &[11.0; 4]);
 ```
 
 ### Documentation
-- Add `PromiseSkeleton` to `README.md` with a training-loop example
-- Document the slot-binding API
+- [x] Create `doc/skeleton.md` - the slot/promise/skeleton/baked taxonomy and the
+      taint algebra
+- [x] Add skeletons to `README.md` with an example
+- [X] Re-export the skeleton types from the crate root and add them to the
+      `lib.rs` type map
+- [X] Rustdoc with `# Examples` / `# Errors` on `into_skeleton`, `run`, `compose`
 
 ---
 
-## Phase 9 - Fusion Rewrite Pass and FusedElementwise
+## Phase 9 - Fusion Rewrite Pass and FusedElementwise (v0.4)
 
 **Goal:** Move fusion out of `TensorGraphNode::new` into a dedicated rewrite pass over
 the DAG, and introduce a multi-input `FusedElementwise` op so trees like
 `(x + 1) * (y - 2)` collapse into a single pass.
+
+**Before starting:** this phase and `doc/performance.md`'s `FusedPipeline`
+(cross-kind fusion) are one design with two names - an expression-tree interpreter
+vs. a micro-op bytecode interpreter for the same multi-input fused kernel. Unify
+them into a single design before building either; the bytecode framing is likely
+the keeper (flat, cache-friendly to interpret, and closest to numexpr, the
+reference worth reading first).
 
 **Why here:** the current `try_fuse` only folds a new op into one of its parents,
 operates only on linear chains over a single tensor input, and runs greedily at
@@ -385,7 +514,7 @@ construction time. That covered the early ops, but it does not generalize:
 - Multi-tensor elementwise expressions cannot fuse at all (no representation for
   "kernel over N tensor inputs").
 - Algebraic identities like `x * 0 → 0`, `x + 0 → x`, `transpose(transpose(x)) → x`
-  are not applied - and autodiff (Phase 10) will generate huge graphs full of
+  are not applied - and autodiff (Phase 14) will generate huge graphs full of
   exactly those patterns.
 - Adding a new fusion means editing one big `match` in `compute_fusion` instead of
   defining a rule independently.
@@ -459,20 +588,157 @@ let result = t.transpose().transpose().materialize();
 
 ---
 
-## Phase 10 - Symbolic Autodiff
+## Phase 10 - Model Building Blocks (v0.5)
+
+**Goal:** Implement `Linear`, `Softmax`, and `LayerNorm` by composing the primitives
+from Phases 3–6.
+
+**Why here:** by this point matmul, broadcasting, reductions, activations, and the
+fusion rewriter are all in. Linear and Softmax become pure composition - and the
+fusion pass folds the resulting graphs much more aggressively than it could before
+Phase 9. None of these need gradients: they are forward-only building blocks, which
+is exactly what the inference phases after this one consume.
+
+**Also do here:** consolidate the macro explosion in `ops/impl_op.rs`. The
+`ComputationDef` trait already exists; the four `impl Add/Sub/Mul/Div` macros over
+`Tensor × Promise × CachedPromise × {ref, owned}` should collapse into one blanket
+impl per operator. The macro layer becomes optional sugar instead of load-bearing.
+
+### Tests
+```rust
+// Linear: [batch=2, in=3] @ [out=4, in=3]^T + [4] = [2, 4]
+let x      = Tensor::from_scalar(1.0, &[2, 3]);
+let weight = Tensor::from_scalar(1.0, &[4, 3]);
+let bias   = Tensor::from_scalar(0.5, &[4]);
+let out    = linear(x, weight, bias).materialize();
+assert_eq!(out.shape(), &[2, 4]);
+assert_approx_eq!(out.data(), &[3.5; 8]);
+
+// Softmax output sums to 1 along last axis
+let logits = Tensor::from_data(&[1.0, 2.0, 3.0, 1.0, 2.0, 3.0], &[2, 3]);
+let probs  = softmax(&logits, 1).materialize();
+let row0_sum: f64 = probs.data()[..3].iter().sum();
+assert_approx_eq!(row0_sum, 1.0);
+```
+
+### Documentation
+- Create `examples/linear_layer.rs` showing a single forward pass
+- Document each function with shape conventions
+
+---
+
+## Phase 11 - Safetensors I/O (v0.5)
+
+**Goal:** Load real model weights from `.safetensors` files, so a forward pass
+hand-written from Phase 10 blocks runs an actual trained model. Saving comes along
+for the ride: serializing a `Tensor` is a few lines once the parser exists, and the
+round-trip tests want it anyway.
+
+**Why here:** the gap between "interesting engine" and "runs a real model" is not
+more ops - it's weights. [safetensors](https://github.com/huggingface/safetensors)
+is a deliberately boring format (a JSON header plus raw buffers), so the loader
+costs days, not the months an ONNX importer would. Combined with skeletons, this
+is the demo that matters: compile a real model once, run it on new inputs with
+zero planning overhead.
+
+### Implementation
+- Parse with the `safetensors` crate (or by hand - the format fits on a page).
+- Map dtypes: `F32`/`F64` now; `F16`/`BF16` return a clear error until Phase 13.
+- Load into owned `TensorData` buffers first; an mmap-backed zero-copy path can
+  come later if loading ever shows up in a profile.
+- Create `examples/mlp_inference.rs`: a small MLP trained in PyTorch, exported to
+  safetensors, forward pass built from Phase 10 blocks.
+
+### Tests
+```rust
+// Tensors written by the reference implementation load with correct shapes
+let weights = load_safetensors("tests/data/mlp.safetensors")?;
+assert_eq!(weights["fc1.weight"].shape(), &[16, 4]);
+
+// Forward pass matches the PyTorch reference output within tolerance
+let out = mlp_forward(&weights, &input).materialize();
+assert_approx_eq!(out.data(), expected_from_pytorch);
+```
+
+### Documentation
+- Document the dtype mapping and the error on unsupported dtypes
+- Keep the PyTorch export script next to the test data, with a note on how to
+  regenerate it
+
+---
+
+## Phase 12 - CUDA Backend (v0.6)
+
+**Goal:** A `Cuda` backend implementing the `Backend` trait: each `OpKind` mapped to
+a kernel, async execution on CUDA streams.
+
+**Why moved up (it used to sit after autodiff):** Candela's ambitions are
+inference-shaped - skeletons, predictable resources, real weights from Phase 11 -
+and inference without a GPU stops being interesting at exactly the model sizes
+people care about. By this point the `Backend` trait exists, the fusion rewriter
+exists, and a real model runs on CPU, so every CUDA kernel has a reference
+implementation to test against. Autodiff is deliberately *not* in yet: gradients
+are just more graph, so landing the GPU first means the backward pass runs on it
+from day one instead of being retrofitted.
+
+CUDA is the largest phase in absolute terms but the smallest in architectural
+surprise - the design points are already pinned down by the trait.
+
+**Design question inherited from Phase 7:** `Backend::compute` is synchronous today.
+Decide whether the CUDA path hides async behind it (record on a stream, synchronize
+on read) or whether the trait grows an explicit async variant. Hiding it keeps the
+CPU backends untouched; surfacing it makes overlap and multi-GPU explicit later.
+Decide before writing the second kernel, not after the twentieth.
+
+---
+
+## Phase 13 - Quantization (fp16 / bf16) (v0.7)
+
+**Goal:** Add `f16` and `bf16` as supported element types.
+
+**Why after CUDA:** on CPU these dtypes are software-emulated by the `half` crate -
+half the memory, but *slower* than `f32` in every other way. On tensor cores they
+are faster *and* smaller, which is the whole point. Sequencing them after the GPU
+backend means they land as a win instead of a benchmark regression.
+
+### Implementation
+- Add `half::f16` and `half::bf16` `Dtype` impls.
+- CUDA path: tensor-core GEMM. Mixed-precision matmul (`f16` inputs, `f32`
+  accumulator) is the common production shape - design the `MatMul` op to take
+  separate input and accumulator dtypes.
+- CPU path: software arithmetic via the `half` crate, for correctness testing and
+  for loading f16 checkpoints (Phase 11's loader stops erroring on them here).
+- MKL path: `cblas_h*gemm` where available; soft fallback otherwise.
+
+---
+
+## Phase 14 - Symbolic Autodiff (v0.8)
 
 **Goal:** Implement automatic differentiation by traversing the existing computation
 graph in reverse and building a new gradient graph.
 
 **Why symbolic:** the graph already carries the op and inputs at every node. Building
-the backward pass as a new graph means gradients get fusion (now much more aggressive
-thanks to Phase 9), execution planning, and buffer reuse for free - the same
-machinery applies to both passes.
+the backward pass as a new graph means gradients get fusion (much more aggressive
+thanks to Phase 9), execution planning, buffer reuse - and, after Phase 12, GPU
+execution - for free. The same machinery applies to both passes.
 
-**Why after Phase 9:** backward passes generate graphs full of `0`s, `1`s, broadcasts
-back, and transposed matmuls. Without the rewrite pass these graphs run several times
-slower than they need to. Landing autodiff on top of an existing fusion pass means
-gradient code is fast from day one.
+**Why this late:** nothing before this phase needs a gradient. The inference story -
+blocks, weights, CUDA, quantization - carries the project to "runs a real model
+fast" without one, and because gradients are symbolic, every piece of infrastructure
+that landed in the meantime applies to them retroactively. Backward passes generate
+graphs full of `0`s, `1`s, broadcasts back, and transposed matmuls; landing autodiff
+on top of an existing fusion pass means gradient code is fast from day one.
+
+**Multi-output via Stitch.** A backward pass produces one gradient per parameter -
+many outputs from a single graph - but the planner roots every plan at one node.
+Stitch closes that gap: an N-input op that aliases its first input and drags the rest
+into the same plan, so every gradient is scheduled, buffer-packed, and read out in one
+`materialize` instead of one plan per gradient (which would recompute the shared
+forward activations each time). Stitch is terminal-only: embedded inside a larger
+graph it degrades to its single-output alias, because multi-output *composition*
+through a `Baked` node is the expensive case and gradients never need it. The design
+was settled well before this phase (it has no forcing consumer until now); it lands
+here because this is that consumer.
 
 **Gradient rules you will need** (math, not implementation):
 - `AxBy(a, b)`: `grad_input = a * grad_output`
@@ -511,92 +777,22 @@ assert_eq!(grads[&w].shape(), &[3, 3]);
 
 ---
 
-## Phase 11 - Model Building Blocks
-
-**Goal:** Implement `Linear`, `Softmax`, and `LayerNorm` by composing the primitives
-from Phases 3–6.
-
-**Why here:** by this point matmul, broadcasting, reductions, activations, and the
-fusion rewriter are all in. Linear and Softmax become pure composition - and the
-fusion pass folds the resulting graphs much more aggressively than it could before
-Phase 9.
-
-**Also do here:** consolidate the macro explosion in `ops/impl_op.rs`. The
-`ComputationDef` trait already exists; the four `impl Add/Sub/Mul/Div` macros over
-`Tensor × Promise × CachedPromise × {ref, owned}` should collapse into one blanket
-impl per operator. The macro layer becomes optional sugar instead of load-bearing.
-
-### Tests
-```rust
-// Linear: [batch=2, in=3] @ [out=4, in=3]^T + [4] = [2, 4]
-let x      = Tensor::from_scalar(1.0, &[2, 3]);
-let weight = Tensor::from_scalar(1.0, &[4, 3]);
-let bias   = Tensor::from_scalar(0.5, &[4]);
-let out    = linear(x, weight, bias).materialize();
-assert_eq!(out.shape(), &[2, 4]);
-assert_approx_eq!(out.data(), &[3.5; 8]);
-
-// Softmax output sums to 1 along last axis
-let logits = Tensor::from_data(&[1.0, 2.0, 3.0, 1.0, 2.0, 3.0], &[2, 3]);
-let probs  = softmax(&logits, 1).materialize();
-let row0_sum: f64 = probs.data()[..3].iter().sum();
-assert_approx_eq!(row0_sum, 1.0);
-```
-
-### Documentation
-- Create `examples/linear_layer.rs` showing a single forward pass
-- Document each function with shape conventions
-
----
-
-## Phase 12 - Quantization (fp16 / bf16)
-
-**Goal:** Add `f16` and `bf16` as supported element types.
-
-**Why here:** nearly free win on modern hardware - half the memory, similar accuracy
-for inference, often faster on tensor cores. Required dtype for any future CUDA work.
-The generic framework already supports any `NumberLike`; the missing piece is the
-kernels.
-
-### Implementation
-- Add `half::f16` and `half::bf16` `Dtype` impls.
-- MKL path: `cblas_h*gemm` for f16 where available; soft fallback otherwise.
-- Pure-Rust path: software arithmetic via `half` crate.
-- Mixed-precision matmul (`f16` inputs, `f32` accumulator) is the common production
-  shape - design the `MatMul` op to take separate input and accumulator dtypes.
-
----
-
-## Phase 13 - ONNX Importer (subset)
+## Phase 15 - ONNX Importer (transformer subset) (v0.9)
 
 **Goal:** Load a useful subset of ONNX models - enough that someone with a real model
 can try Candela without transcribing by hand.
 
-**Why here:** the difference between "interesting engine" and "library people adopt"
-is whether you can load their model. Even a 30-op subset (`Gemm`, `Conv`, `LayerNorm`,
-`Softmax`, `ReLU`, `GeLU`, `Add`, `Mul`, `Reshape`, `Transpose`, etc.) covers the
-forward pass of most small transformers and CNNs.
+**Why last:** Phase 11 already covers "load my weights" for anyone willing to write
+their own forward pass; ONNX removes that last step. The graph IR is already
+DAG-shaped, so the translation from ONNX nodes to `OpKind` is mechanical. The harder
+part is shape inference for ops Candela doesn't natively support (those become
+`unimplemented!()` errors with the op name in the message).
 
-The graph IR is already DAG-shaped; the translation from ONNX nodes to `OpKind` is
-mechanical. The harder part is shape inference for ops Candela doesn't natively
-support (those become `unimplemented!()` errors with the op name in the message).
-
----
-
-## Phase 14 - CUDA Backend
-
-Long-horizon. Depends on the backend abstraction from Phase 7. Each `OpKind` maps to a
-CUDA kernel; async execution uses CUDA streams.
-
-By this point: the `Backend` trait exists, the fusion rewriter exists, autodiff
-exists, and `f16`/`bf16` quantization exists. CUDA is the largest piece in absolute
-terms but the smallest in terms of architectural surprise - the design points are
-already pinned down.
-
-Open design question to settle in Phase 7: does `Backend::execute` return a future?
-If yes, the CPU path stays synchronous under an immediate-ready future; the GPU path
-gets real async without a retrofit. If no, GPU support requires changing the trait
-later. Decide before locking it in.
+**Scope:** transformer-shaped models - `Gemm`, `MatMul`, `LayerNorm`, `Softmax`,
+`ReLU`, `GeLU`, `Add`, `Mul`, `Reshape`, `Transpose` and friends. Everything in that
+list exists by Phase 11. Convolution is deliberately out: `Conv` is a phase-sized op
+on its own, and it earns that phase when a model someone actually wants to run
+demands it.
 
 ---
 
@@ -908,9 +1104,9 @@ criterion_main!(benches);
 
 The GitHub Actions workflow should run all of the following on every push:
 
-- [ ] `cargo fmt --check` - no formatting drift
-- [ ] `cargo clippy -- -D warnings` - no lint regressions
-- [ ] `cargo test` - all unit and integration tests pass
+- [x] `cargo fmt --check` - no formatting drift
+- [x] `cargo clippy -- -D warnings` - no lint regressions
+- [x] `cargo test` - all unit and integration tests pass
 - [ ] `cargo test --features debug_only_check` - validation paths also exercised
 - [ ] `cargo bench --no-run` - benchmarks compile (do not run timing on CI)
 
@@ -920,10 +1116,11 @@ The GitHub Actions workflow should run all of the following on every push:
 
 Items that are not blocked on any phase but should be done incrementally.
 
-- [ ] Replace `simple_tensor` package name in `Cargo.toml` with `candela` to match
+- [x] Replace `simple_tensor` package name in `Cargo.toml` with `candela` to match
       `README.md` and the project name
-- [ ] Add `#![doc = include_str!("../README.md")]` to `src/lib.rs` so `cargo doc`
-      renders the README as the crate root
+- [x] ~~Add `#![doc = include_str!("../README.md")]` to `src/lib.rs`~~ Decided
+      against: the README and the crate root serve different readers (see
+      `doc/style.md` §6). `lib.rs` carries its own crate-root doc instead
 - [ ] Add `# Safety` doc comments to every `pub unsafe fn` explaining the invariants
       the caller must uphold
 - [ ] Add `# Panics` doc comments to every function that can panic, including the
@@ -939,7 +1136,7 @@ Items that are not blocked on any phase but should be done incrementally.
       - `fusion.rs` - scalar fusion collapsing a 20-op chain
       - `cached_promise.rs` - shared preprocessing across multiple flows
       - `matmul.rs` - matrix multiplication
-      - `gradient_descent.rs` - simple regression (after Phase 8)
+      - `gradient_descent.rs` - simple regression (after Phase 14)
 - [ ] Conformance tests against NumPy for every op: generate inputs in Python, export
       as JSON, import in Rust tests and compare outputs within floating-point tolerance
 - [ ] Add `benches/` with at minimum:

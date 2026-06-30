@@ -23,8 +23,10 @@
 //! - [`TensorPromise`] - an unevaluated computation graph; `.materialize()` runs it.
 //! - [`CachedTensorPromise`] - a promise that keeps its result alive for reuse
 //!   across separate materializations.
-//! - [`Skeleton`](skeleton::Skeleton) - a graph compiled once over [`SkeletonSlot`](skeleton::SkeletonSlot) placeholders and
-//!   run many times against new data, skipping per-call planning.
+//! - [`Skeleton`](skeleton::Skeleton) - a graph compiled once over
+//!   [`SkeletonSlot`](skeleton::SkeletonSlot) placeholders and run many times against
+//!   new data, skipping per-call planning. See the [`skeleton`] module for the
+//!   dynamic-shape and caching variants.
 //!
 //! # Concepts
 //!

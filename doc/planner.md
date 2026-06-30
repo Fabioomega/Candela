@@ -67,9 +67,10 @@ their own inputs. If an input's buffer is already free at this point and the siz
 the planner writes the result straight into it - no allocation, no copy.
 
 **Reference, slot-backed** (`ReferenceSlot`). Layout-only ops - `View`, `Slice`,
-`Transpose`, `TransposeAxes`, `Broadcast`, and `NoOp` - produce no new data. They alias
-an existing slot-backed buffer at a new layout. The planner extends that buffer's
-lifetime to cover the alias and emits a step with no real computation.
+`Transpose`, `TransposeAxes`, `Broadcast`, and `NoOp` - re-point an existing slot-backed
+buffer at a new layout; only the layout descriptor changes, no elements are copied. The
+buffer stays shared - other nodes may still read it through their own layouts - so the
+planner extends its lifetime to cover the reference.
 
 **Reference, eternal** (`ReferenceEternal`). The same, but the aliased input is an edge
 or a cache buffer - things the planner never frees - so there's no slot lifetime to
@@ -219,8 +220,9 @@ under `root_id`.
 
 ## Execution
 
-The executor in `TensorGraphNode::compute` (`src/tensor/graph.rs`) works through the plan
-one step at a time, maintaining a live-buffer cache keyed by node ID. After each step it
+The executor - `run_plan` in `src/tensor/executor.rs`, which `TensorGraphNode::compute`
+hands the finished plan to - works through it one step at a time, maintaining a
+live-buffer cache keyed by node ID. After each step it
 removes any IDs in `dealloc_after`, dropping the buffer as soon as it's no longer needed.
 When the plan is exhausted, it returns the buffer under `Plan::root_id`.
 

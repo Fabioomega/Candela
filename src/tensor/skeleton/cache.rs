@@ -8,6 +8,13 @@ use crate::{Composable, Dimension, Layout, OpError, Tensor};
 
 use super::frame::{BakedPromise, Skeleton};
 
+/// Decides which entry a [`SkeletonCache`] drops when the cache is full.
+///
+/// The cache calls a hook on each action (insertion, removal, get). The policy
+/// keeps whatever bookkeeping it needs and answers [`evict`] when a new entry
+/// needs space. Implemented by [`LRUPolicy`] and [`UnboundedPolicy`].
+///
+/// [`evict`]: EvictionPolicy::evict
 pub trait EvictionPolicy {
     /// The constructor of the policy
     ///
@@ -390,6 +397,10 @@ where
     T: Clone + PartialEq + ComputeFor<B>,
     B: Backend,
 {
+    /// Runs the cached skeleton for the inputs' shapes, building one on a miss.
+    ///
+    /// Keys the cache by the inputs' layouts; on a miss `on_miss` builds the
+    /// [`Skeleton`], which is then cached and run. See [`Skeleton::run`].
     pub fn run(
         &self,
         inputs: &[&Tensor<T, B>],
@@ -405,6 +416,12 @@ where
         sk.run(inputs)
     }
 
+    /// Composes the cached skeleton for the inputs' shapes, building one on a miss.
+    ///
+    /// Like [`run`], but embeds the skeleton's plan into a [`BakedPromise`]
+    /// instead of executing it. See [`Skeleton::compose`].
+    ///
+    /// [`run`]: SkeletonCache::run
     pub fn compose<C>(
         &self,
         inputs: &[&C],

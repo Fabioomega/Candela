@@ -61,9 +61,9 @@ pub(crate) trait Operand<T, B: Backend>: Dimension {
     fn to_node(&self) -> NodeKind<T, B>;
 }
 
-/// A "materializable" subset of [`Operand`]: values that are legal as
+/// A "materializable" subset of `Operand`: values that are legal as
 /// concrete inputs when binding a skeleton via `compose`. `SkeletonSlot` and
-/// `SkeletonPromise` are [`Operand`]s but not `Composable`. This
+/// `SkeletonPromise` are `Operand`s but not `Composable`. This
 /// exclusion guarantees that no unbound slot appears in the materialization
 /// path.
 pub trait Composable<T, B: Backend>: Operand<T, B> {}

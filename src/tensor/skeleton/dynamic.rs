@@ -71,11 +71,22 @@ where
         }
     }
 
+    /// Runs the cached skeleton for the inputs' shapes, building one on a miss.
+    ///
+    /// Looks up the [`Skeleton`] keyed by the inputs' layouts and runs it,
+    /// calling the build function first if no entry exists yet. See
+    /// [`Skeleton::run`].
     #[inline]
     pub fn run(&self, inputs: &[&Tensor<T, B>]) -> Result<Tensor<T, B>, OpError> {
         self.cache.run(inputs, &self.build)
     }
 
+    /// Composes the cached skeleton for the inputs' shapes, building one on a miss.
+    ///
+    /// Like [`run`], but embeds the skeleton's plan into a [`BakedPromise`]
+    /// instead of executing it. See [`Skeleton::compose`].
+    ///
+    /// [`run`]: DynamicSkeleton::run
     #[inline]
     pub fn compose<C>(&self, inputs: &[&C]) -> Result<BakedPromise<T, B>, OpError>
     where
@@ -119,4 +130,5 @@ where
     }
 }
 
+/// A [`DynamicSkeleton`] whose cache never evicts (uses [`UnboundedPolicy`]).
 pub type UnboundedDynamicSkeleton<T, B> = DynamicSkeleton<T, B, UnboundedPolicy>;

@@ -12,11 +12,22 @@ use crate::tensor::storage::TensorData;
 use crate::tensor::traits::{Composable, Numeric, Operand, Promising};
 use crate::{Dimension, Layout, OpError, Tensor, TensorPromise};
 
+/// The input slots of a [`Skeleton`].
+///
+/// Represents the inputs of a [`Skeleton`] and prevents constructing graphs that
+/// cannot be safely materialized. A slot supports all the operations of a
+/// [`Tensor`], but produces a [`SkeletonPromise`] instead of a [`TensorPromise`];
+/// that promise is then baked - akin to `.materialize()` - through
+/// [`into_skeleton`].
+///
+/// [`into_skeleton`]: SkeletonPromise::into_skeleton
+/// [`TensorPromise`]: crate::TensorPromise
 pub struct SkeletonSlot<T, B: Backend = DefaultBackend> {
     pub(crate) graph: Arc<TensorGraphSlot<T, B>>,
 }
 
 impl<T, B: Backend> SkeletonSlot<T, B> {
+    /// Creates a new input slot with the given [`Layout`].
     #[inline]
     pub fn new(layout: Layout) -> Self {
         Self {
@@ -37,6 +48,7 @@ impl<T, B: Backend> SkeletonSlot<T, B> {
 }
 
 impl<T> SkeletonSlot<T, DefaultBackend> {
+    /// Creates a new contiguous input slot with the given shape.
     #[inline]
     pub fn from_shape(shape: &[usize]) -> Self {
         SkeletonSlot::new(Layout::from_shape(shape, 0))
@@ -75,6 +87,15 @@ impl<T, B: Backend> Clone for SkeletonSlot<T, B> {
 
 //////////////////////////////////////////////////////////////////////////////////
 
+/// A pre-baked [`Skeleton`] ready to slot into another graph.
+///
+/// Produced by [`Skeleton::compose`]. It holds the skeleton's plan with its
+/// inputs already bound, so it can be used like a regular promise inside
+/// operations - it is treated as an opaque node during planning. It can only be
+/// materialized through [`as_promise`], because computing it still requires
+/// planning.
+///
+/// [`as_promise`]: BakedPromise::as_promise
 pub struct BakedPromise<T, B: Backend> {
     graph: Arc<TensorGraphBaked<T, B>>,
 }
@@ -93,12 +114,40 @@ impl<T: Clone + PartialEq, B: Backend> BakedPromise<T, B> {
         }
     }
 
+    /// Creates a fresh [`SkeletonSlot`] matching the shape of this promise's output.
     pub fn as_slot(&self) -> SkeletonSlot<T, B> {
         SkeletonSlot::new(self.layout().clone())
     }
 }
 
 impl<T: Numeric, B: Backend> BakedPromise<T, B> {
+    /// Wraps the baked computation in a [`TensorPromise`].
+    ///
+    /// Used mainly when the baked output should act like a regular promise
+    /// (e.g. `+=` loops), or simply to materialize it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::SkeletonSlot;
+    /// use candela::{Layout, Tensor};
+    ///
+    /// let base_a = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[4]);
+    /// let base_b = Tensor::from_scalar(10.0, &[4]);
+    ///
+    /// // Two lazy inputs - promises, not materialized tensors.
+    /// let a = &base_a + 1.0;
+    /// let b = &base_b * 2.0;
+    ///
+    /// // Compose `x + y` over the two promises, then materialize the result.
+    /// let x = SkeletonSlot::new(Layout::from_shape(&[4], 0));
+    /// let y = x.deep_clone();
+    /// let baked = (&x + &y).into_skeleton(&[x, y])?.compose(&[&a, &b])?;
+    ///
+    /// let result = baked.as_promise().materialize();
+    /// assert_eq!(result.data(), &[22.0, 23.0, 24.0, 25.0]);
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     pub fn as_promise(&self) -> TensorPromise<T, B> {
         // The promise can always be unwrapped as it's a noop
         unsafe {
@@ -148,6 +197,19 @@ impl<T, B: Backend> SkeletonPromise<T, B> {
 }
 
 impl<T: ComputeFor<B>, B: Backend> SkeletonPromise<T, B> {
+    /// Bakes the recorded computation into a reusable [`Skeleton`].
+    ///
+    /// `slots` must be the list of slots used during the construction of this
+    /// graph. Their order is the order [`Skeleton::run`] and [`Skeleton::compose`]
+    /// expect their inputs.
+    ///
+    /// Planning happens once, during the construction of the skeleton.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::IncorrectSlotAmount`] if the number of `slots` differs
+    /// from the number the computation depends on, or [`OpError::NotSameSlot`] if
+    /// a provided slot was never used while building it.
     pub fn into_skeleton(self, slots: &[SkeletonSlot<T, B>]) -> Result<Skeleton<T, B>, OpError> {
         let declared: Vec<(usize, Layout)> = slots
             .iter()
@@ -268,6 +330,37 @@ where
 }
 
 //////////////////////////////////////////////////////////////////////////////////
+
+/// A precompiled execution plan, built once and run many times against new inputs.
+///
+/// # Examples
+///
+/// ```
+/// use candela::Tensor;
+/// use std::error::Error;
+///
+/// // Creates tensors
+/// let a = Tensor::from_scalar(0.3, &[4]);
+/// let b = Tensor::from_scalar(0.3, &[8]);
+///
+/// // Creates a slot for a tensor with the same shape as a
+/// let slot = a.as_slot();
+///
+/// // Create a skeleton with that slot
+/// let skeleton = (&slot * 2.0 + 1.0).log2().into_skeleton(&[slot]).unwrap();
+///
+/// // Running the skeleton
+/// let output_a = skeleton.run(&[&a]);
+///
+/// // Running the skeleton for an invalid shape
+/// let output_b = skeleton.run(&[&b]);
+///
+/// // Check the output is ok
+/// assert!(output_a.is_ok());
+///
+/// // Check the output is an error
+/// assert!(output_b.is_err());
+/// ```
 pub struct Skeleton<T, B: Backend = DefaultBackend> {
     plan: Arc<OwnedCorePlan<T, B>>,
     declared_slots: Vec<(usize, Layout)>,
@@ -311,9 +404,9 @@ impl<T: Clone + PartialEq + ComputeFor<B>, B: Backend> Skeleton<T, B> {
 
     /// Executes the compiled plan against `inputs` and returns the result.
     ///
-    /// `inputs` supplies one [`Tensor`] per declared slot, in the order the
-    /// slots were passed to [`into_skeleton`]. No planning happens here: the
-    /// stored `OwnedCorePlan` is run directly.
+    /// Runs the stored plan on the provided inputs without re-planning. The
+    /// `inputs` must be supplied in the same order they were declared to
+    /// [`into_skeleton`].
     ///
     /// [`into_skeleton`]: SkeletonPromise::into_skeleton
     ///
@@ -366,22 +459,17 @@ impl<T: Clone + PartialEq + ComputeFor<B>, B: Backend> Skeleton<T, B> {
         Ok(Tensor::from_data(output))
     }
 
-    /// Embeds the compiled plan as a single node in a larger graph.
+    /// Embeds the compiled plan as a node in a larger graph.
     ///
-    /// Where [`run`] executes the plan and hands back a finished [`Tensor`],
-    /// `compose` wires `inputs` into the skeleton's slots and returns a
-    /// [`BakedPromise`]. The embedded plan is opaque to the surrounding graph:
-    /// the outer planner treats it as one already-optimized node and does not
-    /// re-plan or fuse across the boundary.
+    /// Embeds the [`Skeleton`]'s plan into a promise that must still be planned
+    /// and materialized to produce a [`Tensor`]. Unlike [`run`], its inputs may
+    /// be any [`Composable`] operand except a slot - [`Tensor`], [`TensorPromise`],
+    /// or [`BakedPromise`].
     ///
-    /// The inputs are [`Composable`] operands ([`Tensor`], [`TensorPromise`],
-    /// another [`BakedPromise`]); a [`SkeletonSlot`] is not `Composable`, so a
-    /// composed graph never carries an unbound slot into materialization.
-    /// `inputs` supplies one operand per declared slot, in the order the slots
-    /// were passed to [`into_skeleton`].
+    /// For all practical purposes, treat the output of this function as a
+    /// compressed representation of a [`TensorPromise`].
     ///
     /// [`run`]: Skeleton::run
-    /// [`into_skeleton`]: SkeletonPromise::into_skeleton
     /// [`Composable`]: crate::Composable
     /// [`TensorPromise`]: crate::TensorPromise
     ///
@@ -406,6 +494,7 @@ impl<T: Clone + PartialEq + ComputeFor<B>, B: Backend> Skeleton<T, B> {
     /// let sum = (&a + &b).into_skeleton(&[a, b])?;
     ///
     /// let baked = sum.compose(&[&lhs, &rhs])?;
+    /// // `baked` slots into a normal promise expression.
     /// let result = (baked * 2.0).materialize();
     /// assert_eq!(result.data(), &[22.0, 24.0, 26.0, 28.0]);
     /// # Ok::<(), candela::OpError>(())
@@ -446,6 +535,16 @@ impl<T, B: Backend> Dimension for Skeleton<T, B> {
 }
 
 //////////////////////////////////////////////////////////////////////////////////
+/// A snapshot of the allocations a [`Skeleton`] will perform when run.
+///
+/// Returned by [`Skeleton::memory_report`]; every field is in bytes and reflects
+/// the plan's cache state at the moment the report was taken.
+///
+/// # Note
+///
+/// All allocations are reported as Candela sees them; they do not account for
+/// caching or memory reuse by the system allocator, so the figures may differ
+/// from what actually happens at runtime.
 #[derive(Debug)]
 pub struct MemoryMetrics {
     /// peak memory usage in bytes
