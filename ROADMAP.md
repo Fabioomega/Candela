@@ -16,7 +16,7 @@ and what's the story." Every release should have a pitch that fits in one line.
 |---------|-------|----------|
 | 0.1 | A correct lazy tensor engine | Phases 1–7 (shipped) |
 | 0.2 | Skeletons: compile once, run many, know your costs | Phase 8 + slot ergonomics + `memory_report` + skeleton cache (details below) |
-| 0.3 | Measurement, and the speedups it unlocks | Benchmark suite, rayon, tiled contiguous fusion, skeleton buffer pool, external output buffers (details below) |
+| 0.3 | Measurement, and the speedups it unlocks | Benchmark suite, rayon, tiled contiguous fusion, skeleton memory arena, external output buffers (details below) |
 | 0.4 | The fusion rewrite | Phase 9 |
 | 0.5 | Runs a real model on CPU | Phases 10 + 11 (blocks + safetensors I/O) |
 | 0.6 | CUDA | Phase 12 |
@@ -73,28 +73,79 @@ first - nothing after it is provable without it:
 1. Benchmark suite (`benches/`, criterion; workload set from `doc/performance.md`)
 2. Rayon parallelism for elementwise + reductions, threshold-gated
 3. Tiled fusion on the contiguous `FusedScalar` path
-4. Per-skeleton buffer pool (deferred from 0.2; opt-in, per the allocation philosophy)
-5. External output buffers (`bind`): the caller supplies the destination memory a
-   computation writes into - the dual of the input-slot mechanism, and the same
-   subsystem as the pool above seen from the user's end (the pool is the skeleton
-   bringing reusable buffers; `bind` is the caller bringing them)
+4. Skeleton memory arena (the pool deferred from 0.2, redesigned): plans pack
+   their intermediates into one slab at compile time; slab *retention* is the
+   opt-in part, per the allocation philosophy
+5. External output buffers (`run_into`): the caller supplies the destination memory
+   the root result is written into - the dual of the input-slot mechanism, and the
+   same subsystem as the arena above seen from the user's end (the arena is the
+   skeleton bringing reusable memory; `run_into` is the caller bringing it)
 
 Each item lands with the benchmark that justifies it. The fusion *rewrite* is not
 in this arc - it's the architecturally risky one and gets 0.4 to itself.
 
-**External buffers in detail.** `bind` on any promise marks a node as an output
-boundary - a buffer-less `Binded` marker, discovered by the same graph walk that
-already collects input slots, so there's no parallel list to maintain. A separate
-`materialize_with_binded` (and a skeleton `run` variant) takes the buffers and hands
-back a struct of the filled, *owned* buffers, addressed by a handle `bind` mints -
-never a user-invented string - or positionally for a small static set. Ownership is
-the safety story: the buffer is moved in, opaque while bound, and returned only once
-the write is done, so there's no lock and no aliasing window. It unlocks
-user-allocated arenas and skeleton introspection (bind any intermediate to read it
-afterwards - at the cost of forfeiting that node's early reclaim), and `memory_report`
-grows an internal-vs-external split: what the skeleton allocates, and what memory it
-expects you to bring. It's benchmark-gated like the rest of this arc - the arena/reuse
-win is a perf claim, and 0.3 is where it becomes provable.
+**The arena in detail.** `into_skeleton` always packs: greedy-by-size offset
+assignment (Pisarchyk & Lee, *Efficient Memory Management for Deep Neural Network
+Inference*) over the pre-planner's raw buffer lifetimes - bypassing the same-size
+slot-reuse pass, which packing subsumes, and merging in-place chains and reference
+lifetime extensions into single intervals. Packing computes offsets only and
+retains no memory, so it is unconditional; `materialize()` keeps the current
+allocation path untouched.
+
+- **Escape rule.** Buffers with no reclaim point (the root result, cache fills -
+  later, Stitch's outputs) are owned allocations, never slab regions. A region
+  never leaves the executor; user-facing tensors are always owned.
+- **Provenance.** `Storage` splits into owned (`Arc<Vec<T>>`) and region
+  (slab + offset). The slab is raw-pointer-only inside, so disjoint reads plus
+  the single writer never form aliasing `&`/`&mut`. Prerequisite refactor, its
+  own PR, landing first: kernels take `&mut [T]` instead of owning `Vec<T>`,
+  and the executor assembles outputs - `bind` needs the same split.
+- **Slabs.** A skeleton stores required bytes plus offsets and owns no memory;
+  slabs come from an `Arc<SlabPool>` - private by default, shareable by
+  constructor. Default retention is zero: check out, run, free. Two independent
+  knobs: `max_retained` (excess slabs freed silently) and a byte budget (hard
+  cap; `run` errors). `DynamicSkeleton` owns one pool across all shape variants -
+  slabs are fungible whenever capacity suffices, so one high-water slab serves
+  every entry, and evicting an entry frees only its (tiny) plan.
+- **Verification.** An always-on validator asserts no two regions overlap in
+  both lifetime and address; `memory_report` gains `required_slab_bytes`, pool
+  state, and the ratio of slab size to the live-bytes lower bound; a debug
+  feature poisons the slab with NaN each run to enforce that kernels tolerate
+  dirty output buffers.
+- **Alignment.** Regions align to cache lines (parameterized; 256 B once CUDA
+  needs it) so rayon-parallel kernels don't false-share at region boundaries.
+- **Sequential execution is load-bearing.** Plan order = execution order
+  underwrites the interval packing, the single-writer safety story, and the
+  future CUDA mapping (one stream, stream order = plan order, so the arena
+  transfers with zero synchronization). No inter-op threading, on CPU or via
+  multiple streams.
+
+**External buffers in detail.** `run_into` on a skeleton (and `materialize_into`
+on a promise) moves a caller-owned buffer in, writes the root result into it, and
+hands it back as an owned tensor. Ownership is the safety story: the buffer is
+opaque while bound and returned only once the write is done, so there's no lock
+and no aliasing window. Length is validated against the root layout; a pure-alias
+root inserts the copy it implies. `Tensor::try_into_vec` recovers the buffer for
+the next iteration, so with slab retention on, a steady-state `run_into` loop
+performs zero allocations: inputs are the caller's tensors, intermediates live in
+the slab, the output lands in the caller's buffer. `memory_report` grows an
+internal-vs-external split: what the skeleton allocates, and what memory it
+expects you to bring. Benchmark-gated like the rest of this arc.
+
+Multi-output - several results or intermediates from one compiled run - is
+deliberately *not* this feature: it lands with Stitch (Phase 14) as multi-root
+skeletons. `into_skeleton` accepts several roots; outputs return positionally in
+declaration order, exactly as slots bind today; every root is an owned output the
+packer excludes. No per-node bind markers and no minted handles - a root is
+observable by definition, so the fusion barrier falls out rather than being
+policed. Multi-root skeletons are terminal-only: `compose` returns an error, and
+the fix is to build the larger graph and compile *that*. Stitch degrades when
+embedded because unplanned dead roots are elided for free; a compiled multi-root
+plan replays whole, so degrading would silently compute and discard - it errors
+instead. `CachedPromise` stays the eager-world way to share an intermediate
+across materializations; a multi-root skeleton is its compiled-world dual,
+sharing the subgraph within each run. `run_into` extends positionally to N
+buffers when this lands.
 
 ---
 
@@ -738,7 +789,10 @@ forward activations each time). Stitch is terminal-only: embedded inside a large
 graph it degrades to its single-output alias, because multi-output *composition*
 through a `Baked` node is the expensive case and gradients never need it. The design
 was settled well before this phase (it has no forcing consumer until now); it lands
-here because this is that consumer.
+here because this is that consumer. Multi-root skeletons (v0.3's external-buffers
+note) surface the same machinery through the skeleton API: several roots at
+`into_skeleton`, positional outputs, terminal-only with `compose` erroring rather
+than degrading.
 
 **Gradient rules you will need** (math, not implementation):
 - `AxBy(a, b)`: `grad_input = a * grad_output`
