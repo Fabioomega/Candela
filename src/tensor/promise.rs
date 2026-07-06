@@ -213,22 +213,6 @@ impl<T: Numeric, B: Backend> CachedTensorPromise<T, B> {
             Err(err) => Err(err),
         }
     }
-
-    pub(crate) fn with_layout(
-        op: OpKind<T>,
-        inputs: Box<[NodeKind<T, B>]>,
-        layout: Layout,
-    ) -> Self {
-        Self {
-            graph: Arc::new(TensorGraphCacheNode::with_layout(op, inputs, layout)),
-        }
-    }
-
-    pub(crate) fn from_node(node: TensorGraphCacheNode<T, B>) -> Self {
-        Self {
-            graph: Arc::new(node),
-        }
-    }
 }
 
 impl<T: NumberLike + ComputeFor<B>, B: Backend> CachedTensorPromise<T, B> {

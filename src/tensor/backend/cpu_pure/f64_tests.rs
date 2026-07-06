@@ -20,7 +20,7 @@ fn as_contiguous_non_contiguous_input() {
     let output = compute_op(
         &OpKind::AsContiguous,
         buffer,
-        &Layout::from_shape(&[7, 1], 0),
+        &Layout::new(&[7, 1]),
         std::slice::from_ref(&t),
     );
     assert_eq!(output, t);
@@ -33,7 +33,7 @@ fn scalar_op_axby_contiguous() {
     let output = compute_op(
         &OpKind::ScalarOp(OpKindScalar::AxBy(2.0, 1.0)),
         vec![0.0; 3],
-        &Layout::from_shape(&[3], 0),
+        &Layout::new(&[3]),
         &[input],
     );
     assert_eq!(output.data(), &vec![3.0, 5.0, 7.0]);
@@ -47,7 +47,7 @@ fn scalar_op_axby_non_contiguous() {
     let output = compute_op(
         &OpKind::ScalarOp(OpKindScalar::AxBy(2.0, 3.0)),
         vec![0.0; 3],
-        &Layout::from_shape(&[3, 1], 0),
+        &Layout::new(&[3, 1]),
         &[input],
     );
     assert_eq!(output.data(), &vec![5.0, 5.0, 5.0]); // 2*1 + 3 = 5
@@ -62,7 +62,7 @@ fn scalar_op_axby_transposed() {
     let output = compute_op(
         &OpKind::ScalarOp(OpKindScalar::AxBy(2.0, 1.0)),
         vec![0.0; 6],
-        &Layout::from_shape(&[3, 2], 0),
+        &Layout::new(&[3, 2]),
         &[input],
     );
     assert_eq!(output.data(), &vec![1.0, 7.0, 3.0, 9.0, 5.0, 11.0]);
@@ -75,7 +75,7 @@ fn scalar_op_exp() {
     let output = compute_op(
         &OpKind::ScalarOp(OpKindScalar::Exp),
         vec![0.0; 1],
-        &Layout::from_shape(&[1], 0),
+        &Layout::new(&[1]),
         &[input],
     );
     assert_eq!(output.data(), &vec![1.0]);
@@ -87,7 +87,7 @@ fn scalar_op_ln() {
     let output = compute_op(
         &OpKind::ScalarOp(OpKindScalar::Ln),
         vec![0.0; 1],
-        &Layout::from_shape(&[1], 0),
+        &Layout::new(&[1]),
         &[input],
     );
     assert_eq!(output.data(), &vec![0.0]);
@@ -99,7 +99,7 @@ fn scalar_op_log2() {
     let output = compute_op(
         &OpKind::ScalarOp(OpKindScalar::Log2),
         vec![0.0; 2],
-        &Layout::from_shape(&[2], 0),
+        &Layout::new(&[2]),
         &[input],
     );
     assert_eq!(output.data(), &vec![0.0, 1.0]);
@@ -113,7 +113,7 @@ fn fused_scalar() {
     let output = compute_op(
         &OpKind::FusedScalar(ops),
         vec![0.0; 1],
-        &Layout::from_shape(&[1], 0),
+        &Layout::new(&[1]),
         &[input],
     );
     assert_eq!(output.data(), &vec![21.0]);
@@ -123,12 +123,7 @@ fn fused_scalar() {
 fn add_contiguous() {
     let lhs = td(vec![1.0, 2.0, 3.0], &[3]);
     let rhs = td(vec![4.0, 5.0, 6.0], &[3]);
-    let output = compute_op(
-        &OpKind::Add,
-        vec![0.0; 3],
-        &Layout::from_shape(&[3], 0),
-        &[lhs, rhs],
-    );
+    let output = compute_op(&OpKind::Add, vec![0.0; 3], &Layout::new(&[3]), &[lhs, rhs]);
     assert_eq!(output.data(), &vec![5.0, 7.0, 9.0]);
 }
 
@@ -142,7 +137,7 @@ fn add_lhs_non_contiguous() {
     let output = compute_op(
         &OpKind::Add,
         vec![0.0; 6],
-        &Layout::from_shape(&[3, 2], 0),
+        &Layout::new(&[3, 2]),
         &[lhs, rhs],
     );
     assert_eq!(output.data(), &vec![3.0; 6]);
@@ -158,7 +153,7 @@ fn add_rhs_non_contiguous() {
     let output = compute_op(
         &OpKind::Add,
         vec![0.0; 6],
-        &Layout::from_shape(&[3, 2], 0),
+        &Layout::new(&[3, 2]),
         &[lhs, rhs],
     );
     assert_eq!(output.data(), &vec![3.0; 6]);
@@ -173,7 +168,7 @@ fn add_both_non_contiguous() {
     let output = compute_op(
         &OpKind::Add,
         vec![0.0; 6],
-        &Layout::from_shape(&[3, 2], 0),
+        &Layout::new(&[3, 2]),
         &[lhs, rhs],
     );
     assert_eq!(output.data(), &vec![3.0; 6]);
@@ -190,7 +185,7 @@ fn add_transposed() {
     let output = compute_op(
         &OpKind::Add,
         vec![0.0; 6],
-        &Layout::from_shape(&[3, 2], 0),
+        &Layout::new(&[3, 2]),
         &[lhs, rhs],
     );
     let logical: Vec<f64> = output.iter().copied().collect();
@@ -201,12 +196,7 @@ fn add_transposed() {
 fn sub_contiguous() {
     let lhs = td(vec![5.0, 6.0], &[2]);
     let rhs = td(vec![1.0, 2.0], &[2]);
-    let output = compute_op(
-        &OpKind::Sub,
-        vec![0.0; 2],
-        &Layout::from_shape(&[2], 0),
-        &[lhs, rhs],
-    );
+    let output = compute_op(&OpKind::Sub, vec![0.0; 2], &Layout::new(&[2]), &[lhs, rhs]);
     assert_eq!(output.data(), &vec![4.0, 4.0]);
 }
 
@@ -214,12 +204,7 @@ fn sub_contiguous() {
 fn mul_contiguous() {
     let lhs = td(vec![2.0, 3.0], &[2]);
     let rhs = td(vec![4.0, 5.0], &[2]);
-    let output = compute_op(
-        &OpKind::Mul,
-        vec![0.0; 2],
-        &Layout::from_shape(&[2], 0),
-        &[lhs, rhs],
-    );
+    let output = compute_op(&OpKind::Mul, vec![0.0; 2], &Layout::new(&[2]), &[lhs, rhs]);
     assert_eq!(output.data(), &vec![8.0, 15.0]);
 }
 
@@ -227,12 +212,7 @@ fn mul_contiguous() {
 fn div_contiguous() {
     let lhs = td(vec![6.0, 10.0], &[2]);
     let rhs = td(vec![2.0, 5.0], &[2]);
-    let output = compute_op(
-        &OpKind::Div,
-        vec![0.0; 2],
-        &Layout::from_shape(&[2], 0),
-        &[lhs, rhs],
-    );
+    let output = compute_op(&OpKind::Div, vec![0.0; 2], &Layout::new(&[2]), &[lhs, rhs]);
     assert_eq!(output.data(), &vec![3.0, 2.0]);
 }
 
@@ -241,7 +221,7 @@ fn div_contiguous() {
 #[test]
 fn scalar_axby_inplace() {
     let input = td(vec![1.0, 2.0, 3.0], &[3]);
-    let layout = Layout::from_shape(&[3], 0);
+    let layout = Layout::new(&[3]);
     let output = compute_op_inplace(
         &OpKind::ScalarOp(OpKindScalar::AxBy(2.0, 1.0)),
         &layout,
@@ -254,7 +234,7 @@ fn scalar_axby_inplace() {
 #[test]
 fn scalar_exp_inplace() {
     let input = td(vec![0.0], &[1]);
-    let layout = Layout::from_shape(&[1], 0);
+    let layout = Layout::new(&[1]);
     let output = compute_op_inplace(
         &OpKind::ScalarOp(OpKindScalar::Exp),
         &layout,
@@ -267,7 +247,7 @@ fn scalar_exp_inplace() {
 #[test]
 fn scalar_ln_inplace() {
     let input = td(vec![1.0], &[1]);
-    let layout = Layout::from_shape(&[1], 0);
+    let layout = Layout::new(&[1]);
     let output = compute_op_inplace(&OpKind::ScalarOp(OpKindScalar::Ln), &layout, vec![input], 0);
     assert_eq!(output.data(), &vec![0.0]);
 }
@@ -275,7 +255,7 @@ fn scalar_ln_inplace() {
 #[test]
 fn scalar_log2_inplace() {
     let input = td(vec![1.0, 2.0], &[2]);
-    let layout = Layout::from_shape(&[2], 0);
+    let layout = Layout::new(&[2]);
     let output = compute_op_inplace(
         &OpKind::ScalarOp(OpKindScalar::Log2),
         &layout,
@@ -289,7 +269,7 @@ fn scalar_log2_inplace() {
 fn fused_scalar_inplace() {
     // AxBy(2, 1): 2*3+1=7, then AxBy(3, 0): 3*7+0=21
     let input = td(vec![3.0], &[1]);
-    let layout = Layout::from_shape(&[1], 0);
+    let layout = Layout::new(&[1]);
     let ops = Box::new([OpKindScalar::AxBy(2.0, 1.0), OpKindScalar::AxBy(3.0, 0.0)]);
     let output = compute_op_inplace(&OpKind::FusedScalar(ops), &layout, vec![input], 0);
     assert_eq!(output.data(), &vec![21.0]);
@@ -299,7 +279,7 @@ fn fused_scalar_inplace() {
 fn add_inplace_reuse_lhs() {
     let lhs = td(vec![1.0, 2.0, 3.0], &[3]);
     let rhs = td(vec![4.0, 5.0, 6.0], &[3]);
-    let layout = Layout::from_shape(&[3], 0);
+    let layout = Layout::new(&[3]);
     let output = compute_op_inplace(&OpKind::Add, &layout, vec![lhs, rhs], 0);
     assert_eq!(output.data(), &vec![5.0, 7.0, 9.0]);
 }
@@ -308,7 +288,7 @@ fn add_inplace_reuse_lhs() {
 fn add_inplace_reuse_rhs() {
     let lhs = td(vec![1.0, 2.0, 3.0], &[3]);
     let rhs = td(vec![4.0, 5.0, 6.0], &[3]);
-    let layout = Layout::from_shape(&[3], 0);
+    let layout = Layout::new(&[3]);
     let output = compute_op_inplace(&OpKind::Add, &layout, vec![lhs, rhs], 1);
     assert_eq!(output.data(), &vec![5.0, 7.0, 9.0]);
 }
@@ -317,7 +297,7 @@ fn add_inplace_reuse_rhs() {
 fn sub_inplace() {
     let lhs = td(vec![5.0, 6.0], &[2]);
     let rhs = td(vec![1.0, 2.0], &[2]);
-    let layout = Layout::from_shape(&[2], 0);
+    let layout = Layout::new(&[2]);
     let output = compute_op_inplace(&OpKind::Sub, &layout, vec![lhs, rhs], 0);
     assert_eq!(output.data(), &vec![4.0, 4.0]);
 }
@@ -326,7 +306,7 @@ fn sub_inplace() {
 fn mul_inplace() {
     let lhs = td(vec![2.0, 3.0], &[2]);
     let rhs = td(vec![4.0, 5.0], &[2]);
-    let layout = Layout::from_shape(&[2], 0);
+    let layout = Layout::new(&[2]);
     let output = compute_op_inplace(&OpKind::Mul, &layout, vec![lhs, rhs], 0);
     assert_eq!(output.data(), &vec![8.0, 15.0]);
 }
@@ -335,7 +315,7 @@ fn mul_inplace() {
 fn div_inplace() {
     let lhs = td(vec![6.0, 10.0], &[2]);
     let rhs = td(vec![2.0, 5.0], &[2]);
-    let layout = Layout::from_shape(&[2], 0);
+    let layout = Layout::new(&[2]);
     let output = compute_op_inplace(&OpKind::Div, &layout, vec![lhs, rhs], 0);
     assert_eq!(output.data(), &vec![3.0, 2.0]);
 }
@@ -347,7 +327,7 @@ fn slice_inplace() {
     let new_layout = input.layout().slice(s![.., 1..3]).unwrap();
     let output = compute_op_inplace(
         &OpKind::Slice(new_layout),
-        &Layout::from_shape(&[3, 2], 0),
+        &Layout::new(&[3, 2]),
         vec![input],
         0,
     );
@@ -369,12 +349,7 @@ fn view_inplace() {
 fn transpose_inplace() {
     // [[0,1,2],[3,4,5]] → shape [3,2], row-major iteration [0,3,1,4,2,5]
     let input = arange(6, &[2, 3]);
-    let output = compute_op_inplace(
-        &OpKind::Transpose,
-        &Layout::from_shape(&[3, 2], 0),
-        vec![input],
-        0,
-    );
+    let output = compute_op_inplace(&OpKind::Transpose, &Layout::new(&[3, 2]), vec![input], 0);
     assert_eq!(output.shape(), &[3, 2]);
     assert_eq!(output, td(vec![0.0, 3.0, 1.0, 4.0, 2.0, 5.0], &[3, 2]));
 }
@@ -397,7 +372,7 @@ fn transpose_axes_inplace() {
 #[test]
 fn no_op_inplace() {
     let input = td(vec![1.0, 2.0, 3.0], &[3]);
-    let layout = Layout::from_shape(&[3], 0);
+    let layout = Layout::new(&[3]);
     let output = compute_op_inplace(&OpKind::NoOp, &layout, vec![input], 0);
     assert_eq!(output.data(), &vec![1.0, 2.0, 3.0]);
 }
@@ -412,7 +387,7 @@ fn matmul_identity_2x2() {
     let output = compute_op(
         &OpKind::MatMul(1.0),
         vec![0.0; 4],
-        &Layout::from_shape(&[2, 2], 0),
+        &Layout::new(&[2, 2]),
         &[a.clone(), eye],
     );
     assert_eq!(output.data(), a.data());
@@ -429,7 +404,7 @@ fn matmul_rectangular() {
     let output = compute_op(
         &OpKind::MatMul(1.0),
         vec![0.0; 4],
-        &Layout::from_shape(&[2, 2], 0),
+        &Layout::new(&[2, 2]),
         &[a, b],
     );
     assert_eq!(output.data(), &vec![58.0, 64.0, 139.0, 154.0]);
@@ -444,7 +419,7 @@ fn matmul_batched() {
     let output = compute_op(
         &OpKind::MatMul(1.0),
         vec![0.0; 8],
-        &Layout::from_shape(&[2, 2, 2], 0),
+        &Layout::new(&[2, 2, 2]),
         &[a, b],
     );
     // batch 0: [[1,1],[1,1]] @ I = [[1,1],[1,1]]
@@ -463,7 +438,7 @@ fn matmul_transposed() {
     let output = compute_op(
         &OpKind::MatMul(1.0),
         vec![0.0; 4],
-        &Layout::from_shape(&[2, 2], 0),
+        &Layout::new(&[2, 2]),
         &[a, b],
     );
     assert_eq!(output.data(), &vec![19.0, 22.0, 43.0, 50.0]);
@@ -480,7 +455,7 @@ fn matmul_batched_transposed() {
     let output = compute_op(
         &OpKind::MatMul(1.0),
         vec![0.0; 8],
-        &Layout::from_shape(&[2, 2, 2], 0),
+        &Layout::new(&[2, 2, 2]),
         &[a, b],
     );
     assert_eq!(output.data(), &vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
@@ -498,7 +473,7 @@ fn matmul_sum_plus() {
     let output = compute_op(
         &OpKind::MatMulSum(1.0, 1.0, Sign::Plus),
         vec![0.0; 4],
-        &Layout::from_shape(&[2, 2], 0),
+        &Layout::new(&[2, 2]),
         &[a, b, c],
     );
     // 1*(A@B) + 1*C = [[2,3],[4,5]] + [[1,1],[1,1]] = [[3,4],[5,6]]
@@ -513,7 +488,7 @@ fn matmul_sum_minus() {
     let output = compute_op(
         &OpKind::MatMulSum(1.0, 1.0, Sign::Minus),
         vec![0.0; 4],
-        &Layout::from_shape(&[2, 2], 0),
+        &Layout::new(&[2, 2]),
         &[a, b, c],
     );
     // 1*(A@B) - 1*C = [[2,3],[4,5]] - [[1,1],[1,1]] = [[1,2],[3,4]]
@@ -528,7 +503,7 @@ fn matmul_sum_scaled_alpha() {
     let output = compute_op(
         &OpKind::MatMulSum(2.0, 1.0, Sign::Plus),
         vec![0.0; 4],
-        &Layout::from_shape(&[2, 2], 0),
+        &Layout::new(&[2, 2]),
         &[a, b, c],
     );
     // 2*(A@B) + 1*C = 2*[[2,3],[4,5]] + [[1,1],[1,1]] = [[5,7],[9,11]]
@@ -543,7 +518,7 @@ fn matmul_sum_scaled_beta() {
     let output = compute_op(
         &OpKind::MatMulSum(1.0, 2.0, Sign::Plus),
         vec![0.0; 4],
-        &Layout::from_shape(&[2, 2], 0),
+        &Layout::new(&[2, 2]),
         &[a, b, c],
     );
     // 1*(A@B) + 2*C = [[2,3],[4,5]] + 2*[[1,1],[1,1]] = [[4,5],[6,7]]
@@ -556,28 +531,28 @@ fn matmul_sum_scaled_beta() {
 #[test]
 fn broadcast_non_one_dim_mismatch_returns_error() {
     // [2] cannot broadcast to [3]: dim 2 is not 1 and 2 != 3
-    let layout = Layout::from_shape(&[2], 0);
+    let layout = Layout::new(&[2]);
     assert!(layout.broadcast(&[3]).is_err());
 }
 
 #[test]
 fn broadcast_inner_dim_mismatch_returns_error() {
     // [2, 3] cannot broadcast to [2, 4]: last dim 3 is not 1 and 3 != 4
-    let layout = Layout::from_shape(&[2, 3], 0);
+    let layout = Layout::new(&[2, 3]);
     assert!(layout.broadcast(&[2, 4]).is_err());
 }
 
 #[test]
 fn broadcast_smaller_rank_mismatch_returns_error() {
     // [4] cannot broadcast to [2, 3]: dim 4 is not 1 and 4 != 3
-    let layout = Layout::from_shape(&[4], 0);
+    let layout = Layout::new(&[4]);
     assert!(layout.broadcast(&[2, 3]).is_err());
 }
 
 #[test]
 fn broadcast_rank_reduction_returns_error() {
     // Cannot broadcast to a shape with fewer dimensions: [3,4] → [4] shrinks rank
-    let layout = Layout::from_shape(&[3, 4], 0);
+    let layout = Layout::new(&[3, 4]);
     assert!(layout.broadcast(&[4]).is_err());
 }
 
@@ -661,12 +636,7 @@ fn broadcast_inplace_row_to_matrix() {
 fn sum_1d() {
     // [0,1,2,3,4] → 10
     let input = arange(5, &[5]);
-    let output = compute_op(
-        &OpKind::Sum,
-        vec![0.0; 1],
-        &Layout::from_shape(&[1], 0),
-        &[input],
-    );
+    let output = compute_op(&OpKind::Sum, vec![0.0; 1], &Layout::new(&[1]), &[input]);
     assert_eq!(output.data(), &vec![10.0]);
 }
 
@@ -675,12 +645,7 @@ fn sum_non_contiguous() {
     // Column 0 of [[0,1,2],[3,4,5]] is [0,3] → sum = 3
     let base = arange(6, &[2, 3]);
     let input = base.slice(s![.., 0..1]);
-    let output = compute_op(
-        &OpKind::Sum,
-        vec![0.0; 1],
-        &Layout::from_shape(&[1], 0),
-        &[input],
-    );
+    let output = compute_op(&OpKind::Sum, vec![0.0; 1], &Layout::new(&[1]), &[input]);
     assert_eq!(output.data(), &vec![3.0]);
 }
 
@@ -689,12 +654,7 @@ fn sum_transposed() {
     // [2,3] transposed to [3,2], fully non-contiguous; total sum = 15.
     let base = arange(6, &[2, 3]);
     let input = base.as_layout(base.layout().transpose());
-    let output = compute_op(
-        &OpKind::Sum,
-        vec![0.0; 1],
-        &Layout::from_shape(&[1], 0),
-        &[input],
-    );
+    let output = compute_op(&OpKind::Sum, vec![0.0; 1], &Layout::new(&[1]), &[input]);
     assert_eq!(output.data(), &vec![15.0]);
 }
 
@@ -705,7 +665,7 @@ fn sum_axis_0_2d() {
     let output = compute_op(
         &OpKind::SumAxis(0, false),
         vec![0.0; 2],
-        &Layout::from_shape(&[2], 0),
+        &Layout::new(&[2]),
         &[input],
     );
     assert_eq!(output.data(), &vec![6.0, 9.0]);
@@ -718,7 +678,7 @@ fn sum_axis_1_2d() {
     let output = compute_op(
         &OpKind::SumAxis(1, false),
         vec![0.0; 3],
-        &Layout::from_shape(&[3], 0),
+        &Layout::new(&[3]),
         &[input],
     );
     assert_eq!(output.data(), &vec![1.0, 5.0, 9.0]);
@@ -731,7 +691,7 @@ fn sum_axis_negative() {
     let output = compute_op(
         &OpKind::SumAxis(-1, false),
         vec![0.0; 3],
-        &Layout::from_shape(&[3], 0),
+        &Layout::new(&[3]),
         &[input],
     );
     assert_eq!(output.data(), &vec![1.0, 5.0, 9.0]);
@@ -744,7 +704,7 @@ fn sum_axis_0_3d() {
     let output = compute_op(
         &OpKind::SumAxis(0, false),
         vec![0.0; 12],
-        &Layout::from_shape(&[3, 4], 0),
+        &Layout::new(&[3, 4]),
         &[input],
     );
     let expected: Vec<f64> = (0..12).map(|i| i as f64 + (i + 12) as f64).collect();
@@ -759,7 +719,7 @@ fn sum_axis_middle_3d() {
     let output = compute_op(
         &OpKind::SumAxis(1, false),
         vec![0.0; 2],
-        &Layout::from_shape(&[2, 1], 0),
+        &Layout::new(&[2, 1]),
         &[input],
     );
     assert_eq!(output.data(), &vec![3.0, 12.0]);
@@ -771,12 +731,7 @@ fn sum_axis_middle_3d() {
 fn max_1d() {
     // max of [0,1,2,3,4] = 4
     let input = arange(5, &[5]);
-    let output = compute_op(
-        &OpKind::Max,
-        vec![0.0; 1],
-        &Layout::from_shape(&[1], 0),
-        &[input],
-    );
+    let output = compute_op(&OpKind::Max, vec![0.0; 1], &Layout::new(&[1]), &[input]);
     assert_eq!(output.data(), &vec![4.0]);
 }
 
@@ -785,12 +740,7 @@ fn max_non_contiguous() {
     // Column 0 of [[0,1,2],[3,4,5]] is [0,3] → max = 3
     let base = arange(6, &[2, 3]);
     let input = base.slice(s![.., 0..1]);
-    let output = compute_op(
-        &OpKind::Max,
-        vec![0.0; 1],
-        &Layout::from_shape(&[1], 0),
-        &[input],
-    );
+    let output = compute_op(&OpKind::Max, vec![0.0; 1], &Layout::new(&[1]), &[input]);
     assert_eq!(output.data(), &vec![3.0]);
 }
 
@@ -801,7 +751,7 @@ fn max_axis_0_2d() {
     let output = compute_op(
         &OpKind::MaxAxis(0, false),
         vec![0.0; 2],
-        &Layout::from_shape(&[2], 0),
+        &Layout::new(&[2]),
         &[input],
     );
     assert_eq!(output.data(), &vec![4.0, 5.0]);
@@ -814,7 +764,7 @@ fn max_axis_1_2d() {
     let output = compute_op(
         &OpKind::MaxAxis(1, false),
         vec![0.0; 3],
-        &Layout::from_shape(&[3], 0),
+        &Layout::new(&[3]),
         &[input],
     );
     assert_eq!(output.data(), &vec![1.0, 3.0, 5.0]);
@@ -827,7 +777,7 @@ fn max_axis_negative() {
     let output = compute_op(
         &OpKind::MaxAxis(-1, false),
         vec![0.0; 3],
-        &Layout::from_shape(&[3], 0),
+        &Layout::new(&[3]),
         &[input],
     );
     assert_eq!(output.data(), &vec![1.0, 3.0, 5.0]);
@@ -839,12 +789,7 @@ fn max_axis_negative() {
 fn mean_1d() {
     // mean of [0,1,2,3,4] = 2.0
     let input = arange(5, &[5]);
-    let output = compute_op(
-        &OpKind::Mean,
-        vec![0.0; 1],
-        &Layout::from_shape(&[1], 0),
-        &[input],
-    );
+    let output = compute_op(&OpKind::Mean, vec![0.0; 1], &Layout::new(&[1]), &[input]);
     assert_eq!(output.data(), &vec![2.0]);
 }
 
@@ -853,12 +798,7 @@ fn mean_non_contiguous() {
     // Column 0 of [[0,1,2],[3,4,5]] is [0,3] → mean = 1.5
     let base = arange(6, &[2, 3]);
     let input = base.slice(s![.., 0..1]);
-    let output = compute_op(
-        &OpKind::Mean,
-        vec![0.0; 1],
-        &Layout::from_shape(&[1], 0),
-        &[input],
-    );
+    let output = compute_op(&OpKind::Mean, vec![0.0; 1], &Layout::new(&[1]), &[input]);
     assert_eq!(output.data(), &vec![1.5]);
 }
 
@@ -869,7 +809,7 @@ fn mean_axis_0_2d() {
     let output = compute_op(
         &OpKind::MeanAxis(0, false),
         vec![0.0; 2],
-        &Layout::from_shape(&[2], 0),
+        &Layout::new(&[2]),
         &[input],
     );
     assert_eq!(output.data(), &vec![2.0, 3.0]);
@@ -882,7 +822,7 @@ fn mean_axis_1_2d() {
     let output = compute_op(
         &OpKind::MeanAxis(1, false),
         vec![0.0; 3],
-        &Layout::from_shape(&[3], 0),
+        &Layout::new(&[3]),
         &[input],
     );
     assert_eq!(output.data(), &vec![0.5, 2.5, 4.5]);
@@ -895,7 +835,7 @@ fn mean_axis_negative() {
     let output = compute_op(
         &OpKind::MeanAxis(-1, false),
         vec![0.0; 3],
-        &Layout::from_shape(&[3], 0),
+        &Layout::new(&[3]),
         &[input],
     );
     assert_eq!(output.data(), &vec![0.5, 2.5, 4.5]);

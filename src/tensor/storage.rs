@@ -102,7 +102,7 @@ impl<T: Clone> TensorData<T> {
 
         Self {
             storage: Storage::from_scalar(scalar, len),
-            layout: Layout::from_shape(shape, 0),
+            layout: Layout::new(shape),
         }
     }
 
@@ -111,7 +111,7 @@ impl<T: Clone> TensorData<T> {
         validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
         Self {
             storage: Storage::from_arc(buffer),
-            layout: Layout::from_shape(shape, 0),
+            layout: Layout::new(shape),
         }
     }
 
@@ -129,7 +129,7 @@ impl<T: Clone> TensorData<T> {
 
         Self {
             storage: Storage::from_vec(vector),
-            layout: Layout::from_shape(shape, offset),
+            layout: Layout::new(shape).with_offset(offset),
         }
     }
 

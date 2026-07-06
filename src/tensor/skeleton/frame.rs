@@ -51,7 +51,7 @@ impl<T> SkeletonSlot<T, DefaultBackend> {
     /// Creates a new contiguous input slot with the given shape.
     #[inline]
     pub fn from_shape(shape: &[usize]) -> Self {
-        SkeletonSlot::new(Layout::from_shape(shape, 0))
+        SkeletonSlot::new(Layout::new(shape))
     }
 }
 
@@ -140,7 +140,7 @@ impl<T: Numeric, B: Backend> BakedPromise<T, B> {
     /// let b = &base_b * 2.0;
     ///
     /// // Compose `x + y` over the two promises, then materialize the result.
-    /// let x = SkeletonSlot::new(Layout::from_shape(&[4], 0));
+    /// let x = SkeletonSlot::new(Layout::new(&[4]));
     /// let y = x.deep_clone();
     /// let baked = (&x + &y).into_skeleton(&[x, y])?.compose(&[&a, &b])?;
     ///
@@ -423,7 +423,7 @@ impl<T: Clone + PartialEq + ComputeFor<B>, B: Backend> Skeleton<T, B> {
     /// use candela::{Layout, Tensor};
     ///
     /// // The same compiled plan, executed against two different inputs.
-    /// let slot = SkeletonSlot::new(Layout::from_shape(&[4], 0));
+    /// let slot = SkeletonSlot::new(Layout::new(&[4]));
     /// let skeleton = (&slot * 2.0 + 1.0).into_skeleton(std::slice::from_ref(&slot))?;
     ///
     /// let a = skeleton.run(&[&Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0], &[4])])?;
@@ -489,7 +489,7 @@ impl<T: Clone + PartialEq + ComputeFor<B>, B: Backend> Skeleton<T, B> {
     /// let rhs = Tensor::from_scalar(10.0, &[4]);
     ///
     /// // Compile `a + b` over two slots, then splice it into a bigger expression.
-    /// let a = SkeletonSlot::new(Layout::from_shape(&[4], 0));
+    /// let a = SkeletonSlot::new(Layout::new(&[4]));
     /// let b = a.deep_clone();
     /// let sum = (&a + &b).into_skeleton(&[a, b])?;
     ///

@@ -24,7 +24,30 @@ pub(crate) fn validate_shape(shape: &[usize]) -> Result<(), OpError> {
 }
 
 impl Layout {
-    pub fn new(
+    pub fn new(shape: &[usize]) -> Self {
+        validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
+        let len: usize = shape.iter().product();
+
+        Self {
+            shape: shape.into(),
+            stride: calculate_dim_stride(shape),
+            adj_stride: vec![1; shape.len()].into_boxed_slice(),
+            offset: 0,
+            len,
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            shape: Box::new([0]),
+            stride: Box::new([0]),
+            adj_stride: Box::new([0]),
+            offset: 0,
+            len: 0,
+        }
+    }
+
+    pub fn from_raw_parts(
         shape: Box<[usize]>,
         stride: Box<[i32]>,
         adj_stride: Box<[i32]>,
@@ -40,30 +63,7 @@ impl Layout {
         }
     }
 
-    pub fn empty() -> Self {
-        Self {
-            shape: Box::new([0]),
-            stride: Box::new([0]),
-            adj_stride: Box::new([0]),
-            offset: 0,
-            len: 0,
-        }
-    }
-
-    pub fn from_shape(shape: &[usize], offset: usize) -> Self {
-        validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
-        let len: usize = shape.iter().product();
-
-        Self {
-            shape: shape.into(),
-            stride: calculate_dim_stride(shape),
-            adj_stride: vec![1; shape.len()].into_boxed_slice(),
-            offset,
-            len,
-        }
-    }
-
-    pub fn from_slice(shape: &[usize], stride: &[i32], offset: usize) -> Self {
+    pub fn from_strided(shape: &[usize], stride: &[i32], offset: usize) -> Self {
         validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
         debug_assert!(shape.len() == stride.len());
 
@@ -78,6 +78,12 @@ impl Layout {
         }
     }
 
+    pub fn with_offset(mut self, offset: usize) -> Self {
+        self.offset = offset;
+
+        self
+    }
+
     pub fn view(&self, shape: &[usize]) -> Result<Self, OpError> {
         if shape.iter().product::<usize>() != self.len() {
             return Err(OpError::InvalidViewShape);
@@ -85,7 +91,7 @@ impl Layout {
         if !self.is_contiguous() {
             return Err(OpError::NonContiguousView);
         }
-        Ok(Layout::from_shape(shape, self.offset))
+        Ok(Layout::new(shape).with_offset(self.offset))
     }
 
     pub fn slice(&self, range: &[SliceRange]) -> Result<Self, OpError> {

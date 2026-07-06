@@ -50,6 +50,11 @@ you run.
   `trace` level - enable it with `--features tracing` when you need it.
 - **Renamed `Tensor::clone_deep` to `Tensor::deep_clone`** for a consistent
   `verb_noun` method name. (breaking)
+- **Reworked `Layout`'s constructors into a friendlier, more consistent API.**
+  `Layout::new` now takes just a shape (`Layout::new(&[usize])`) for the common
+  contiguous case; the old raw-field constructor is now `Layout::from_raw_parts`;
+  `from_slice` is now `from_strided`; and `from_shape(shape, offset)` is replaced
+  by `Layout::new(shape).with_offset(offset)`. (breaking)
 - The executor was split into its own `src/tensor/executor.rs`, and the planner
   gained an owned-plan representation (`planner/owned.rs`) so a compiled plan can
   be stored and replayed - the foundation skeletons run on.

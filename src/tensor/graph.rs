@@ -279,23 +279,9 @@ impl<T: Numeric, B: Backend> TensorGraphCacheNode<T, B> {
             Err(err) => Err(err),
         }
     }
-
-    pub fn with_layout(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>, layout: Layout) -> Self {
-        Self {
-            node: TensorGraphNode::with_layout(op, inputs, layout),
-            cache: OnceLock::new(),
-        }
-    }
 }
 
 impl<T, B: Backend> TensorGraphCacheNode<T, B> {
-    pub fn from_node(node: TensorGraphNode<T, B>) -> Self {
-        Self {
-            node,
-            cache: OnceLock::new(),
-        }
-    }
-
     pub fn get_node(&self) -> &TensorGraphNode<T, B> {
         &self.node
     }
