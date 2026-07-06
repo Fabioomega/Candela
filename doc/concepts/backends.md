@@ -23,7 +23,7 @@ The pair `(T, B)` selects a concrete kernel set. Keeping them orthogonal means a
 dtype doesn't touch the backends and a new backend doesn't touch the dtypes - the
 combinatorial explosion that the old single-implementation design invited never forms.
 
-Both traits live in [`src/tensor/backend/mod.rs`](../src/tensor/backend/mod.rs).
+Both traits live in the [`backend`](crate::backend) module.
 
 ---
 
@@ -33,7 +33,7 @@ The obvious design is to put `compute` directly on `Backend` and be done. Candel
 extra hop - `Backend::compute` delegates to `ComputeFor<B>::compute`, a trait parameterized
 on the dtype:
 
-```rust
+```rust,ignore
 pub trait ComputeFor<B: Backend>: Dtype {
     fn compute(/* ... */) -> TensorData<Self>;
     fn compute_inplace(/* ... */) -> TensorData<Self>;
@@ -76,7 +76,7 @@ cargo build --features mkl  # CpuMkl
 
 The backend the constructors infer when you don't name one. It tracks the feature flag:
 
-```rust
+```rust,ignore
 #[cfg(feature = "mkl")]
 pub type DefaultBackend = cpu_mkl::CpuMkl;
 #[cfg(not(feature = "mkl"))]
@@ -87,6 +87,7 @@ So the same source picks up MKL just by flipping the flag - you almost never wri
 out:
 
 ```rust
+# use candela::Tensor;
 let t = Tensor::from_scalar(1.0_f64, &[4]);          // Tensor<f64, DefaultBackend>
 let t: Tensor<f32> = Tensor::from_scalar(1.0, &[4]); // f32, default backend
 ```
@@ -120,4 +121,4 @@ materializing the broadcast.
 `compute_inplace` carries a contract from the planner: the buffer at `inputs[output_idx]`
 is guaranteed to be dead - no live node still reads it - so writing the result over it is
 sound. The planner earns that guarantee through the liveness analysis described in
-[planner.md](planner.md); the backend just trusts it.
+[the planner docs](crate::docs::planner); the backend just trusts it.

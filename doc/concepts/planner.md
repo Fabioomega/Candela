@@ -5,11 +5,11 @@ in some arbitrary order. It first builds a *plan* - a fully ordered schedule tha
 exactly what to compute, which buffer to write into, what to free afterward, and which
 buffer holds the final answer. This document explains how that plan is built.
 
-If you haven't read [graph.md](graph.md) yet, it's worth a quick look first - the
+If you haven't read [the computation graph](crate::docs::graph) yet, it's worth a quick look first - the
 planner works directly with the node types described there.
 
 This document describes the planner as it is now. For how it got here - the dead ends
-and the bugs that shaped it - see [planner-history.md](planner-history.md).
+and the bugs that shaped it - see [the design history](crate::docs::planner_history).
 
 ---
 
@@ -24,6 +24,59 @@ The root problem was that "is this buffer reusable?" is the wrong question. The 
 question is "is this buffer *still being read* at this point?" That requires knowing
 *when* each buffer is last consumed, not just whether it's eligible. The planner answers
 that question before execution begins.
+
+---
+
+## The plan at a glance
+
+Before the details, here is the whole pipeline at a high level. Planning a graph is
+five steps:
+
+1. **Order the nodes.** A topological sort places every node after the inputs it
+   depends on, so nothing is ever scheduled before the data it reads.
+2. **Classify aliasing.** Some nodes produce a buffer of their own; others only
+   re-point at a buffer another node already owns. This step decides which is which.
+3. **Assign each output a buffer.** For every node that does produce one, pick how:
+   overwrite a dead input in place, reclaim an earlier buffer that has since been
+   freed, reference an existing one, or allocate a fresh buffer.
+4. **Record lifetimes.** Note the last step that reads each buffer, so it can be
+   freed the moment nothing needs it again.
+5. **Execute.** Walk the ordered steps, running each op into its assigned buffer and
+   dropping buffers as their lifetimes end. Whatever holds the root's result is the
+   answer.
+
+---
+
+## Example
+
+Take `(a + b) * 2.0`. The graph has four nodes: the two input tensors `a` and `b`, an
+`Add` that combines them, and a scalar `× 2.0` over the sum. Planning walks them in
+order:
+
+- `a` and `b` are inputs - buffers the planner never allocates and never frees, they
+  already exist.
+- `Add` has no dead buffer to overwrite (its inputs are the caller's tensors, which
+  have to survive), so it allocates one fresh buffer for the sum.
+- `× 2.0` reads `Add`'s buffer, and `Add` has no other consumer, so that buffer is
+  dead the instant the scalar has read it. Rather than allocate, the scalar writes its
+  result back into that same buffer, in place.
+- The scalar is the root, so its buffer is the result and is kept.
+
+Written out as a schedule:
+
+```text
+  a ─┐
+     Add ── ×2.0     (root)
+  b ─┘
+
+  step 0   Add    → buf0 (fresh)       a, b are inputs, kept alive
+  step 1   ×2.0   → buf0 (in place)    buf0 is dead after Add, so reuse it
+                                       buf0 holds the final result
+```
+
+The whole expression runs in a single allocation, reused for the final step - no
+intermediate is ever held past the moment it is consumed. The rest of this document is
+how the planner arrives at decisions like that one.
 
 ---
 
@@ -99,7 +152,7 @@ buffer the instant the step that last needed it completes.
 ## Aliasing: alias vs takeover
 
 This is the part worth slowing down for - it's where two earlier designs went wrong (see
-[planner-history.md](planner-history.md)).
+[the design history](crate::docs::planner_history)).
 
 Some nodes don't produce a buffer; they *are* another node's buffer. `NoOp` is the
 obvious case: it's the identity, so its result is exactly its input's buffer.
@@ -118,7 +171,7 @@ An `Alias` node contributes no computation and emits no plan step. It records
 `node.id -> target` and disappears. A `NoOp` aliases its input. A *second* `AsContiguous`
 over an input that's already been packed aliases the first one's result. An
 `AsContiguous` over a cache node aliases the cache directly (caches store contiguous
-results - see [graph.md](graph.md)). Aliases point *backward*, to a node already visited
+results - see [the computation graph](crate::docs::graph)). Aliases point *backward*, to a node already visited
 earlier in the sort, so resolving one always lands on something real.
 
 ### Takeover - "I am now the canonical version of my input"
@@ -176,7 +229,7 @@ A worked example. `transposed` (a `Transpose`) feeds two consumers:
 `contiguous = transposed.as_contiguous()` and `shifted = &transposed + 1.0`. The sort,
 driven by a LIFO stack, can yield `shifted` *before* `contiguous`:
 
-```
+```text
 transposed, shifted, contiguous
 ```
 
@@ -184,7 +237,7 @@ When `shifted` is reached, no claim on `transposed` exists yet, so its frozen in
 `transposed` - and at execution it reads the transpose, which is what it wants. When
 `contiguous` is reached it takes over `transposed`; a *later* consumer would resolve to
 `contiguous`. Nobody reads a buffer before it exists. (This exact graph used to panic -
-[planner-history.md](planner-history.md) tells that story.)
+[the design history](crate::docs::planner_history) tells that story.)
 
 ### What deduplication can and can't do
 

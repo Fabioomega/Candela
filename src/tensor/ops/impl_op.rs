@@ -945,7 +945,7 @@ macro_rules! impl_as_contiguous {
             /// densely laid-out tensor. If the input is already contiguous it costs
             /// nothing — the call collapses to a no-op. Candela also inserts it
             /// automatically wherever an op needs contiguous memory (a BLAS matmul, a
-            /// [`.view()`][Self::view]), so you rarely call it by hand.
+            /// [`.reshape()`][Self::reshape]), so you rarely call it by hand.
             ///
             /// # Examples
             ///

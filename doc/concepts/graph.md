@@ -38,7 +38,7 @@ so they collapse. What gets stored is a single `FusedScalar` node computing `2x 
 one pass over the data, identical in result to running the two ops in sequence. The
 intermediate node was absorbed before it was ever stored.
 
-```
+```text
 // What you wrote:    Edge(t)  ←  ScalarOp(+1.0)  ←  ScalarOp(×2.0)
 // What gets stored:  Edge(t)  ←  FusedScalar(2x + 2)
 ```
@@ -97,4 +97,4 @@ uses a similar approach, which was enough validation to commit to it.
 
 Once a graph is built, calling `.materialize()` hands it off to the execution planner,
 which works out the most memory-efficient order and buffer assignment before running
-anything. That process is described in [planner.md](planner.md).
+anything. That process is described in [the execution planner](crate::docs::planner).

@@ -389,7 +389,7 @@ where
 /// Called on a cache miss with the layouts of the current inputs. It must create its
 /// slots from those layouts and bind them in the same order, so the resulting skeleton
 /// accepts exactly that shape.
-pub type BuildFunction<T, B> = Box<dyn Fn(&[Layout]) -> Skeleton<T, B>>;
+pub type BuildFunction<T, B> = Box<dyn Fn(&[Layout]) -> Skeleton<T, B> + Send + Sync>;
 
 impl<P, T, B> SkeletonCache<Box<[Layout]>, P, T, B>
 where

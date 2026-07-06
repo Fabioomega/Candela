@@ -3,7 +3,7 @@
 This is an archival document. It records how the planner's buffer-reuse and
 deduplication machinery evolved, and *why* each design was replaced. None of the
 intermediate designs described here exist in the code anymore - if you want to know how
-the planner works today, read [planner.md](planner.md). Read this one if you're curious
+the planner works today, read [the planner docs](crate::docs::planner). Read this one if you're curious
 why it works the way it does, or if you're tempted to "simplify" it back toward something
 that already failed.
 
@@ -24,7 +24,7 @@ flag only said "this buffer is free to reuse," not "this buffer is still being r
 
 The lesson - "is this buffer reusable?" is the wrong question; "is it still being read at
 this point?" is the right one - is the foundation of every later design and is told in
-full in [planner.md](planner.md#why-not-just-execute-the-graph-directly). Answering it
+full in [the planner docs](crate::docs::planner). Answering it
 required tracking *when* each buffer is last consumed, which means analysing lifetimes
 before execution. That gave us a planner. It also gave us a new problem: deduplicating
 `AsContiguous`.
@@ -48,7 +48,7 @@ which registers `node_1 → node_2`) and a plain scalar op (`node_3`). The topol
 is a depth-first traversal with a LIFO stack; if `root.inputs = [node_2, node_3]`, it
 yields:
 
-```
+```text
 node_1, node_3, node_2
 ```
 
@@ -89,7 +89,7 @@ that is the gap the rewrite closed.
 
 The current design is chapter 3's resolution idea ported onto a dedicated pre-planner that
 owns *all* aliasing, leaving a buffer-assignment pass that only allocates. The full
-mechanism is in [planner.md](planner.md#aliasing-alias-vs-takeover); the parts that answer
+mechanism is in [the planner docs](crate::docs::planner); the parts that answer
 "why restructure a correct design" are:
 
 - **Resolution is a per-node snapshot taken in topological order.** Each node resolves its

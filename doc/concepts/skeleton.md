@@ -76,3 +76,7 @@ let promise = slot * 2.0 + 1.0;
 // Creating a skeleton
 let skeleton = promise.log2().into_skeleton(&[slot, slot2])?;
 ```
+
+## Skeleton
+
+This is the "baked" function produced by a `SkeletonPromise` via a `into_skeleton`. 

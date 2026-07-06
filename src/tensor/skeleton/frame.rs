@@ -40,7 +40,7 @@ impl<T, B: Backend> SkeletonSlot<T, B> {
     /// Equivalent to creating a new slot with the same layout as the old one.
     /// If you just need to reuse the slot use [`clone`] instead.
     ///
-    /// [`clone`]: Tensor::clone
+    /// [`clone`]: SkeletonSlot::clone
     #[inline]
     pub fn deep_clone(&self) -> Self {
         Self::new(self.graph.layout().clone())
@@ -77,7 +77,7 @@ impl<T, B: Backend> Clone for SkeletonSlot<T, B> {
     /// The copy is equivalent to the slot it was copied from. If you want
     /// a new slot with the same layout, use [`deep_clone`] instead.
     ///
-    /// [`deep_clone`]: Tensor::deep_clone
+    /// [`deep_clone`]: Self::deep_clone
     fn clone(&self) -> Self {
         Self {
             graph: self.graph.clone(),

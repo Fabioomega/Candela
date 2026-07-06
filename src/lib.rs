@@ -30,14 +30,9 @@
 //!
 //! # Concepts
 //!
-//! The `doc/` directory in the repository walks through the design, problem-first:
-//!
-//! - `doc/graph.md` - the computation graph: node types, sharing, and
-//!   construction-time fusion.
-//! - `doc/planner.md` - the execution planner: ordering, buffer reuse, and aliasing.
-//! - `doc/layout.md` - strides, zero-copy views, and the `adj_stride` iteration trick.
-//! - `doc/backends.md` - the backend/dtype split and the `mkl` feature flag.
-//! - `doc/skeleton.md` - compile-once/run-many skeletons and the slot taint system.
+//! The [`docs`] module shows in detail how the processing pipeline actually works,
+//! from expression to computed tensor. Start with the [overview](docs::overview) for
+//! the general behaviour; it links each subsystem from there.
 
 mod tensor;
 
@@ -57,6 +52,27 @@ pub mod skeleton {
         Skeleton, SkeletonCache, SkeletonPromise, SkeletonSlot, UnboundedDynamicSkeleton,
         UnboundedPolicy,
     };
+}
+
+/// Design documentation.
+///
+/// Start with [`overview`](crate::docs::overview) for the whole pipeline, then
+/// dive into whichever subsystem you need.
+#[cfg(doc)]
+pub mod docs {
+    #[doc = include_str!("../doc/concepts/backends.md")]
+    pub mod backends {}
+    #[doc = include_str!("../doc/concepts/graph.md")]
+    pub mod graph {}
+    #[doc = include_str!("../doc/concepts/layout.md")]
+    pub mod layout {}
+    #[doc = include_str!("../doc/concepts/planner.md")]
+    pub mod planner {}
+    #[doc = include_str!("../doc/concepts/planner-history.md")]
+    pub mod planner_history {}
+    pub mod skeleton {}
+    #[doc = include_str!("../doc/concepts/overview.md")]
+    pub mod overview {}
 }
 
 use std::ops::Neg;

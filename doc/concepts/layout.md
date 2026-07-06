@@ -13,7 +13,7 @@ element.
 
 ## The fields
 
-```
+```text
 shape      - the logical dimensions, e.g. [3, 4] for a 3×4 matrix
 stride     - how many elements to skip per step in each dimension
 adj_stride - how much the memory position changes when a dimension steps (see below)
@@ -23,7 +23,7 @@ len        - total number of elements (product of shape)
 
 To read element `[i, j]` of a 2D tensor you compute:
 
-```
+```text
 buffer[offset + i * stride[0] + j * stride[1]]
 ```
 
@@ -55,7 +55,7 @@ reversed. Neither was planned; both fall out of the math.
 The naive way to iterate over a tensor is to recompute the full memory position from
 the current multi-dimensional index at every step:
 
-```
+```text
 pos = offset + counter[0]*stride[0] + counter[1]*stride[1] + ...
 ```
 
@@ -67,7 +67,7 @@ need to add to `pos` depends on *which* dimension just stepped.
 
 `adj_stride[d]` is that delta for dimension `d`. It's defined as:
 
-```
+```text
 adj_stride[last]  =  stride[last]
 adj_stride[d]     =  stride[d]  −  sum( stride[k] * (shape[k]−1)  for k = d+1..last )
 ```
@@ -82,7 +82,7 @@ dimensions. That's the formula.
 
 **Example: contiguous `[3, 4]` with stride `[4, 1]`**
 
-```
+```text
 adj_stride[1]  =  1
 adj_stride[0]  =  4  −  1*(4−1)  =  4 − 3  =  1
 ```
@@ -93,7 +93,7 @@ allocated tensors.
 
 **Example: transposed `[4, 3]` (originally `[3, 4]`, stride reversed to `[1, 4]`)**
 
-```
+```text
 adj_stride[1]  =  4
 adj_stride[0]  =  1  −  4*(3−1)  =  1 − 8  =  −7
 ```
@@ -155,7 +155,7 @@ the position does not advance. A `[4]` vector broadcast to `[3, 4]` gains a new 
 dimension with `stride = 0`; reading element `[i, j]` computes `buffer[i*0 + j*1] = buffer[j]`,
 so all three rows map to the same four values. The buffer is untouched.
 
-```
+```text
 source: shape=[4],   stride=[1],    len=4    (physical buffer)
 result: shape=[3,4], stride=[0, 1], len=12   (logical view)
 ```
@@ -172,7 +172,7 @@ Candela follows NumPy-style rules, aligned right:
 - A source dimension of size 1 expands to the target size with `stride = 0`.
 - Any other mismatch (source dim is neither 1 nor equal to target) is rejected.
 
-```
+```text
 [1, 4] → [3, 4]   ✓  size-1 leading dim expands; last dim matches
 [3, 1] → [3, 4]   ✓  size-1 trailing dim expands
 [4]    → [3, 4]   ✓  rank promoted; new leading dim added with stride 0
@@ -188,7 +188,7 @@ inner sequence restarts from the same offset.
 
 **Example: `[4]` broadcast to `[3, 4]`, stride `[0, 1]`:**
 
-```
+```text
 adj_stride[1] = 1
 adj_stride[0] = 0 − 1*(4−1) = −3
 ```

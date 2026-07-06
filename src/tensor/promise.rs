@@ -39,7 +39,7 @@ pub struct TensorPromise<T, B: Backend = DefaultBackend> {
 }
 
 impl<T: Numeric, B: Backend> TensorPromise<T, B> {
-    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>) -> Result<Self, OpError> {
+    pub(crate) fn new(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>) -> Result<Self, OpError> {
         let node = TensorGraphNode::new(op, inputs);
 
         match node {
@@ -50,7 +50,11 @@ impl<T: Numeric, B: Backend> TensorPromise<T, B> {
         }
     }
 
-    pub fn with_layout(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>, layout: Layout) -> Self {
+    pub(crate) fn with_layout(
+        op: OpKind<T>,
+        inputs: Box<[NodeKind<T, B>]>,
+        layout: Layout,
+    ) -> Self {
         Self {
             graph: Arc::new(TensorGraphNode::with_layout(op, inputs, layout)),
         }
@@ -199,7 +203,7 @@ pub struct CachedTensorPromise<T, B: Backend = DefaultBackend> {
 }
 
 impl<T: Numeric, B: Backend> CachedTensorPromise<T, B> {
-    pub fn new(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>) -> Result<Self, OpError> {
+    pub(crate) fn new(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>) -> Result<Self, OpError> {
         let node = TensorGraphCacheNode::new(op, inputs);
 
         match node {
@@ -210,13 +214,17 @@ impl<T: Numeric, B: Backend> CachedTensorPromise<T, B> {
         }
     }
 
-    pub fn with_layout(op: OpKind<T>, inputs: Box<[NodeKind<T, B>]>, layout: Layout) -> Self {
+    pub(crate) fn with_layout(
+        op: OpKind<T>,
+        inputs: Box<[NodeKind<T, B>]>,
+        layout: Layout,
+    ) -> Self {
         Self {
             graph: Arc::new(TensorGraphCacheNode::with_layout(op, inputs, layout)),
         }
     }
 
-    pub fn from_node(node: TensorGraphCacheNode<T, B>) -> Self {
+    pub(crate) fn from_node(node: TensorGraphCacheNode<T, B>) -> Self {
         Self {
             graph: Arc::new(node),
         }
