@@ -24,12 +24,12 @@ Don't narrate usage in the prose section. Don't write "to do X, call Y".
 Don't repeat behaviour already documented by a related type - cross-reference
 with a doc link instead.
 
-**Good example:** [`OutputKind::Buffer`](../src/tensor/planner/plan.rs) - names
+**Good example:** [`OutputKind::Buffer`](../../src/tensor/planner/plan.rs) - names
 the type involved, states the planner guarantee in a single sentence:
 > *"Re-use the buffer previously owned by node `id`. The planner guarantees that
 > buffer is no longer referenced by any live node at this point."*
 
-**Good example:** [`TensorGraphCacheNode`](../src/tensor/graph.rs) - names the
+**Good example:** [`TensorGraphCacheNode`](../../src/tensor/graph.rs) - names the
 concrete implementation detail (`OnceLock<TensorData<T>>`), states the invariant
 ("runs at most once"), and explains the planner consequence ("its buffer survives
 across separate `.materialize()` calls") - all without telling the user how to
@@ -48,11 +48,11 @@ This is exactly where usage guidance lives. Show realistic, runnable patterns.
 One scenario per block; multiple blocks are fine. Examples are doctests - they
 must compile and pass. Asserting the output is preferred over just printing it.
 
-**Good example:** [`TensorPromise`](../src/tensor/promise.rs) and
-[`CachedTensorPromise`](../src/tensor/promise.rs) - each has a focused `# Examples`
+**Good example:** [`TensorPromise`](../../src/tensor/promise.rs) and
+[`CachedTensorPromise`](../../src/tensor/promise.rs) - each has a focused `# Examples`
 block that shows one realistic pattern and asserts the output.
 
-**Good example:** [`Tensor::as_promise`](../src/tensor/tensor_interface.rs) - shows the
+**Good example:** [`Tensor::as_promise`](../../src/tensor/tensor_interface.rs) - shows the
 specific pattern (`as_promise()` seeding a loop variable) that motivated the
 method's existence.
 
@@ -62,7 +62,7 @@ method's existence.
 |---------|-------------|
 | `# Panics` | Any function that can panic, including operator overloads (`+`, `-`, …). Always include. |
 | `# Safety` | Every `pub unsafe fn`. Explain the invariants the caller must uphold. |
-| `# Note` | A known edge case, footgun, or surprising interaction. See [`topological_sort`](../src/tensor/planner/sort.rs) for an example of when to use this. |
+| `# Note` | A known edge case, footgun, or surprising interaction. See [`topological_sort`](../../src/tensor/planner/sort.rs) for an example of when to use this. |
 | `# Errors` | Functions returning `Result`. Describe what `Err` variants can be returned and why. |
 
 #### Tone
@@ -71,37 +71,40 @@ Technical. Precise. Short declarative sentences. No fluff.
 
 ---
 
-### 2. User-facing docs - `README.md` and `doc/*.md`
+### 2. Concept docs - `doc/concepts/*.md`
 
-**Who reads this:** Someone building a mental model of the project - either a
-new contributor or someone trying to understand a subsystem before touching it.
-They're reading top to bottom, not scanning for a specific fact.
+**Who reads this:** Someone building a mental model of how a subsystem works before
+touching it - a contributor, or a curious reader on docs.rs. They read top to bottom,
+not scanning for a fact.
+
+These are **developer docs**. They render into the API docs through the `docs` module
+(see the docs-architecture note), so the register is impersonal and mechanism-first:
+explain *how it works*, name the real internal types (`TensorGraphEdge<T>`, `OnceLock`),
+and leave usage to examples and `# Examples`.
 
 #### What these documents do
 
 - Lead with **motivation** - the problem being solved, and why this design and not another.
-  See how [planner.md](planner.md) opens with "Why not just execute the graph
+  See how [planner.md](../concepts/planner.md) opens with "Why not just execute the graph
   directly?" before explaining anything about the algorithm.
-- Tell the story behind decisions; describe what was **rejected** and why - often
-  more illuminating than describing what was chosen. See the `reusable: bool` story
-  in [planner.md](planner.md).
-- Explain trade-offs explicitly: what you give up, what you gain. See the cache
-  explanation in the [README](../README.md#cachedtensorpromiset):
-  *"You pay the memory cost of keeping that tensor alive, which is why this is opt-in."*
-- Address the reader directly when it helps. See [planner.md](planner.md):
-  *"If you haven't read graph.md yet, it's worth a quick look first."*
-- Can have personality. See [README](../README.md#memory-layout):
-  *"To be fair, this is what every tensor library worth its salt does."*
+- Tell the story behind decisions; describe what was **rejected** and why - often more
+  illuminating than describing what was chosen. See the `reusable: bool` story in
+  [planner.md](../concepts/planner.md) and [planner-history.md](../concepts/planner-history.md).
+- Explain trade-offs explicitly: what you give up, what you gain. See the `compose`
+  memory-reuse note in [skeleton.md](../concepts/skeleton.md).
+- **Dedupe against the overview.** Say only what the overview gestures at; never restate it.
 
 #### What these documents don't do
 
-- They don't replace source docs as a reference. They link to them.
-- They don't need to cover every API detail. Cover the concepts; let the source
-  docs handle the specifics.
+- **No usage or how-to.** That lives in examples (§4) and type `# Examples` (§1). A concept
+  doc explains the machinery; it does not teach the API.
+- **No reader-address, no "you", no personality.** That register is the README's - the
+  project pitch, which may be conversational and have voice. These are not that.
+- They don't reproduce reference already carried by the types. Link to the type instead.
 
 #### Tone
 
-Conversational but technically grounded. Narrative. Precise where precision matters.
+Impersonal, technical, mechanism-first. Short declarative sentences.
 
 ---
 
@@ -110,7 +113,7 @@ Conversational but technically grounded. Narrative. Precise where precision matt
 Explain **why** something non-obvious is done: a hidden constraint, a subtle
 invariant, a workaround for a specific bug. Do not explain *what* the code does -
 well-named identifiers do that. See the executor comments in
-[`TensorGraphNode::compute`](../src/tensor/graph.rs) for examples: each `//` comment
+[`TensorGraphNode::compute`](../../src/tensor/graph.rs) for examples: each `//` comment
 explains a race condition or a planner contract, not what the surrounding code does.
 
 ---
@@ -120,7 +123,7 @@ explains a race condition or a planner contract, not what the surrounding code d
 Walkthroughs of a feature or use case aimed at someone encountering the API for
 the first time. Short explanatory comments before each section are appropriate and
 expected - unlike source docs, these files are meant to be read linearly.
-See [lazy_eval.rs](../examples/lazy_eval.rs) and [fusion.rs](../examples/fusion.rs).
+See [lazy_eval.rs](../../examples/lazy_eval.rs) and [fusion.rs](../../examples/fusion.rs).
 
 The file should compile, run, and produce correct output. Assertions are preferred
 over `println!` alone.
@@ -153,8 +156,8 @@ test would *pass* for the wrong reason. That structural signal is worth keeping
 in the name. No equivalent exception exists for `_returns_error`: an `is_err()`
 check is just a normal assertion.
 
-**Good examples** from [tests/matmul.rs](../tests/matmul.rs) and
-[tests/broadcast.rs](../tests/broadcast.rs):
+**Good examples** from [tests/matmul.rs](../../tests/matmul.rs) and
+[tests/broadcast.rs](../../tests/broadcast.rs):
 ```rust
 fn matmul_batched_values()              // scenario: batched inputs, distinct from shape-only test
 fn matmul_transposed_rhs()              // scenario: rhs arrives pre-transposed
@@ -222,8 +225,8 @@ fn axby_then_exp()
 Group related tests under a `// ──` banner comment. Every test in a group should share
 the group's prefix - if the banner says `matmul`, every test below it starts with
 `matmul_`. A file with more than one test group always uses banners - there are no
-implicit groupings. See [tests/matmul.rs](../tests/matmul.rs) and
-[tests/regression.rs](../tests/regression.rs) for existing examples.
+implicit groupings. See [tests/matmul.rs](../../tests/matmul.rs) and
+[tests/regression.rs](../../tests/regression.rs) for existing examples.
 
 ---
 
@@ -242,8 +245,8 @@ then gets out of the way. Keep it to three things:
 - **One quickstart.** A single, *compiling* doctest - it must pass like any other
   (see §1's `# Examples`). One example, not a tour.
 - **A map.** Intra-doc links to the handful of types a user starts from
-  (`[Tensor]`, `[TensorPromise]`, `[CachedTensorPromise]`) and a pointer to the
-  `doc/*.md` conceptual docs by name.
+  (`[Tensor]`, `[TensorPromise]`, `[CachedTensorPromise]`) and a link to the rendered
+  concept docs, led by the overview (`[overview](crate::docs::overview)`).
 
 **Don't** paste the README in via `#![doc = include_str!("../README.md")]`. The
 README carries project-level material - "why the name", inspirations, author,
@@ -251,8 +254,9 @@ license, build-from-source - that is noise on an API reference, and its
 illustrative snippets aren't compiling doctests. The two documents serve
 different readers; let them.
 
-**Don't** turn the crate root into a deep-dive. Concepts live in `doc/*.md`; the
-root links to them, it doesn't reproduce them.
+**Don't** turn the crate root into a deep-dive. The concept docs are rendered under the
+`docs` module (`doc/concepts/*.md` via `#[doc = include_str!]`); the root links to them,
+it doesn't reproduce them inline.
 
 #### Tone
 

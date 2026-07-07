@@ -1,82 +1,95 @@
 # Skeletons
 
-Every `.materialize()` calls pays a planning cost - see [planner.md](planner.md) for more information.
-So when you need to run complex models with hundred of chained ops and do backpropagation - not implemented yet! - on top of that, you get a humongous graph
-and Candela has to plan for it. That, by itself, is not a problem as the planning time is going to be a very small fraction of the overall compute cost.
-
-But you do the same computation, for hundreds, thousands of times. So, while planning is far from a computation bottleneck, it increases computational costs for a plan
-that is, mostly, the same in those repeated computations. For this kind of cases Candela has `Skeleton`. It solves this exact situation, you bake a graph with some holes
-and the output is a runtime function that already has the most optimized plan Candela can make that you can reuse as long the `Layout` of your inputs remains consistent.
+A skeleton is a compiled computation. Like a function, it is built once and run many times
+on new inputs; unlike an ordinary promise chain, it removes the planning. Every
+`.materialize()` re-plans its graph from scratch - a skeleton plans once, freezes the
+result, and every later run only executes it. That saved planning is the whole reason a
+skeleton exists.
 
 ```rust
-use candela::{Layout, SkeletonSlot, Tensor};
+use candela::skeleton::SkeletonSlot;
+use candela::{Layout, Tensor};
 
-// A slot is a typed hole: a layout with no data behind it.
-let slot = SkeletonSlot::new(Layout::from_shape(&[4], 0));
+// Build the plan once, over a slot standing in for the input...
+let slot = SkeletonSlot::new(Layout::new(&[4]));
+let skeleton = (&slot * 2.0 + 1.0).into_skeleton(std::slice::from_ref(&slot))?;
 
-// Ops over a slot build a graph exactly like ops over a tensor would -
-// but the result is a SkeletonPromise, and it has no `.materialize()`.
-let skeleton = (&slot * 2.0 + 1.0)
-    .into_skeleton(std::slice::from_ref(&slot))?;
-
-// Planning already happened. These calls only execute.
-let a = skeleton.run(&[Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0], &[4])])?;
-let b = skeleton.run(&[Tensor::from_scalar(5.0, &[4])])?;
+// ...then run it repeatedly, with no planning in between.
+let a = skeleton.run(&[&Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0], &[4])])?;
+let b = skeleton.run(&[&Tensor::from_scalar(5.0, &[4])])?;
 assert_eq!(a.data(), &[1.0, 3.0, 5.0, 7.0]);
 assert_eq!(b.data(), &[11.0; 4]);
+# Ok::<(), candela::OpError>(())
 ```
 
-This example demonstrates the pattern to create and run a `Skeleton`: (1) define slots, (2) define your computation and (3) bake your skeleton (`.into_skeleton`).
-How this works will be explained in the next section, but, as I already said, you can imagine this is the equivalent of creating a runtime function that can reuse
-computation resources if necessary.
+---
 
-# To Bake or not Bake
+## Baking
 
-There are 3 types that you need to be aware: `SkeletonSlot`, `SkeletonPromise` and `Skeleton`. Each one is described in the section below:
+[`into_skeleton`](crate::skeleton::SkeletonPromise::into_skeleton) runs the graph through
+the ordinary planner - the same pass `.materialize()` uses, described in
+[the execution planner](crate::docs::planner) - and then converts the resulting borrowed
+plan into an owned form held by the [`Skeleton`](crate::skeleton::Skeleton). Planning
+happens exactly once, here. Alongside the plan the skeleton stores its *declared slots*:
+each slot's graph-unique ID and the `Layout` it was declared with.
 
-## SkeletonSlot
+A [`SkeletonSlot`](crate::skeleton::SkeletonSlot) is a layout-only node with no data behind
+it. In the plan it appears as an external input - a hole the plan reads from but never
+computes. The order the slots are declared in is the order later inputs are matched to
+those holes.
 
-A slot is just a hole that must be filled from outside the graph. They exist as markers and represent your intent to create a `Skeleton` in the future.
-They can be operated as if they are real tensors but produce a `SkeletonPromise` instead of a `TensorPromise` and cannot be materialized.
+The public interface refuses to materialize any graph with a slot in its lineage - such a
+graph is not meant to exist, and would panic if one were forced through at runtime, since a
+slot has no data to compute.
 
-```rust
-use candela::{Layout, SkeletonSlot, Tensor};
+---
 
-// Real tensor
-let tensor = Tensor::from_scalar(2.0, &[8]);
+## Running
 
-// A slot created from a tensor
-let slot = tensor.as_slot();
+[`run`](crate::skeleton::Skeleton::run) does no planning. It checks the inputs against the
+declared slots - their count and their exact `Layout` (shape, stride, and offset) - then
+feeds each input's buffer into the plan under its slot's ID and executes. The check
+guarantees the inputs are compatible with the frozen plan, which expects every layout to be
+known at plan time; a mismatch is rejected rather than silently repacked.
 
-// A slot created from thin air
-let i_am_different = SkeletonSlot::new(Layout::from_shape(&[8], 0));
-```
+---
 
-## SkeletonPromise
+## Composing
 
-They are just sugar around a `TensorPromise` but they serve as gatekeepers that stop you from trying to do evil things, like materializing computations chains with holes.
-Beyond being gatekeepers they store the computation chain up to that point, so, when you do `into_skeleton` from a `SkeletonPromise` it reads the operation chain and produces
-a `Skeleton`. So, when you see a `SkeletonPromise` you know that is a future `Skeleton` being constructed and that any operation you do there is being recorded
-so it can be replayed by the `Skeleton`.
+[`compose`](crate::skeleton::Skeleton::compose) binds inputs to a skeleton but, instead of
+executing, produces a [`BakedPromise`](crate::skeleton::BakedPromise): the frozen plan
+wrapped as a single opaque node that can sit inside a larger graph. To the outer planner it
+is one unit - the node's inputs are computed, then the inner plan runs - and the inner plan
+is sealed, so outer fusion never reaches into it.
 
-```rust
-use candela::{Layout, SkeletonSlot, Tensor};
+That seal costs memory reuse: a composed skeleton reuses buffers worse than materializing
+the equivalent raw chain would, because the planner cannot reclaim buffers across the
+boundary. It is a convenience for extending a chain that comes out of a skeleton, not the
+efficient path. Unlike `run`, the inputs to `compose` may be any non-slot operand: a
+`Tensor`, a `TensorPromise`, or another `BakedPromise`.
 
-let tensor = Tensor::from_scalar(2.0, &[8]);
+---
 
-// The slot
-let slot = tensor.as_slot();
+## Knowing the cost up front
 
-// Creating a slot from another
-let slot2 = slot.deep_clone();
+Because the plan is fixed, a skeleton knows every allocation it will make before it runs.
+[`memory_report`](crate::skeleton::Skeleton::memory_report) walks the stored plan and
+returns a [`MemoryMetrics`](crate::skeleton::MemoryMetrics) - peak memory, number of
+allocations, individual buffer sizes, and the output size. The figures are Candela's own
+accounting and do not model reuse by the system allocator, so they describe what the plan
+asks for rather than what the operating system ultimately does.
 
-// The promise created from the slot
-let promise = slot * 2.0 + 1.0;
+Each run currently allocates its buffers afresh. Since the plan already enumerates every
+allocation, reusing them across runs through a per-skeleton buffer pool is a planned
+addition.
 
-// Creating a skeleton
-let skeleton = promise.log2().into_skeleton(&[slot, slot2])?;
-```
+---
 
-## Skeleton
+## Dynamic skeletons
 
-This is the "baked" function produced by a `SkeletonPromise` via a `into_skeleton`. 
+A [`Skeleton`](crate::skeleton::Skeleton) is fixed to one set of input layouts. A
+[`DynamicSkeleton`](crate::skeleton::DynamicSkeleton) lifts that limit by holding a cache of
+skeletons keyed by input layout - a hashmap wrapper with a custom eviction policy, building
+a new skeleton through a supplied function whenever an unseen shape arrives. It is built
+entirely on the public API, so it doubles as a worked example of extending skeletons and as
+a base for custom caching strategies.

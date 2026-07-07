@@ -1,28 +1,31 @@
-use candela::Tensor;
+use candela::skeleton::SkeletonSlot;
+use candela::{Layout, Tensor};
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Creates tensors
-    let a = Tensor::from_scalar(0.3, &[4]);
-    let b = Tensor::from_scalar(0.3, &[8]);
+    // A slot: a typed hole with a layout but no data
+    let slot = SkeletonSlot::new(Layout::new(&[4]));
 
-    // Creates a slot for a tensor with the same shape as a
-    let slot = a.as_slot();
+    // Build the plan once; planning happens here
+    let skeleton = (&slot * 2.0 + 1.0).into_skeleton(std::slice::from_ref(&slot))?;
 
-    // Create a skeleton with that slot
-    let skeleton = (&slot * 2.0 + 1.0).log2().into_skeleton(&[slot]).unwrap();
+    // Run it on different inputs - no planning, just execution
+    let a = skeleton.run(&[&Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0], &[4])])?;
+    let b = skeleton.run(&[&Tensor::from_scalar(5.0, &[4])])?;
+    println!("a: {a}");
+    println!("b: {b}");
 
-    // Running the skeleton
-    let output_a = skeleton.run(&[&a]);
+    // Inputs must match the slot's exact layout
+    assert!(skeleton.run(&[&Tensor::from_scalar(1.0, &[8])]).is_err());
 
-    // Running the skeleton for an invalid shape
-    let output_b = skeleton.run(&[&b]);
+    // compose splices the skeleton into a bigger graph as a BakedPromise
+    let x = SkeletonSlot::new(Layout::new(&[4]));
+    let y = x.deep_clone();
+    let sum = (&x + &y).into_skeleton(&[x, y])?;
 
-    // Check the output of a
-    println!("{}", output_a.unwrap());
-
-    // Check the output is an error
-    assert!(output_b.is_err());
+    let baked = sum.compose(&[&Tensor::from_scalar(1.0, &[4]), &Tensor::from_scalar(10.0, &[4])])?;
+    let result = (baked * 2.0).materialize();
+    println!("composed: {result}");
 
     Ok(())
 }

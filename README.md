@@ -93,8 +93,8 @@ You pay the memory cost of keeping the cache alive, which is why this is opt-in.
 
 - Lazy evaluation via computation graph (DAG)
 - Scalar operator fusion - long chains collapse into single-pass kernels
-- Zero-copy views (see [doc/layout.md](doc/layout.md))
-- Memory reuse across long chains (see [doc/planner.md](doc/planner.md))
+- Zero-copy views (see [the layout docs](https://docs.rs/candela/latest/candela/docs/layout/))
+- Memory reuse across long chains (see [the planner docs](https://docs.rs/candela/latest/candela/docs/planner/))
 - Pluggable CPU backends - pure-Rust by default, Intel MKL behind `--features mkl`
 - `f32` and `f64` element types via the `Backend`/`Dtype` split
 - Matrix multiplication, including batched and batch-broadcast cases
@@ -103,7 +103,7 @@ You pay the memory cost of keeping the cache alive, which is why this is opt-in.
 - Full stride/offset layout system for non-contiguous tensors
 - Opt-in result caching via `CachedTensorPromise`
 - Plan-once / run-many skeletons - pre-planned graphs over slot placeholders
-  (see [doc/skeleton.md](doc/skeleton.md))
+  (see [the skeleton docs](https://docs.rs/candela/latest/candela/docs/skeleton/))
 - Built-in `tracing` instrumentation (feature-gated)
 - `arange!`, `srange!`, `zeros!`, `ones!` convenience macros
 
@@ -131,13 +131,14 @@ let reshaped = p.view(&[4, 3])?;  // Result<TensorPromise<T>, OpError>
 
 ## Internals
 
-If you want to understand how things work under the hood:
+If you want to understand how things work under the hood, the design is documented on docs.rs:
 
-- [doc/graph.md](doc/graph.md) - the computation graph: node types, sharing, and how ops fuse during construction
-- [doc/planner.md](doc/planner.md) - the execution planner: how Candela decides what to compute, in what order, and which buffers to reuse
-- [doc/layout.md](doc/layout.md) - the memory layout system: strides, zero-copy views, and the `adj_stride` iteration trick
-- [doc/backends.md](doc/backends.md) - the backend/dtype split: how `Tensor<T, B>` decouples element type from compute device, the `mkl` feature flag, and how to add a backend
-- [doc/skeleton.md](doc/skeleton.md) - skeletons: compile a graph once, run it many times, and the slot/taint machinery that makes forgetting a slot a compile error
+- [overview](https://docs.rs/candela/latest/candela/docs/overview/) - the whole pipeline, from expression to computed tensor
+- [the computation graph](https://docs.rs/candela/latest/candela/docs/graph/) - node types, sharing, and how ops fuse during construction
+- [the execution planner](https://docs.rs/candela/latest/candela/docs/planner/) - how Candela decides what to compute, in what order, and which buffers to reuse
+- [memory layout](https://docs.rs/candela/latest/candela/docs/layout/) - strides, zero-copy views, and the `adj_stride` iteration trick
+- [backends](https://docs.rs/candela/latest/candela/docs/backends/) - the backend/dtype split and the `mkl` feature flag
+- [skeletons](https://docs.rs/candela/latest/candela/docs/skeleton/) - compile a graph once, run it many times, and how the frozen plan is reused
 
 ---
 

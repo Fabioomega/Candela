@@ -44,7 +44,7 @@ needing an API break. ONNX import is purely additive, so if the API is stable by
 0.8, 1.0 can land before the importer rather than after - the table shows the
 conservative order.
 
-### v0.2 in detail (the current arc)
+### v0.2 in detail (done)
 
 Beyond finishing Phase 8 (tests, rustdoc - see the phase):
 
@@ -510,7 +510,7 @@ the buffers are re-allocated each time. Plan introspection (peak memory, allocat
 count - the plan already knows both) would make the README's "Candela can tell you
 the resources before it runs" promise real, nearly for free.
 
-### Tests (to do)
+### Tests (done)
 - [X] Every error path: `IncorrectSlotAmount`, `NotSameSlot`, `NotSameLayoutAtSlot`
 - [X] Multi-slot expressions; the same slot used twice in one expression
 - [X] Re-running one skeleton with different data reuses the plan and matches

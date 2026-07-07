@@ -70,6 +70,7 @@ pub mod docs {
     pub mod planner {}
     #[doc = include_str!("../doc/concepts/planner-history.md")]
     pub mod planner_history {}
+    #[doc = include_str!("../doc/concepts/skeleton.md")]
     pub mod skeleton {}
     #[doc = include_str!("../doc/concepts/overview.md")]
     pub mod overview {}
