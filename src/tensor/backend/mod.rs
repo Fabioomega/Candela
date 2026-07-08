@@ -37,17 +37,17 @@ pub trait ComputeFor<B: Backend>: Dtype {
 
 /// Compute strategy used by [`Tensor`](crate::tensor::Tensor) and the planner
 /// to execute graph nodes. A `Backend` impl is a zero-sized policy type; all
-/// state lives in the [`TensorData`] buffers passed through `compute`.
+/// state lives in the `TensorData` buffers passed through `compute`.
 ///
 /// # Required behaviour
 ///
 /// Implementations must accept stride-0 batch axes in
-/// [`OpKind::MatMul`](crate::tensor::ops::def_op::OpKind::MatMul). A batched
+/// `OpKind::MatMul`. A batched
 /// matmul whose leading axis has stride 0 is computed by re-reading the same
 /// matrix per batch iteration; the op layer relies on this to skip
 /// materializing batch broadcasts.
 pub trait Backend: Sized + Debug {
-    /// `true` if [`OpKind::MatMul`](crate::tensor::ops::def_op::OpKind::MatMul)
+    /// `true` if `OpKind::MatMul`
     /// accepts a 2D input whose strides describe a transposed view
     /// (`row_stride == 1`, `col_stride > 1`) - i.e. the underlying GEMM is
     /// invoked with a trans-flag and no copy is required. The fast path is
@@ -57,7 +57,7 @@ pub trait Backend: Sized + Debug {
     /// When `false`, the op layer inserts an `AsContiguous` on any matmul
     /// input that is not already contiguous.
     const SUPPORTS_2D_TRANSPOSED_MATMUL: bool = Self::SUPPORTS_NON_CONTIGUOUS_MATMUL;
-    /// `true` if [`OpKind::MatMul`](crate::tensor::ops::def_op::OpKind::MatMul)
+    /// `true` if `OpKind::MatMul`
     /// accepts any memory configuration as long the last 2 axis are contiguous.
     ///
     /// When `false`, the op layer inserts an `AsContiguous` on any matmul
@@ -65,7 +65,7 @@ pub trait Backend: Sized + Debug {
     const SUPPORTS_NON_CONTIGUOUS_MATMUL: bool;
 
     /// Run `op` over `inputs` into a fresh allocation. `output_buffer` is the
-    /// destination `Vec<T>`; the returned [`TensorData`] wraps it with
+    /// destination `Vec<T>`; the returned `TensorData` wraps it with
     /// `output_layout`.
     fn compute<T>(
         op: &OpKind<T>,
@@ -93,7 +93,25 @@ pub trait Backend: Sized + Debug {
 /// [`Tensor`](crate::tensor::Tensor) construction site. Defaults to the
 /// pure-Rust backend; enabling the `mkl` feature switches it to the Intel MKL
 /// backend.
+///
+/// # Examples
+///
+/// ```
+/// use candela::backend::DefaultBackend;
+/// use candela::Tensor;
+///
+/// // `Tensor<T>` is shorthand for `Tensor<T, DefaultBackend>` - the same type.
+/// let a: Tensor<f64> = Tensor::from_scalar(1.0, &[3]);
+/// let b: Tensor<f64, DefaultBackend> = Tensor::from_scalar(1.0, &[3]);
+/// assert_eq!(a.data(), b.data());
+/// ```
 #[cfg(feature = "mkl")]
 pub type DefaultBackend = cpu_mkl::CpuMkl;
 #[cfg(not(feature = "mkl"))]
 pub type DefaultBackend = cpu_pure::CpuPure;
+
+pub mod implementation {
+    #[cfg(feature = "mkl")]
+    pub use crate::tensor::backend::cpu_mkl::CpuMkl;
+    pub use crate::tensor::backend::cpu_pure::CpuPure;
+}

@@ -107,7 +107,7 @@ fn sum_axis_uniform<T: FloatLikeTensorElement>(#[case] _t: T) {
 #[test]
 fn sum_axis_out_of_bounds() {
     let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
-    let err = t.sum_axis(5, false).err().expect("expected Err");
+    let err = t.sum_axis(5, false).expect_err("expected Err");
     assert!(matches!(err, OpError::AxesOutOfBounds));
 }
 
@@ -216,7 +216,7 @@ fn max_axis_uniform<T: FloatLikeTensorElement>(#[case] _t: T) {
 #[test]
 fn max_axis_out_of_bounds() {
     let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
-    let err = t.max_axis(5, false).err().expect("expected Err");
+    let err = t.max_axis(5, false).expect_err("expected Err");
     assert!(matches!(err, OpError::AxesOutOfBounds));
 }
 
@@ -322,6 +322,6 @@ fn mean_axis_uniform<T: FloatLikeTensorElement>(#[case] _t: T) {
 #[test]
 fn mean_axis_out_of_bounds() {
     let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
-    let err = t.mean_axis(5, false).err().expect("expected Err");
+    let err = t.mean_axis(5, false).expect_err("expected Err");
     assert!(matches!(err, OpError::AxesOutOfBounds));
 }

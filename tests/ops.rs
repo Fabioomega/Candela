@@ -72,7 +72,7 @@ fn fused_chain_long() {
     // 20 sequential additions: x + 0 + 1 + ... + 19, starting from x = 1
     // expected: 1 + (0+1+2+...+19) = 1 + 190 = 191
     let t = ones!(&[4]);
-    let mut p = t.as_promise();
+    let mut p = t.to_promise();
     for i in 0..20_u32 {
         p += i as f64;
     }

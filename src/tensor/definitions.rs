@@ -4,9 +4,9 @@ use std::{
     ops::{Add, Div, Mul, Sub},
 };
 
-use crate::tensor::iter::{ChunkedSliceIter, SliceIter};
+use crate::tensor::iter::{ChunkedSliceIter, Iter};
 
-pub(crate) type ChunkedIter<'a, T> = ChunkedSliceIter<Cloned<SliceIter<'a, T>>, T>;
+pub(crate) type ChunkedIter<'a, T> = ChunkedSliceIter<Cloned<Iter<'a, T>>, T>;
 
 pub trait NumberLike:
     Copy

@@ -42,6 +42,14 @@ fn slot_is_free(slot: &Slot, op_location: usize, required_len: usize) -> bool {
         .is_some_and(|e| e < op_location && slot.len == required_len)
 }
 
+/// Whether the op at `op_location` is the last reader of `slot`.
+/// This is the condition for overwriting an input in place: the op reads the buffer
+/// and nothing reads it afterwards.
+#[inline]
+fn slot_is_last_read(slot: &Slot, op_location: usize, required_len: usize) -> bool {
+    slot.end == Some(op_location) && slot.len == required_len
+}
+
 #[inline]
 fn assign_slot(slots: &[Slot], op_location: usize, output_layout: &Layout) -> ExecKind {
     let slot = find_slot(slots, op_location, output_layout.len());
@@ -103,7 +111,19 @@ pub(crate) fn classify<T, B: Backend>(
                 // never reclaimed, then this op aliases it eternally too.
                 None => ExecKind::ReferenceEternal { input_idx: 0 },
             },
-            NodeKind::Cache(_) | NodeKind::Edge(_) => ExecKind::ReferenceEternal { input_idx: 0 },
+            NodeKind::Baked(c) => match id_slot_map.get(&c.id) {
+                Some(slot_idx) => ExecKind::ReferenceSlot {
+                    slot_idx: *slot_idx,
+                    input_idx: 0,
+                },
+                // No slot means the input is itself an eternal reference (a chain of
+                // layout-only ops bottoming out at an edge/cache), so its buffer is
+                // never reclaimed, then this op aliases it eternally too.
+                None => ExecKind::ReferenceEternal { input_idx: 0 },
+            },
+            NodeKind::Cache(_) | NodeKind::Edge(_) | NodeKind::Slot(_) => {
+                ExecKind::ReferenceEternal { input_idx: 0 }
+            }
         },
         OpKind::AsContiguous => match &inputs[0] {
             NodeKind::Node(n) => {
@@ -151,8 +171,37 @@ pub(crate) fn classify<T, B: Backend>(
                         })
                 }
             }
+            NodeKind::Baked(c) => {
+                if c.layout().is_contiguous() {
+                    match id_slot_map.get(&c.id) {
+                        Some(slot_idx) => ExecKind::ReferenceSlot {
+                            slot_idx: *slot_idx,
+                            input_idx: 0,
+                        },
+                        None => ExecKind::ReferenceEternal { input_idx: 0 },
+                    }
+                } else {
+                    id_slot_map
+                        .get(&c.id)
+                        .filter(|&&s| slot_is_free(&slots[s], op_location, output_layout.len()))
+                        .copied()
+                        .map_or(assign_slot(slots, op_location, output_layout), |slot_idx| {
+                            ExecKind::InPlace {
+                                slot_idx,
+                                input_idx: 0,
+                            }
+                        })
+                }
+            }
             NodeKind::Edge(e) => {
                 if e.layout().is_contiguous() {
+                    ExecKind::ReferenceEternal { input_idx: 0 }
+                } else {
+                    assign_slot(slots, op_location, output_layout)
+                }
+            }
+            NodeKind::Slot(s) => {
+                if s.layout().is_contiguous() {
                     ExecKind::ReferenceEternal { input_idx: 0 }
                 } else {
                     assign_slot(slots, op_location, output_layout)
@@ -165,7 +214,7 @@ pub(crate) fn classify<T, B: Backend>(
 
             id_slot_map
                 .get(&id)
-                .filter(|&&s| slot_is_free(&slots[s], op_location, output_layout.len()))
+                .filter(|&&s| slot_is_last_read(&slots[s], op_location, output_layout.len()))
                 .copied()
                 .map_or(assign_slot(slots, op_location, output_layout), |slot_idx| {
                     ExecKind::InPlace {
@@ -179,7 +228,7 @@ pub(crate) fn classify<T, B: Backend>(
 
             id_slot_map
                 .get(&id)
-                .filter(|&&s| slot_is_free(&slots[s], op_location, output_layout.len()))
+                .filter(|&&s| slot_is_last_read(&slots[s], op_location, output_layout.len()))
                 .copied()
                 .map_or(assign_slot(slots, op_location, output_layout), |slot_idx| {
                     ExecKind::InPlace {
@@ -191,10 +240,22 @@ pub(crate) fn classify<T, B: Backend>(
         OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Div => {
             for (i, inp) in inputs.iter().enumerate() {
                 let id = get_id(inp);
+
+                // Guards against same node in 2 inputs (i. e. t + t).
+                // In that case InPlaceIdx cannot happen as the backends needs
+                // the storage Arc to be unique to be able to reuse a buffer in-place.
+                if inputs
+                    .iter()
+                    .enumerate()
+                    .any(|(j, other)| j != i && get_id(other) == id)
+                {
+                    continue;
+                }
+
                 let slot_idx = id_slot_map.get(&id);
 
                 if let Some(idx) = slot_idx
-                    && slot_is_free(&slots[*idx], op_location, output_layout.len())
+                    && slot_is_last_read(&slots[*idx], op_location, output_layout.len())
                 {
                     return ExecKind::InPlace {
                         slot_idx: *idx,

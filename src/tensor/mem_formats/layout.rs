@@ -1,4 +1,4 @@
-use std::iter::zip;
+use std::{hash::Hash, iter::zip};
 
 use crate::tensor::{
     errors::OpError,
@@ -6,7 +6,36 @@ use crate::tensor::{
     mem_formats::slice::{SliceInfo, SliceRange},
 };
 
-#[derive(Clone, Debug, PartialEq)]
+/// How a tensor's logical shape maps onto its flat backing buffer.
+///
+/// A `Layout` bundles the `shape`, the per-axis `stride` (how many buffer
+/// elements to step to advance one index along that axis), an `offset` into the
+/// buffer, and a cached total `len`. Views, slices, transposes, and broadcasts
+/// are all just new layouts over the *same* buffer, which is what makes those
+/// operations zero-copy. See the [layout docs](crate::docs::layout) for the full
+/// model, including the `adj_stride` iteration trick.
+///
+/// You rarely build one by hand: a tensor's layout fields are reachable directly
+/// through the [`Dimension`](crate::Dimension) trait (`t.shape()`, `t.stride()`,
+/// `t.is_contiguous()`, …), and `t.layout()` hands back the whole `Layout`.
+/// Constructing one explicitly is mostly useful for shaping a skeleton slot.
+///
+/// # Examples
+///
+/// ```
+/// use candela::{Dimension, Layout, Tensor};
+///
+/// // Shape/stride are available straight off the tensor via `Dimension`.
+/// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+/// assert_eq!(t.shape(), &[2, 3]);
+/// assert_eq!(t.layout(), &Layout::new(&[2, 3]));
+///
+/// // Or build one directly.
+/// let l = Layout::new(&[2, 3]);
+/// assert_eq!(l.stride(), &[3, 1]);
+/// assert!(l.is_contiguous());
+/// ```
+#[derive(Clone, Debug)]
 pub struct Layout {
     pub(crate) shape: Box<[usize]>,
     pub(crate) stride: Box<[i32]>,
@@ -24,7 +53,74 @@ pub(crate) fn validate_shape(shape: &[usize]) -> Result<(), OpError> {
 }
 
 impl Layout {
-    pub fn new(
+    /// Build a contiguous, row-major layout for `shape`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `shape` is empty (a tensor must have rank >= 1).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// let l = Layout::new(&[2, 3]);
+    /// assert_eq!(l.shape(), &[2, 3]);
+    /// assert_eq!(l.stride(), &[3, 1]);
+    /// assert_eq!(l.len(), 6);
+    /// ```
+    pub fn new(shape: &[usize]) -> Self {
+        validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
+        let len: usize = shape.iter().product();
+
+        Self {
+            shape: shape.into(),
+            stride: calculate_dim_stride(shape),
+            adj_stride: vec![1; shape.len()].into_boxed_slice(),
+            offset: 0,
+            len,
+        }
+    }
+
+    /// Build the empty layout: shape `[0]`, length `0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// assert!(Layout::empty().is_empty());
+    /// ```
+    pub fn empty() -> Self {
+        Self {
+            shape: Box::new([0]),
+            stride: Box::new([0]),
+            adj_stride: Box::new([0]),
+            offset: 0,
+            len: 0,
+        }
+    }
+
+    /// Assemble a layout from already-computed fields, without validation.
+    ///
+    /// An escape hatch for callers that have already worked out every field,
+    /// including the `adj_stride` iteration helper. Prefer [`new`](Self::new) or
+    /// [`from_strided`](Self::from_strided), which derive those for you.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// // A hand-built 2x3 contiguous layout, equivalent to `Layout::new(&[2, 3])`.
+    /// let l = Layout::from_raw_parts(
+    ///     Box::from([2, 3]),
+    ///     Box::from([3, 1]),
+    ///     Box::from([1, 1]),
+    ///     0,
+    ///     6,
+    /// );
+    /// assert_eq!(l.shape(), &[2, 3]);
+    /// assert_eq!(l.len(), 6);
+    /// ```
+    pub fn from_raw_parts(
         shape: Box<[usize]>,
         stride: Box<[i32]>,
         adj_stride: Box<[i32]>,
@@ -40,31 +136,25 @@ impl Layout {
         }
     }
 
-    pub fn empty() -> Self {
-        Self {
-            shape: Box::new([0]),
-            stride: Box::new([0]),
-            adj_stride: Box::new([0]),
-            offset: 0,
-            len: 0,
-        }
-    }
-
-    pub fn from_shape(shape: &[usize], offset: usize) -> Self {
+    /// Build a layout for `shape` with an explicit `stride` and `offset`.
+    ///
+    /// The `adj_stride` iteration helper is derived for you. Use this to describe
+    /// non-contiguous data - a stride of `0` on an axis, for instance, repeats
+    /// that axis (broadcasting).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// // Column-major 2x3: advancing a column steps 1, advancing a row steps 2.
+    /// let l = Layout::from_strided(&[2, 3], &[1, 2], 0);
+    /// assert_eq!(l.shape(), &[2, 3]);
+    /// assert_eq!(l.stride(), &[1, 2]);
+    /// ```
+    pub fn from_strided(shape: &[usize], stride: &[i32], offset: usize) -> Self {
         validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
-        let len: usize = shape.iter().product();
+        debug_assert!(shape.len() == stride.len());
 
-        Self {
-            shape: shape.into(),
-            stride: calculate_dim_stride(shape),
-            adj_stride: vec![1; shape.len()].into_boxed_slice(),
-            offset,
-            len,
-        }
-    }
-
-    pub fn from_slice(shape: &[usize], stride: &[i32], offset: usize) -> Self {
-        validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
         let len: usize = shape.iter().product();
 
         Self {
@@ -76,6 +166,40 @@ impl Layout {
         }
     }
 
+    /// Return this layout with its `offset` into the backing buffer replaced.
+    ///
+    /// Builder-style, usually chained onto [`new`](Self::new).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// let l = Layout::new(&[4]).with_offset(3);
+    /// assert_eq!(l.offset(), 3);
+    /// ```
+    pub fn with_offset(mut self, offset: usize) -> Self {
+        self.offset = offset;
+
+        self
+    }
+
+    /// Derive a layout with a new `shape` but the same element count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::InvalidViewShape`] if `shape`'s element count differs
+    /// from this layout's, or [`OpError::NonContiguousView`] if this layout is
+    /// not contiguous (viewing needs a contiguous source).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// let l = Layout::new(&[2, 3]);
+    /// assert_eq!(l.view(&[3, 2])?.shape(), &[3, 2]);
+    /// assert!(l.view(&[4, 4]).is_err()); // 16 != 6 elements
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     pub fn view(&self, shape: &[usize]) -> Result<Self, OpError> {
         if shape.iter().product::<usize>() != self.len() {
             return Err(OpError::InvalidViewShape);
@@ -83,9 +207,28 @@ impl Layout {
         if !self.is_contiguous() {
             return Err(OpError::NonContiguousView);
         }
-        Ok(Layout::from_shape(shape, self.offset))
+        Ok(Layout::new(shape).with_offset(self.offset))
     }
 
+    /// Derive the layout of a sub-region, one [`SliceRange`] per leading axis.
+    ///
+    /// Axes without a range are taken in full. Build the range list with the
+    /// [`s!`](crate::s) macro.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::AxesOutOfBounds`] if `range` has more entries than the
+    /// layout has axes, or a slice error if a range is empty or runs past its axis.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::{s, Layout};
+    /// let l = Layout::new(&[2, 3]);
+    /// let sub = l.slice(s![0..1, 1..3])?;
+    /// assert_eq!(sub.shape(), &[1, 2]);
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     pub fn slice(&self, range: &[SliceRange]) -> Result<Self, OpError> {
         let info = SliceInfo::from_range(self, range)?;
         let len: usize = info.shape.iter().product();
@@ -99,6 +242,17 @@ impl Layout {
         })
     }
 
+    /// Reverse the order of every axis (a full transpose), swapping both the
+    /// shape and the stride end for end.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// let t = Layout::new(&[2, 3]).transpose();
+    /// assert_eq!(t.shape(), &[3, 2]);
+    /// assert_eq!(t.stride(), &[1, 3]);
+    /// ```
     pub fn transpose(&self) -> Self {
         let mut stride = self.stride.clone();
         let mut shape = self.shape.clone();
@@ -126,6 +280,28 @@ impl Layout {
         }
     }
 
+    /// Reorders the axes by an explicit permutation.
+    ///
+    /// `axes` must list every axis index exactly once: `transpose_axes(&[1, 0])`
+    /// is the plain 2-D [`.transpose()`][Self::transpose], while `&[0, 2, 1]`
+    /// swaps only the last two axes of a rank-3 layout and leaves the first alone.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    ///
+    /// let l = Layout::new(&[1, 2, 3]);
+    /// let s = l.transpose_axes(&[0, 2, 1])?;
+    /// assert_eq!(s.shape(), &[1, 3, 2]);
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::NotEnoughAxes`] if `axes` doesn't have one entry per
+    /// axis, or [`OpError::AxesOutOfBounds`] if an index is out of range or
+    /// repeated (so the list isn't a valid permutation).
     pub fn transpose_axes(&self, axes: &[usize]) -> Result<Self, OpError> {
         if axes.len() != self.stride.len() {
             return Err(OpError::NotEnoughAxes(self.stride.len(), axes.len()));
@@ -162,6 +338,28 @@ impl Layout {
         })
     }
 
+    /// Expands the layout to a larger shape along new or size-1 axes.
+    ///
+    /// Broadcasting follows NumPy's right-aligned rules: a target axis must
+    /// either match the source or expand from size 1, and extra leading axes are
+    /// added on the left. The repeated axes are faked with zero strides.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    ///
+    /// let row = Layout::new(&[1, 3]);
+    /// let b = row.broadcast(&[2, 3])?;
+    /// assert_eq!(b.shape(), &[2, 3]);
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::CannotBroadcast`] if the target shape has fewer axes
+    /// than the source, or an axis is neither equal to the source nor expandable
+    /// from 1.
     pub fn broadcast(&self, shape: &[usize]) -> Result<Self, OpError> {
         if shape.len() < self.shape.len() {
             return Err(OpError::CannotBroadcast);
@@ -200,6 +398,21 @@ impl Layout {
         })
     }
 
+    /// Collapses the shape into a canonical `[batch, rows, cols]` triple.
+    ///
+    /// The last two axes become `rows` and `cols`; everything above them is
+    /// folded into a single `batch` count, and ranks below 3 are padded with
+    /// leading ones. The matmul kernel uses this to treat any rank uniformly.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// assert_eq!(Layout::new(&[5]).shape_as_3d(), [1, 1, 5]);
+    /// assert_eq!(Layout::new(&[2, 3]).shape_as_3d(), [1, 2, 3]);
+    /// assert_eq!(Layout::new(&[2, 3, 4]).shape_as_3d(), [2, 3, 4]);
+    /// assert_eq!(Layout::new(&[6, 2, 3, 4]).shape_as_3d(), [12, 3, 4]);
+    /// ```
     #[inline]
     pub fn shape_as_3d(&self) -> [usize; 3] {
         debug_assert!(!self.shape.is_empty(), "shape_as_3d requires rank >= 1");
@@ -225,6 +438,19 @@ impl Layout {
     /// block, so a flat iterator steps through all of their index combinations
     /// before advancing the trailing axes. The trailing axes (`axis+1..`) stay
     /// outermost in their original order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// let r = Layout::new(&[2, 3, 4]).rotate_axis_innermost(0)?;
+    /// assert_eq!(r.shape(), &[3, 4, 2]);
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::AxesOutOfBounds`] if `axis` is past the layout's rank.
     #[inline]
     pub fn rotate_axis_innermost(&self, axis: usize) -> Result<Self, OpError> {
         if axis >= self.shape().len() {
@@ -237,11 +463,35 @@ impl Layout {
         unsafe { Ok(self.transpose_axes(&axes).unwrap_unchecked()) }
     }
 
+    /// Returns `true` if a flat walk visits every element in row-major order with
+    /// no gaps - i.e. the layout has not been transposed, broadcast, or sliced
+    /// down the inner axes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// assert!(Layout::new(&[3, 4]).is_contiguous());
+    /// assert!(!Layout::new(&[3, 4]).transpose().is_contiguous());
+    /// ```
     #[inline]
     pub fn is_contiguous(&self) -> bool {
         self.is_contiguous_at_axis(0)
     }
 
+    /// Like [`is_contiguous`](Self::is_contiguous), but only checks the axes from
+    /// `axis` inward, ignoring how the outer axes are arranged.
+    ///
+    /// An out-of-range `axis` returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// let l = Layout::new(&[2, 3]);
+    /// assert!(l.is_contiguous_at_axis(0));
+    /// assert!(!l.is_contiguous_at_axis(9)); // out of range
+    /// ```
     #[inline]
     pub fn is_contiguous_at_axis(&self, axis: usize) -> bool {
         if axis >= self.shape().len() {
@@ -251,6 +501,17 @@ impl Layout {
         self.adj_stride[axis] == 1 && !self.stride[axis + 1..].contains(&0)
     }
 
+    /// Returns `true` if any axis runs backwards relative to a contiguous layout -
+    /// the signature a transpose leaves behind. Broadcast axes (zero stride) are
+    /// not counted.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// assert!(!Layout::new(&[3, 4]).is_transposed());
+    /// assert!(Layout::new(&[3, 4]).transpose().is_transposed());
+    /// ```
     #[inline]
     pub fn is_transposed(&self) -> bool {
         for (i, &adj_stride) in self.adj_stride.iter().enumerate() {
@@ -262,6 +523,18 @@ impl Layout {
         false
     }
 
+    /// Like [`is_transposed`](Self::is_transposed), but tests a single `axis`.
+    ///
+    /// An out-of-range `axis` returns `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// let l = Layout::new(&[3, 4]); // fresh: no axis is transposed
+    /// assert!(!l.is_transposed_at_axis(0));
+    /// assert!(!l.is_transposed_at_axis(9)); // out of range
+    /// ```
     #[inline]
     pub fn is_transposed_at_axis(&self, axis: usize) -> bool {
         if axis >= self.shape().len() {
@@ -271,6 +544,16 @@ impl Layout {
         self.adj_stride[axis] < 0 && self.stride[axis] != 0
     }
 
+    /// Returns `true` for a 2-D layout whose two axes are transposed; always
+    /// `false` for any other rank.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// assert!(Layout::new(&[3, 4]).transpose().is_last_axes_transposed());
+    /// assert!(!Layout::new(&[3, 4]).is_last_axes_transposed());
+    /// ```
     // Restricted to 2D on purpose: the matmul kernel uses this to pick the BLAS
     // trans-flag, and its batch-stride handling assumes there is no batch dim.
     // Higher-rank tensors whose last two strides happen to match this pattern
@@ -293,34 +576,101 @@ impl Layout {
         rs == 1 && cs > 1
     }
 
+    /// The size of each axis.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// assert_eq!(Layout::new(&[2, 3]).shape(), &[2, 3]);
+    /// ```
     #[inline]
     pub fn shape(&self) -> &'_ [usize] {
         &self.shape
     }
 
+    /// The per-axis stride: how many buffer elements to step to advance one
+    /// index along that axis.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// assert_eq!(Layout::new(&[2, 3]).stride(), &[3, 1]);
+    /// ```
     #[inline]
     pub fn stride(&self) -> &'_ [i32] {
         &self.stride
     }
 
+    /// The adjacent stride: the per-axis step a flat iterator applies when it
+    /// rolls over into the next axis. See the [layout docs](crate::docs::layout).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// // All ones for a freshly built contiguous layout.
+    /// assert_eq!(Layout::new(&[2, 3]).adj_stride(), &[1, 1]);
+    /// ```
     #[inline]
     pub fn adj_stride(&self) -> &'_ [i32] {
         &self.adj_stride
     }
 
+    /// The starting index into the backing buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// assert_eq!(Layout::new(&[4]).with_offset(3).offset(), 3);
+    /// ```
     #[inline]
     pub fn offset(&self) -> usize {
         self.offset
     }
 
+    /// The total number of elements, i.e. the product of the shape.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// assert_eq!(Layout::new(&[2, 3, 4]).len(), 24);
+    /// ```
     #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
 
+    /// Returns `true` if the layout has no elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// assert!(Layout::empty().is_empty());
+    /// assert!(!Layout::new(&[3]).is_empty());
+    /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+}
+
+impl PartialEq for Layout {
+    fn eq(&self, other: &Self) -> bool {
+        self.shape == other.shape && self.stride == other.stride
+    }
+}
+
+impl Eq for Layout {}
+
+impl Hash for Layout {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.shape.hash(state);
+        self.stride.hash(state);
     }
 }
 

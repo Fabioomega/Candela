@@ -12,7 +12,7 @@ use crate::tensor::backend::{Backend, ComputeFor, Dtype};
 use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::storage::TensorData;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct CpuMkl;
 
 impl Backend for CpuMkl {

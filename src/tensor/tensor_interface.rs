@@ -1,12 +1,14 @@
 #![allow(private_bounds)]
-use crate::errors::OpError;
+use crate::OpError;
 use crate::tensor::backend::{Backend, ComputeFor, DefaultBackend};
 use crate::tensor::graph::{NodeKind, TensorGraphEdge};
-use crate::tensor::iter::{InformedSliceIter, SliceIter, StepInfo};
+use crate::tensor::iter::{InformedIter, Iter, StepInfo};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::promise::TensorPromise;
+use crate::tensor::skeleton::SkeletonSlot;
+use crate::tensor::skeleton::{Clean, Tainting};
 use crate::tensor::storage::TensorData;
-use crate::tensor::traits::{Dimension, Numeric};
+use crate::tensor::traits::{Composable, Dimension, Numeric, Operand};
 use std::ops::Index;
 use std::sync::Arc;
 
@@ -135,6 +137,14 @@ impl<T: Clone, B: Backend> Tensor<T, B> {
     ///
     /// Use [`.iter()`][Self::iter], to iterate over the whole tensor following
     /// logical order or [`.index()`][Self::index] to access a single element by index.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+    /// assert_eq!(t.data(), &[1.0, 2.0, 3.0, 4.0]);
+    /// ```
     #[inline]
     pub fn data(&self) -> &[T] {
         self.graph.get().data()
@@ -145,8 +155,17 @@ impl<T: Clone, B: Backend> Tensor<T, B> {
     /// Unlike [`.data()`][Self::data], this follows the tensor's layout, so a
     /// sliced or transposed tensor yields its elements in the order its shape
     /// implies.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0], &[3]);
+    /// let collected: Vec<f64> = t.iter().copied().collect();
+    /// assert_eq!(collected, vec![1.0, 2.0, 3.0]);
+    /// ```
     #[inline]
-    pub fn iter(&self) -> SliceIter<'_, T> {
+    pub fn iter(&self) -> Iter<'_, T> {
         self.graph.get().iter()
     }
 
@@ -161,22 +180,54 @@ impl<T: Clone, B: Backend> Tensor<T, B> {
     /// of it) upholds this; an unrelated layout may read out of bounds and is
     /// undefined behaviour.
     #[inline]
-    pub unsafe fn iter_as_layout<'a>(&'a self, layout: &'a Layout) -> SliceIter<'a, T> {
+    pub unsafe fn iter_as_layout<'a>(&'a self, layout: &'a Layout) -> Iter<'a, T> {
         unsafe { self.graph.get().iter_as_layout(layout) }
     }
 
+    /// Walk the tensor depth-first, yielding a [`StepInfo`] for each element and
+    /// for each dimension boundary crossed along the way.
+    ///
+    /// Unlike [`.iter()`][Self::iter], which yields a flat stream of elements,
+    /// these events carry enough structure to reconstruct the tensor's nesting.
+    /// The walk follows the logical layout, so a sliced or transposed tensor is
+    /// visited in the order its shape implies. It rebuilds that order one index
+    /// at a time and is not intended for hot paths. The
+    /// [`Display`](std::fmt::Display) implementation is built on it.
+    ///
+    /// # Examples
+    ///
+    /// Regroup a flat buffer back into its rows - something [`.iter()`][Self::iter]
+    /// alone can't do, because it never signals where one row ends and the next
+    /// begins:
+    ///
+    /// ```
+    /// use candela::{StepInfo, Tensor};
+    ///
+    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+    ///
+    /// let mut rows: Vec<Vec<f64>> = Vec::new();
+    /// for step in t.informed_iter() {
+    ///     match step {
+    ///         // The innermost dimension (axis 1) opening means a new row starts.
+    ///         StepInfo::EnterDimension(1) => rows.push(Vec::new()),
+    ///         StepInfo::Value(v) => rows.last_mut().unwrap().push(v),
+    ///         _ => {}
+    ///     }
+    /// }
+    /// assert_eq!(rows, vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+    /// ```
     #[inline]
-    pub fn informed_iter(&self) -> InformedSliceIter<'_, T> {
+    pub fn informed_iter(&self) -> InformedIter<'_, T> {
         self.graph.get().informed_iter()
     }
 
     /// Makes a deep copy of this tensor.
     #[inline]
-    pub fn clone_deep(&self) -> Self {
+    pub fn deep_clone(&self) -> Self {
         let data = self.graph.get();
 
         Self {
-            graph: Arc::new(TensorGraphEdge::from_tensor_data(data.clone_deep())),
+            graph: Arc::new(TensorGraphEdge::from_tensor_data(data.deep_clone())),
         }
     }
 
@@ -185,10 +236,10 @@ impl<T: Clone, B: Backend> Tensor<T, B> {
     /// The underlying buffer is shared with the original, but the new tensor carries a fresh
     /// graph ID. The planner treats it as an unrelated input - no connection is maintained to
     /// any live promises that reference the original. Use [`Tensor::clone`] to preserve that
-    /// connection, or [`Tensor::clone_deep`] for a fully independent buffer.
+    /// connection, or [`Tensor::deep_clone`] for a fully independent buffer.
     ///
     /// [`Tensor::clone`]: Tensor::clone
-    /// [`Tensor::clone_deep`]: Tensor::clone_deep
+    /// [`Tensor::deep_clone`]: Tensor::deep_clone
     #[inline]
     pub fn clone_detached(&self) -> Self {
         let data = self.graph.get();
@@ -209,7 +260,7 @@ impl<T: Numeric, B: Backend> Tensor<T, B> {
     /// ```
     /// use candela::arange;
     /// let t = arange!(4);         // [0.0, 1.0, 2.0, 3.0]
-    /// let mut p = t.as_promise();
+    /// let mut p = t.to_promise();
     /// for i in 0..5_u32 {
     ///     p += i as f64;
     /// }
@@ -219,7 +270,7 @@ impl<T: Numeric, B: Backend> Tensor<T, B> {
     ///
     /// [`TensorPromise<T>`]: crate::tensor::promise::TensorPromise
     #[inline]
-    pub fn as_promise(&self) -> TensorPromise<T, B> {
+    pub fn to_promise(&self) -> TensorPromise<T, B> {
         unsafe {
             TensorPromise::new(
                 super::ops::def_op::OpKind::NoOp,
@@ -235,6 +286,16 @@ impl<T: Numeric, B: Backend> Tensor<T, B> {
     ///
     /// Returns [`OpError::NotEnoughAxes`] if `index` doesn't have one entry per
     /// axis, or [`OpError::IndexOutOfBounds`] if an index is past the end of its axis.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+    /// assert_eq!(*t.get(&[1, 2])?, 6.0);
+    /// assert!(t.get(&[2, 0]).is_err()); // row 2 is past the end
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     // TODO: Add support for negative indexing
     pub fn get(&self, index: &[usize]) -> Result<&T, OpError> {
         self.graph.get().get(index)
@@ -244,8 +305,39 @@ impl<T: Numeric, B: Backend> Tensor<T, B> {
     ///
     /// Most useful for reading a one-element result, such as a full reduction like
     /// [`.sum()`][Self::sum].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+    /// let total = t.sum().materialize();
+    /// assert_eq!(*total.item(), 10.0);
+    /// ```
     pub fn item(&self) -> &T {
         self.graph.get().item()
+    }
+
+    /// Creates a [`SkeletonSlot`] shaped like this tensor.
+    ///
+    /// The slot is an input placeholder for a [`Skeleton`]. It has the tensor's
+    /// [`Layout`] but holds no data.
+    ///
+    /// [`Skeleton`]: crate::skeleton::Skeleton
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    ///
+    /// let a = Tensor::from_scalar(0.3, &[4]);
+    /// let slot = a.to_slot();                       // placeholder shaped like a
+    /// let skeleton = (&slot * 2.0 + 1.0).into_skeleton(&[slot])?;
+    /// assert!(skeleton.run(&[&a]).is_ok());
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
+    pub fn to_slot(&self) -> SkeletonSlot<T, B> {
+        SkeletonSlot::new(self.layout().clone())
     }
 }
 
@@ -256,21 +348,41 @@ impl<T, B: Backend> Dimension for Tensor<T, B> {
     }
 }
 
+impl<T, B: Backend> Operand<T, B> for Tensor<T, B> {
+    fn to_node(&self) -> NodeKind<T, B> {
+        NodeKind::Edge(self.graph.clone())
+    }
+}
+
+impl<T, B: Backend> Tainting for Tensor<T, B> {
+    type Mark = Clean;
+}
+
+impl<T, B: Backend> Composable<T, B> for Tensor<T, B> {}
+
 impl<T, B: Backend> Clone for Tensor<T, B> {
     /// Shallow copy sharing the same underlying buffer and graph identity.
     ///
     /// Equivalent to bumping an `Arc` reference count. The copy is connected to all promises
     /// that reference the original - the planner sees them as the same input node. For a copy
     /// the graph treats as unrelated, use [`clone_detached`]. For an independent buffer, use
-    /// [`clone_deep`].
+    /// [`deep_clone`].
     ///
     /// [`clone_detached`]: Tensor::clone_detached
-    /// [`clone_deep`]: Tensor::clone_deep
+    /// [`deep_clone`]: Tensor::deep_clone
     #[inline]
     fn clone(&self) -> Self {
         Self {
             graph: self.graph.clone(),
         }
+    }
+}
+
+#[allow(private_bounds)]
+impl<T: std::fmt::Display + Copy, B: Backend> std::fmt::Debug for Tensor<T, B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Tensor {:?}", self.layout())?;
+        std::fmt::Display::fmt(self, f)
     }
 }
 

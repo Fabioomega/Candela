@@ -206,5 +206,5 @@ fn tensor_from_scalar_empty_shape_panics() {
 #[test]
 #[should_panic(expected = "rank >= 1")]
 fn layout_from_shape_empty_panics() {
-    let _ = candela::Layout::from_shape(&[], 0);
+    let _ = candela::Layout::new(&[]);
 }

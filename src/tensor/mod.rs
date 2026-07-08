@@ -4,11 +4,13 @@ mod convenience;
 pub(crate) mod backend;
 pub(crate) mod definitions;
 pub mod errors;
+mod executor;
 mod internals;
 mod iter;
 mod macros;
 mod mem_formats;
 mod planner;
+pub(crate) mod skeleton;
 mod storage;
 pub(crate) mod traits;
 
@@ -18,6 +20,7 @@ pub mod promise;
 pub mod tensor_interface;
 pub use convenience::*;
 
+pub use iter::{InformedIter, Iter, StepInfo};
 pub use mem_formats::layout::Layout;
 pub use mem_formats::slice::SliceRange;
 pub use promise::{CachedTensorPromise, TensorPromise};

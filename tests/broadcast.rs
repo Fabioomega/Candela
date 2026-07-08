@@ -9,7 +9,7 @@ use rstest::rstest;
 #[test]
 fn broadcast_layout_zero_stride_on_expanded_dim() {
     // [4] broadcast to [3,4]: new leading dim gets stride 0
-    let l = Layout::from_shape(&[4], 0);
+    let l = Layout::new(&[4]);
     let b = l.broadcast(&[3, 4]).unwrap();
     assert_eq!(b.shape(), &[3, 4]);
     assert_eq!(b.stride()[0], 0);

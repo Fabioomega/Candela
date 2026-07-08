@@ -6,16 +6,19 @@
 
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::Arc;
 
 use crate::tensor::backend::Backend;
-use crate::tensor::graph::{NodeKind, TensorGraphCacheNode, TensorGraphEdge, TensorGraphNode};
+use crate::tensor::graph::{
+    NodeKind, TensorGraphBaked, TensorGraphCacheNode, TensorGraphEdge, TensorGraphNode,
+};
 use crate::tensor::planner::alias::{self, AliasKind, AliasMap};
 use crate::tensor::planner::runtime::{ExecKind, Slot};
 use crate::tensor::planner::sort::topological_sort;
 use crate::tensor::planner::{get_id, runtime};
 
 /// How the executor should produce the output buffer for a single operation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum OutputKind {
     /// Re-use the buffer previously owned by node `id`. The planner guarantees
     /// that buffer is no longer referenced by any live node at this point.
@@ -23,6 +26,11 @@ pub(crate) enum OutputKind {
     /// Overwrite input at position `idx` in-place. The planner guarantees the
     /// input's buffer is not aliased by any other live node.
     InPlaceIdx(usize),
+    /// Alias the input at position `idx` at this node's layout, copying no
+    /// elements. The executor clones the input's handle and re-points its layout;
+    /// the input keeps its buffer ownership and stays in the live-buffer cache, so
+    /// nothing is allocated, freed, or renamed.
+    Reference(usize),
     /// Allocate a fresh `Vec<T>` of this length.
     Allocate(usize),
 }
@@ -30,7 +38,7 @@ pub(crate) enum OutputKind {
 /// One step in the execution plan produced by [`plan_computation`].
 pub(crate) enum ComputeKind<'a, T, B: Backend> {
     Leaf {
-        edge: &'a TensorGraphEdge<T, B>,
+        edge: &'a Arc<TensorGraphEdge<T, B>>,
     },
     /// A regular computation node.
     Op {
@@ -47,9 +55,14 @@ pub(crate) enum ComputeKind<'a, T, B: Backend> {
     /// if already filled it inserts the cached result and cleans up any reserved
     /// buffers.
     CachedOp {
-        cache: &'a TensorGraphCacheNode<T, B>,
+        cache: &'a Arc<TensorGraphCacheNode<T, B>>,
         output: OutputKind,
         /// Input node IDs resolved at plan time. Same semantics as `Op`.
+        resolved_inputs: Vec<usize>,
+        dealloc_after: Vec<usize>,
+    },
+    Baked {
+        baked: &'a Arc<TensorGraphBaked<T, B>>,
         resolved_inputs: Vec<usize>,
         dealloc_after: Vec<usize>,
     },
@@ -59,10 +72,10 @@ pub(crate) enum ComputeKind<'a, T, B: Backend> {
 /// through the alias map *at the node's position in the sort*, and `end` - the
 /// index of the last step that reads its output, or `None` if never reclaimed.
 #[derive(Debug)]
-struct OpPlan<'a, T, B: Backend> {
-    node: &'a NodeKind<T, B>,
-    resolved_inputs: Vec<&'a NodeKind<T, B>>,
-    end: Option<usize>,
+pub(crate) struct OpPlan<'a, T, B: Backend> {
+    pub(crate) node: &'a NodeKind<T, B>,
+    pub(crate) resolved_inputs: Vec<&'a NodeKind<T, B>>,
+    pub(crate) end: Option<usize>,
 }
 
 #[inline]
@@ -200,7 +213,7 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                 let resolved_inputs = build_resolved_inputs(resolved_inputs);
                 self.plan.push(ComputeKind::Op {
                     node,
-                    output: OutputKind::InPlaceIdx(input_idx),
+                    output: OutputKind::Reference(input_idx),
                     resolved_inputs,
                     dealloc_after: Vec::new(),
                 });
@@ -217,7 +230,7 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                 let resolved_inputs = build_resolved_inputs(resolved_inputs);
                 self.plan.push(ComputeKind::Op {
                     node,
-                    output: OutputKind::InPlaceIdx(input_idx),
+                    output: OutputKind::Reference(input_idx),
                     resolved_inputs,
                     dealloc_after: Vec::new(),
                 });
@@ -245,7 +258,7 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
     fn plan_cache_node(
         &mut self,
         op_start: usize,
-        cache: &'a TensorGraphCacheNode<T, B>,
+        cache: &'a Arc<TensorGraphCacheNode<T, B>>,
         resolved_inputs: &[&NodeKind<T, B>],
     ) {
         let node = cache.get_node();
@@ -307,7 +320,7 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                 let resolved_inputs = build_resolved_inputs(resolved_inputs);
                 self.plan.push(ComputeKind::CachedOp {
                     cache,
-                    output: OutputKind::InPlaceIdx(input_idx),
+                    output: OutputKind::Reference(input_idx),
                     resolved_inputs,
                     dealloc_after: Vec::new(),
                 });
@@ -322,7 +335,7 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                 let resolved_inputs = build_resolved_inputs(resolved_inputs);
                 self.plan.push(ComputeKind::CachedOp {
                     cache,
-                    output: OutputKind::InPlaceIdx(input_idx),
+                    output: OutputKind::Reference(input_idx),
                     resolved_inputs,
                     dealloc_after: Vec::new(),
                 });
@@ -340,17 +353,25 @@ struct RootNode<'a, T, B: Backend> {
     resolved_inputs: Vec<&'a NodeKind<T, B>>,
 }
 
+struct PrePlan<'a, T, B: Backend> {
+    pre_plan: Vec<OpPlan<'a, T, B>>,
+    root: RootNode<'a, T, B>,
+    /// Inputs that need to be added by an external source for the plan to run
+    external_inputs: Vec<usize>,
+}
+
 /// Topologically sort the graph and, in one walk, classify each node's aliasing,
 /// snapshot its resolved inputs, and record buffer lifetimes. Returns the staged
 /// [`OpPlan`]s and the resolved [`RootNode`]. The alias map is built and consumed
 /// entirely here; the buffer-assignment pass never sees it.
-fn pre_plan<'a, T: PartialEq, B: Backend>(
+fn pre_plan<'a, T: PartialEq + Clone, B: Backend>(
     base_node: &'a TensorGraphNode<T, B>,
-) -> (Vec<OpPlan<'a, T, B>>, RootNode<'a, T, B>) {
+) -> PrePlan<'a, T, B> {
     let dag_iter = topological_sort(base_node);
     let mut id_op: HashMap<usize, usize> = HashMap::with_capacity(32);
     let mut ops: Vec<OpPlan<'_, T, B>> = Vec::with_capacity(32);
     let mut alias_map: AliasMap<'_, T, B> = AliasMap::new();
+    let mut external_inputs: Vec<usize> = Vec::with_capacity(8);
 
     for node in dag_iter {
         match node {
@@ -364,6 +385,12 @@ fn pre_plan<'a, T: PartialEq, B: Backend>(
                     resolved_inputs: Vec::new(),
                     end: None,
                 });
+            }
+            NodeKind::Slot(s) => {
+                // Slots produce no plan step - their buffer arrives from outside - so
+                // they're recorded as external inputs and deliberately kept out of
+                // `ops`.
+                external_inputs.push(s.id);
             }
             NodeKind::Node(n) => match alias::classify(&n.op, &n.inputs, &alias_map) {
                 AliasKind::NoAlias => {
@@ -424,8 +451,24 @@ fn pre_plan<'a, T: PartialEq, B: Backend>(
                     _ => unreachable!("classify_cache always aliases or takes over"),
                 }
             }
+            NodeKind::Baked(baked) => {
+                let resolved_inputs = resolve_inputs(&baked.inputs, &alias_map);
+                let pos = ops.len();
+
+                id_op.insert(baked.id, pos);
+
+                track_lifetimes(&resolved_inputs, pos, &id_op, &mut ops);
+
+                ops.push(OpPlan {
+                    node,
+                    resolved_inputs,
+                    end: None,
+                });
+            }
         }
     }
+
+    let root_resolved = resolve_inputs(&base_node.inputs, &alias_map);
 
     let root_id = match alias::classify(&base_node.op, &base_node.inputs, &alias_map) {
         AliasKind::Alias(target, _) => {
@@ -439,16 +482,21 @@ fn pre_plan<'a, T: PartialEq, B: Backend>(
             id
         }
 
-        _ => base_node.id,
+        _ => {
+            let root_pos = ops.len();
+            track_lifetimes(&root_resolved, root_pos, &id_op, &mut ops);
+            base_node.id
+        }
     };
 
-    (
-        ops,
-        RootNode {
+    PrePlan {
+        pre_plan: ops,
+        root: RootNode {
             id: root_id,
-            resolved_inputs: resolve_inputs(&base_node.inputs, &alias_map),
+            resolved_inputs: root_resolved,
         },
-    )
+        external_inputs,
+    }
 }
 
 /// The output of [`plan_computation`]: the ordered execution schedule plus the id
@@ -463,6 +511,19 @@ pub(crate) struct Plan<'a, T, B: Backend> {
     /// `computation_cache` key holding the root result - the root node's id, or the
     /// resolved target when the root is a pure alias and emits no step of its own.
     pub(crate) root_id: usize,
+    /// Inputs that need to be added by an external source for the plan to run
+    pub(crate) external_inputs: Vec<usize>,
+}
+
+pub(crate) struct CorePlan<'a, T, B: Backend> {
+    /// Steps in dependency order. Each carries its [`OutputKind`], pre-resolved
+    /// input IDs, and the list of buffer IDs to drop once the step completes.
+    pub(crate) plan: Vec<ComputeKind<'a, T, B>>,
+    /// `computation_cache` key holding the root result - the root node's id, or the
+    /// resolved target when the root is a pure alias and emits no step of its own.
+    pub(crate) root_id: usize,
+    /// Inputs that need to be added by an external source for the plan to run
+    pub(crate) external_inputs: Vec<usize>,
 }
 
 /// Build a static execution plan for the subgraph rooted at `base_node`.
@@ -501,25 +562,38 @@ pub(crate) struct Plan<'a, T, B: Backend> {
         )
     )
 )]
-pub(crate) fn plan_computation<T: PartialEq, B: Backend>(
+#[inline]
+pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
     base_node: &TensorGraphNode<T, B>,
-) -> Plan<'_, T, B> {
+) -> CorePlan<'_, T, B> {
     let mut state: PlanState<'_, T, B> = PlanState::new();
-    let (ops, root) = pre_plan(base_node);
+    let PrePlan {
+        pre_plan,
+        root,
+        external_inputs,
+    } = pre_plan(base_node);
 
-    let ops_len = ops.len();
+    let ops_len = pre_plan.len();
 
-    for (i, op) in ops.into_iter().enumerate() {
+    for (i, op) in pre_plan.into_iter().enumerate() {
         match op.node {
             NodeKind::Edge(e) => {
                 state.plan.push(ComputeKind::Leaf { edge: e });
             }
-            NodeKind::Node(arc_node) => {
-                state.plan_node(i, op.end, arc_node, &op.resolved_inputs);
+            NodeKind::Node(node) => {
+                state.plan_node(i, op.end, node, &op.resolved_inputs);
             }
-            NodeKind::Cache(arc_cache) => {
-                state.plan_cache_node(i, arc_cache, &op.resolved_inputs);
+            NodeKind::Cache(cache) => {
+                state.plan_cache_node(i, cache, &op.resolved_inputs);
             }
+            NodeKind::Baked(baked) => {
+                state.plan.push(ComputeKind::Baked {
+                    baked,
+                    resolved_inputs: op.resolved_inputs.iter().map(|n| get_id(*n)).collect(),
+                    dealloc_after: Vec::new(),
+                });
+            }
+            NodeKind::Slot(_) => unreachable!("slots are pre-plan only nodes"),
         }
     }
 
@@ -537,9 +611,9 @@ pub(crate) fn plan_computation<T: PartialEq, B: Backend>(
     for (node_id, dealloc_at) in &ref_deallocs {
         let Some(end) = dealloc_at else { continue };
         match &mut plan[*end] {
-            ComputeKind::Op { dealloc_after, .. } | ComputeKind::CachedOp { dealloc_after, .. } => {
-                dealloc_after.push(*node_id)
-            }
+            ComputeKind::Op { dealloc_after, .. }
+            | ComputeKind::CachedOp { dealloc_after, .. }
+            | ComputeKind::Baked { dealloc_after, .. } => dealloc_after.push(*node_id),
             ComputeKind::Leaf { .. } => unreachable!(),
         }
     }
@@ -548,14 +622,33 @@ pub(crate) fn plan_computation<T: PartialEq, B: Backend>(
         let Some(end) = slot.end else { continue };
 
         match &mut plan[end] {
-            ComputeKind::Op { dealloc_after, .. } => dealloc_after.push(slot.id),
-            ComputeKind::CachedOp { dealloc_after, .. } => dealloc_after.push(slot.id),
+            ComputeKind::Op { dealloc_after, .. }
+            | ComputeKind::CachedOp { dealloc_after, .. }
+            | ComputeKind::Baked { dealloc_after, .. } => dealloc_after.push(slot.id),
             ComputeKind::Leaf { .. } => unreachable!(),
         }
     }
 
-    Plan {
+    CorePlan {
         plan,
         root_id: root.id,
+        external_inputs,
+    }
+}
+
+pub(crate) fn plan_computation<T: PartialEq + Clone, B: Backend>(
+    base_node: &TensorGraphNode<T, B>,
+) -> Plan<'_, T, B> {
+    let CorePlan {
+        plan,
+        root_id,
+        external_inputs,
+        ..
+    } = core_plan_computation(base_node);
+
+    Plan {
+        plan,
+        root_id,
+        external_inputs,
     }
 }

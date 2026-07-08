@@ -6,6 +6,16 @@
 /// caught at the call site rather than deep inside execution. `OpError`
 /// implements [`Error`](std::error::Error) and [`Display`](std::fmt::Display),
 /// so it composes with `?` and `Box<dyn Error>`.
+///
+/// # Examples
+///
+/// ```
+/// use candela::{OpError, Tensor};
+///
+/// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+/// // A view must preserve the element count; 3 * 3 = 9 != 4.
+/// assert!(matches!(t.view(&[3, 3]), Err(OpError::InvalidViewShape)));
+/// ```
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum OpError {
@@ -33,6 +43,12 @@ pub enum OpError {
     NotSameBatch(usize, usize),
     /// A 0-D shape (`&[]`) was given; tensors must have rank >= 1.
     ZeroRankShape,
+    // A declared slot was not the same used during construction of the skeleton
+    NotSameSlot(usize),
+    // The amount of slots provided to the skeleton was different than used
+    IncorrectSlotAmount(usize, usize),
+    // The layout of the idx is not the same declared slot layout
+    NotSameLayoutAtSlot(usize),
 }
 
 impl std::fmt::Display for OpError {
@@ -90,6 +106,27 @@ impl std::fmt::Display for OpError {
                 write!(
                     f,
                     "tensor shape must have rank >= 1 (empty shape `&[]` / 0-D tensors are not supported)"
+                )
+            }
+            OpError::NotSameSlot(slot_idx) => {
+                write!(
+                    f,
+                    "slot at idx {} was not used in the skeleton construction",
+                    slot_idx
+                )
+            }
+            OpError::IncorrectSlotAmount(expected, got) => {
+                write!(
+                    f,
+                    "got {} slots binded to the skeleton but expected {}",
+                    got, expected
+                )
+            }
+            OpError::NotSameLayoutAtSlot(slot_idx) => {
+                write!(
+                    f,
+                    "slot at idx {} did not have a compatible layout",
+                    slot_idx
                 )
             }
         }

@@ -96,7 +96,7 @@ fn exp_then_axby() {
 fn view_then_as_contiguous() {
     use crate::tensor::mem_formats::layout::Layout;
     let input = edge(1.0, &[12]);
-    let view_layout = Layout::from_shape(&[3, 4], 0);
+    let view_layout = Layout::new(&[3, 4]);
     let fusion = compute_fusion(
         &OpKind::View(view_layout.clone()),
         std::slice::from_ref(&input),
