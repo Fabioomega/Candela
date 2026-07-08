@@ -1,7 +1,15 @@
 [package]
+exclude = ["*_tests.rs"]
+
 name = "candela"
 version = "0.2.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "A lazy, graph-based tensor engine in Rust"
+repository = "https://github.com/Fabioomega/Candela"
+readme = "README.md"
+categories = ["artificial-intelligence", "mathematics", "science"]
+keywords = ["blas", "tensor", "machine-learning"]
 
 [features]
 
