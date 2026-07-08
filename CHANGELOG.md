@@ -5,7 +5,7 @@ All notable changes to Candela are recorded here. The format follows
 follows the pre-1.0 Cargo convention where a minor bump (`0.x → 0.(x+1)`) is a
 release arc allowed to break the API.
 
-## [0.2.0] - 2026-06-26
+## [0.2.0] - 2026-07-08
 
 Skeletons: compile a graph once, run it many times, and know your costs before
 you run.
