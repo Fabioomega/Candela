@@ -1,7 +1,7 @@
 [package]
-exclude = ["*_tests.rs"]
+exclude = ["project_decision.txt", ".gitignore", "doc/internals", ".github/"]
 
-name = "candela"
+name = "candela-tensor"
 version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
@@ -10,6 +10,9 @@ repository = "https://github.com/Fabioomega/Candela"
 readme = "README.md"
 categories = ["artificial-intelligence", "mathematics", "science"]
 keywords = ["blas", "tensor", "machine-learning"]
+
+[lib]
+name = "candela"
 
 [features]
 

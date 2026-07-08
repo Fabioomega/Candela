@@ -6,6 +6,14 @@ Candela is a learning project — a JAX-like tensor engine, inspired by Candle �
 
 ---
 
+## Installation
+
+```bash
+cargo add candela-tensor
+```
+
+---
+
 # Get started
 
 Here's a quick example of computing a matrix multiplication with Candela. You first define the operation chain — called a promise chain — and when everything is set up you call `.materialize()`, and the tensor becomes real.
@@ -93,8 +101,8 @@ You pay the memory cost of keeping the cache alive, which is why this is opt-in.
 
 - Lazy evaluation via computation graph (DAG)
 - Scalar operator fusion - long chains collapse into single-pass kernels
-- Zero-copy views (see [the layout docs](https://docs.rs/candela/latest/candela/docs/layout/))
-- Memory reuse across long chains (see [the planner docs](https://docs.rs/candela/latest/candela/docs/planner/))
+- Zero-copy views (see [the layout docs](https://docs.rs/candela-tensor/latest/candela/docs/layout/))
+- Memory reuse across long chains (see [the planner docs](https://docs.rs/candela-tensor/latest/candela/docs/planner/))
 - Pluggable CPU backends - pure-Rust by default, Intel MKL behind `--features mkl`
 - `f32` and `f64` element types via the `Backend`/`Dtype` split
 - Matrix multiplication, including batched and batch-broadcast cases
@@ -103,7 +111,7 @@ You pay the memory cost of keeping the cache alive, which is why this is opt-in.
 - Full stride/offset layout system for non-contiguous tensors
 - Opt-in result caching via `CachedTensorPromise`
 - Plan-once / run-many skeletons - pre-planned graphs over slot placeholders
-  (see [the skeleton docs](https://docs.rs/candela/latest/candela/docs/skeleton/))
+  (see [the skeleton docs](https://docs.rs/candela-tensor/latest/candela/docs/skeleton/))
 - Built-in `tracing` instrumentation (feature-gated)
 - `arange!`, `srange!`, `zeros!`, `ones!` convenience macros
 
@@ -133,12 +141,12 @@ let reshaped = p.view(&[4, 3])?;  // Result<TensorPromise<T>, OpError>
 
 If you want to understand how things work under the hood, the design is documented on docs.rs:
 
-- [overview](https://docs.rs/candela/latest/candela/docs/overview/) - the whole pipeline, from expression to computed tensor
-- [the computation graph](https://docs.rs/candela/latest/candela/docs/graph/) - node types, sharing, and how ops fuse during construction
-- [the execution planner](https://docs.rs/candela/latest/candela/docs/planner/) - how Candela decides what to compute, in what order, and which buffers to reuse
-- [memory layout](https://docs.rs/candela/latest/candela/docs/layout/) - strides, zero-copy views, and the `adj_stride` iteration trick
-- [backends](https://docs.rs/candela/latest/candela/docs/backends/) - the backend/dtype split and the `mkl` feature flag
-- [skeletons](https://docs.rs/candela/latest/candela/docs/skeleton/) - compile a graph once, run it many times, and how the frozen plan is reused
+- [overview](https://docs.rs/candela-tensor/latest/candela/docs/overview/) - the whole pipeline, from expression to computed tensor
+- [the computation graph](https://docs.rs/candela-tensor/latest/candela/docs/graph/) - node types, sharing, and how ops fuse during construction
+- [the execution planner](https://docs.rs/candela-tensor/latest/candela/docs/planner/) - how Candela decides what to compute, in what order, and which buffers to reuse
+- [memory layout](https://docs.rs/candela-tensor/latest/candela/docs/layout/) - strides, zero-copy views, and the `adj_stride` iteration trick
+- [backends](https://docs.rs/candela-tensor/latest/candela/docs/backends/) - the backend/dtype split and the `mkl` feature flag
+- [skeletons](https://docs.rs/candela-tensor/latest/candela/docs/skeleton/) - compile a graph once, run it many times, and how the frozen plan is reused
 
 ---
 
