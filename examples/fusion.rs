@@ -8,7 +8,7 @@ fn main() {
     // ops fuse during node construction (see OpKind::FusedScalar), the planner
     // sees a single fused node by the time materialize() is called.
     let t = arange!(1000); // [0.0, 1.0, ..., 999.0]
-    let mut p = t.as_promise();
+    let mut p = t.to_promise();
     for i in 0..20 {
         p += i as f64;
     }
@@ -20,7 +20,7 @@ fn main() {
 
     // Fusion composes with a trailing multiply: (x + 190) * 2 is still one pass.
     let t = arange!(4); // [0.0, 1.0, 2.0, 3.0]
-    let mut p = t.as_promise();
+    let mut p = t.to_promise();
     for i in 0..20 {
         p += i as f64;
     }

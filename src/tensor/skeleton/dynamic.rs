@@ -18,9 +18,37 @@ use super::frame::BakedPromise;
 /// returning a [`Skeleton`] that supports that shape.
 ///
 /// [`Skeleton`]: super::Skeleton
+///
+/// # Examples
+///
+/// ```
+/// use candela::skeleton::{DynamicSkeleton, SkeletonSlot};
+/// use candela::{Layout, Tensor};
+///
+/// // One build rule, reused for whatever shape shows up.
+/// let sk: DynamicSkeleton<f32> = DynamicSkeleton::new(8, Box::new(|inputs: &[Layout]| {
+///     let a = SkeletonSlot::new(inputs[0].clone());
+///     (&a * 2.0).into_skeleton(&[a]).unwrap()
+/// }));
+///
+/// // Two different shapes build (and cache) two different skeletons.
+/// let out4 = sk.run(&[&Tensor::from_scalar(3.0, &[4])])?;
+/// let out8 = sk.run(&[&Tensor::from_scalar(3.0, &[8])])?;
+/// assert_eq!(out4.data(), &[6.0; 4]);
+/// assert_eq!(out8.data(), &[6.0; 8]);
+/// # Ok::<(), candela::OpError>(())
+/// ```
 pub struct DynamicSkeleton<T, B: Backend = DefaultBackend, P: EvictionPolicy = LRUPolicy> {
     cache: SkeletonCache<Box<[Layout]>, P, T, B>,
     build: BuildFunction<T, B>,
+}
+
+impl<T, B: Backend, P: EvictionPolicy> std::fmt::Debug for DynamicSkeleton<T, B, P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DynamicSkeleton")
+            .field("cache", &self.cache)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<P: EvictionPolicy, T, B: Backend> DynamicSkeleton<T, B, P>
@@ -76,6 +104,22 @@ where
     /// Looks up the [`Skeleton`] keyed by the inputs' layouts and runs it,
     /// calling the build function first if no entry exists yet. See
     /// [`Skeleton::run`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::{DynamicSkeleton, SkeletonSlot};
+    /// use candela::{Layout, Tensor};
+    ///
+    /// let sk: DynamicSkeleton<f32> = DynamicSkeleton::new(8, Box::new(|inputs: &[Layout]| {
+    ///     let a = SkeletonSlot::new(inputs[0].clone());
+    ///     (&a + 1.0).into_skeleton(&[a]).unwrap()
+    /// }));
+    ///
+    /// let out = sk.run(&[&Tensor::from_scalar(3.0, &[4])])?;
+    /// assert_eq!(out.data(), &[4.0; 4]);
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     #[inline]
     pub fn run(&self, inputs: &[&Tensor<T, B>]) -> Result<Tensor<T, B>, OpError> {
         self.cache.run(inputs, &self.build)
@@ -87,6 +131,24 @@ where
     /// instead of executing it. See [`Skeleton::compose`].
     ///
     /// [`run`]: DynamicSkeleton::run
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::{DynamicSkeleton, SkeletonSlot};
+    /// use candela::{Layout, Tensor};
+    ///
+    /// let sk: DynamicSkeleton<f32> = DynamicSkeleton::new(8, Box::new(|inputs: &[Layout]| {
+    ///     let a = SkeletonSlot::new(inputs[0].clone());
+    ///     (&a * 2.0).into_skeleton(&[a]).unwrap()
+    /// }));
+    ///
+    /// // Compose over a lazy promise, not a materialized tensor.
+    /// let a = Tensor::from_scalar(1.0, &[4]) + 2.0; // TensorPromise, still unevaluated
+    /// let baked = sk.compose(&[&a])?;
+    /// assert_eq!(baked.to_promise().materialize().data(), &[6.0; 4]);
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     #[inline]
     pub fn compose<C>(&self, inputs: &[&C]) -> Result<BakedPromise<T, B>, OpError>
     where
@@ -99,6 +161,24 @@ where
     ///
     /// Returns the skeleton that was stored, or `None` if `key` was not present. The
     /// freed slot is returned to the cache for reuse.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::{DynamicSkeleton, SkeletonSlot};
+    /// use candela::{Layout, Tensor};
+    ///
+    /// let sk: DynamicSkeleton<f32> = DynamicSkeleton::new(8, Box::new(|inputs: &[Layout]| {
+    ///     let a = SkeletonSlot::new(inputs[0].clone());
+    ///     (&a * 2.0).into_skeleton(&[a]).unwrap()
+    /// }));
+    ///
+    /// let a = Tensor::from_scalar(3.0, &[4]);
+    /// sk.run(&[&a])?;                     // builds and caches an entry
+    /// assert!(sk.remove(&[&a]).is_some());
+    /// assert!(!sk.contains_key(&[&a]));   // gone now
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     #[inline]
     pub fn remove(&self, key: &[&Tensor<T, B>]) -> Option<Arc<Skeleton<T, B>>> {
         let layouts: Box<[Layout]> = key.iter().map(|&x| x.layout().clone()).collect();
@@ -109,12 +189,46 @@ where
     /// Removes the entry for `key` via layout
     ///
     /// Same as [`Self::remove`] but using layouts instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::{DynamicSkeleton, SkeletonSlot};
+    /// use candela::{Layout, Tensor};
+    ///
+    /// let sk: DynamicSkeleton<f32> = DynamicSkeleton::new(8, Box::new(|inputs: &[Layout]| {
+    ///     let a = SkeletonSlot::new(inputs[0].clone());
+    ///     (&a * 2.0).into_skeleton(&[a]).unwrap()
+    /// }));
+    ///
+    /// sk.run(&[&Tensor::from_scalar(3.0, &[4])])?;
+    /// assert!(sk.remove_by_layout(&[Layout::new(&[4])]).is_some());
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     #[inline]
     pub fn remove_by_layout(&self, key: &[Layout]) -> Option<Arc<Skeleton<T, B>>> {
         self.cache.remove(key)
     }
 
     /// Returns whether `key` currently has an entry in the cache
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::{DynamicSkeleton, SkeletonSlot};
+    /// use candela::{Layout, Tensor};
+    ///
+    /// let sk: DynamicSkeleton<f32> = DynamicSkeleton::new(8, Box::new(|inputs: &[Layout]| {
+    ///     let a = SkeletonSlot::new(inputs[0].clone());
+    ///     (&a * 2.0).into_skeleton(&[a]).unwrap()
+    /// }));
+    ///
+    /// let a = Tensor::from_scalar(3.0, &[4]);
+    /// assert!(!sk.contains_key(&[&a])); // nothing built yet
+    /// sk.run(&[&a])?;
+    /// assert!(sk.contains_key(&[&a]));  // now cached
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     #[inline]
     pub fn contains_key(&self, key: &[&Tensor<T, B>]) -> bool {
         let layouts: Box<[Layout]> = key.iter().map(|&x| x.layout().clone()).collect();
@@ -124,6 +238,22 @@ where
 
     /// Returns whether `key` currently has an entry in the cache
     /// by layout
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::{DynamicSkeleton, SkeletonSlot};
+    /// use candela::{Layout, Tensor};
+    ///
+    /// let sk: DynamicSkeleton<f32> = DynamicSkeleton::new(8, Box::new(|inputs: &[Layout]| {
+    ///     let a = SkeletonSlot::new(inputs[0].clone());
+    ///     (&a * 2.0).into_skeleton(&[a]).unwrap()
+    /// }));
+    ///
+    /// sk.run(&[&Tensor::from_scalar(3.0, &[4])])?;
+    /// assert!(sk.contains_key_by_layout(&[Layout::new(&[4])]));
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     #[inline]
     pub fn contains_key_by_layout(&self, key: &[Layout]) -> bool {
         self.cache.contains_key(key)
@@ -131,4 +261,22 @@ where
 }
 
 /// A [`DynamicSkeleton`] whose cache never evicts (uses [`UnboundedPolicy`]).
-pub type UnboundedDynamicSkeleton<T, B> = DynamicSkeleton<T, B, UnboundedPolicy>;
+///
+/// # Examples
+///
+/// ```
+/// use candela::skeleton::{SkeletonSlot, UnboundedDynamicSkeleton};
+/// use candela::{Layout, Tensor};
+///
+/// // Like DynamicSkeleton, but every skeleton it builds is kept forever.
+/// let sk: UnboundedDynamicSkeleton<f32> =
+///     UnboundedDynamicSkeleton::new(0, Box::new(|inputs: &[Layout]| {
+///         let a = SkeletonSlot::new(inputs[0].clone());
+///         (&a * 2.0).into_skeleton(&[a]).unwrap()
+///     }));
+///
+/// let out = sk.run(&[&Tensor::from_scalar(3.0, &[4])])?;
+/// assert_eq!(out.data(), &[6.0; 4]);
+/// # Ok::<(), candela::OpError>(())
+/// ```
+pub type UnboundedDynamicSkeleton<T, B = DefaultBackend> = DynamicSkeleton<T, B, UnboundedPolicy>;

@@ -88,7 +88,14 @@ impl<'a, T: Clone> FusedIterator for ContiguousIter<'a, T> {}
 
 ///////////////////////////////////////////////////////////////
 
-pub struct SliceIter<'a, T> {
+/// Iterator over a tensor's elements in logical (row-major) order.
+///
+/// Returned by [`Tensor::iter`](crate::Tensor::iter). It walks the backing
+/// buffer following the tensor's [`Layout`], so a sliced or transposed tensor
+/// yields its elements in the order its shape implies rather than in storage
+/// order.
+#[derive(Debug, Clone)]
+pub struct Iter<'a, T> {
     data: &'a [T],
     pos: isize,
     counter: Box<[usize]>,
@@ -96,7 +103,7 @@ pub struct SliceIter<'a, T> {
     left_over: usize,
 }
 
-impl<'a, T: Clone> SliceIter<'a, T> {
+impl<'a, T: Clone> Iter<'a, T> {
     // TODO: data_len is used anywhere? Like at all? If not, maybe just remove it.
     pub fn new(data: &'a [T], data_len: usize, layout: &'a Layout) -> Self {
         let counter = vec![0; layout.shape().len()].into_boxed_slice();
@@ -111,7 +118,7 @@ impl<'a, T: Clone> SliceIter<'a, T> {
     }
 }
 
-impl<'a, T: Clone> Iterator for SliceIter<'a, T> {
+impl<'a, T: Clone> Iterator for Iter<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -150,9 +157,9 @@ impl<'a, T: Clone> Iterator for SliceIter<'a, T> {
     }
 }
 
-impl<'a, T: Clone> ExactSizeIterator for SliceIter<'a, T> {}
+impl<'a, T: Clone> ExactSizeIterator for Iter<'a, T> {}
 
-impl<'a, T: Clone> FusedIterator for SliceIter<'a, T> {}
+impl<'a, T: Clone> FusedIterator for Iter<'a, T> {}
 
 ///////////////////////////////////////////////////////////////
 
@@ -223,14 +230,61 @@ impl<'a, T: Clone> FusedIterator for MutSliceIter<'a, T> {}
 
 ///////////////////////////////////////////////////////////////
 
+/// A single event in a structural walk of a tensor, produced by
+/// [`Tensor::informed_iter`](crate::Tensor::informed_iter).
+///
+/// A walk is the nested loop it would take to visit every element - one loop per
+/// dimension, the innermost yielding values. Each variant marks a point in that
+/// loop: [`EnterDimension`] when a loop opens, [`Value`] for an element the
+/// innermost loop reads, [`ExitDimension`] when a loop closes, and [`End`] once
+/// every loop has finished.
+///
+/// The walk follows the tensor's logical layout, so a sliced or transposed
+/// tensor is visited in the order its shape implies.
+///
+/// [`EnterDimension`]: StepInfo::EnterDimension
+/// [`ExitDimension`]: StepInfo::ExitDimension
+/// [`Value`]: StepInfo::Value
+/// [`End`]: StepInfo::End
+///
+/// # Examples
+///
+/// ```
+/// use candela::{StepInfo, Tensor};
+///
+/// let t = Tensor::from_slice(&[1.0, 2.0], &[2]);
+/// let events: Vec<StepInfo<f64>> = t.informed_iter().collect();
+/// assert_eq!(events, vec![
+///     StepInfo::EnterDimension(0),
+///     StepInfo::Value(1.0),
+///     StepInfo::Value(2.0),
+///     StepInfo::ExitDimension(0),
+/// ]);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StepInfo<T: Clone> {
+    /// A dimension's loop has opened; the payload is its index, `0` being the
+    /// outermost.
     EnterDimension(usize),
+    /// A dimension's loop has closed; the payload is its index.
     ExitDimension(usize),
+    /// An element, read by the innermost loop in logical order.
     Value(T),
+    /// Every loop has finished. Iteration terminates by returning `None`, so the
+    /// iterator does not yield this variant.
     End,
 }
 
-pub struct InformedSliceIter<'a, T: Clone> {
+/// Structural walk over a tensor, yielding a [`StepInfo`] per element and per
+/// dimension boundary.
+///
+/// Returned by [`Tensor::informed_iter`](crate::Tensor::informed_iter). Unlike
+/// [`Iter`], which yields a flat stream of values, its events also mark where
+/// each sub-array opens and closes, which is what lets you reconstruct the
+/// tensor's nesting. See [`StepInfo`] for the event kinds and
+/// [`Tensor::informed_iter`](crate::Tensor::informed_iter) for a worked example.
+#[derive(Debug, Clone)]
+pub struct InformedIter<'a, T: Clone> {
     buffer: &'a [T],
     layout: &'a Layout,
     next_state: StepInfo<T>,
@@ -238,7 +292,7 @@ pub struct InformedSliceIter<'a, T: Clone> {
     counter: Vec<usize>,
 }
 
-impl<'a, T: Clone> InformedSliceIter<'a, T> {
+impl<'a, T: Clone> InformedIter<'a, T> {
     pub fn new(data: &'a [T], layout: &'a Layout) -> Self {
         let len = layout.shape().len();
 
@@ -252,7 +306,7 @@ impl<'a, T: Clone> InformedSliceIter<'a, T> {
     }
 }
 
-impl<'a, T: Copy> Iterator for InformedSliceIter<'a, T> {
+impl<'a, T: Copy> Iterator for InformedIter<'a, T> {
     type Item = StepInfo<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -315,9 +369,9 @@ impl<'a, T: Copy> Iterator for InformedSliceIter<'a, T> {
     }
 }
 
-impl<'a, T: Copy> ExactSizeIterator for InformedSliceIter<'a, T> {}
+impl<'a, T: Copy> ExactSizeIterator for InformedIter<'a, T> {}
 
-impl<'a, T: Copy> FusedIterator for InformedSliceIter<'a, T> {}
+impl<'a, T: Copy> FusedIterator for InformedIter<'a, T> {}
 
 /////////////////////////////////////////////////////////////
 pub struct PackedBuffer<'a, T: Clone> {

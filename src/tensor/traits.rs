@@ -3,6 +3,30 @@ use crate::tensor::graph::NodeKind;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::storage::TensorData;
 
+/// Shape, stride, and layout queries shared by every tensor-like value.
+///
+/// Implemented by [`Tensor`](crate::Tensor), [`TensorPromise`](crate::TensorPromise),
+/// [`CachedTensorPromise`](crate::CachedTensorPromise), and skeleton slots, so
+/// `shape`, `len`, `is_contiguous`, and friends read the same on all of them -
+/// whether or not the value has been computed yet.
+///
+/// # Examples
+///
+/// ```
+/// use candela::{Dimension, Tensor};
+///
+/// fn element_count<D: Dimension>(x: &D) -> usize {
+///     x.len()
+/// }
+///
+/// let t = Tensor::from_scalar(1.0_f64, &[2, 3]);
+/// assert_eq!(t.shape(), &[2, 3]);
+/// assert_eq!(element_count(&t), 6);
+///
+/// // Works on an unevaluated promise too - the shape is known before compute.
+/// let p = &t + 1.0;
+/// assert_eq!(element_count(&p), 6);
+/// ```
 pub trait Dimension {
     fn layout(&self) -> &Layout;
 
@@ -68,6 +92,23 @@ pub(crate) trait Operand<T, B: Backend>: Dimension {
 /// `SkeletonPromise` are `Operand`s but not `Composable`. This
 /// exclusion guarantees that no unbound slot appears in the materialization
 /// path.
+///
+/// # Examples
+///
+/// ```
+/// use candela::skeleton::SkeletonSlot;
+/// use candela::Tensor;
+///
+/// let x = SkeletonSlot::from_shape(&[4]);
+/// let sk = (&x * 2.0).into_skeleton(&[x])?;
+///
+/// // `compose` accepts any `Composable` - a Tensor or a TensorPromise - but not a slot.
+/// let as_tensor = Tensor::from_scalar(3.0, &[4]);
+/// let as_promise = Tensor::from_scalar(3.0, &[4]) + 1.0;
+/// sk.compose(&[&as_tensor])?;
+/// sk.compose(&[&as_promise])?;
+/// # Ok::<(), candela::OpError>(())
+/// ```
 pub trait Composable<T, B: Backend>: Operand<T, B> {}
 
 pub trait StreamingIterator {

@@ -12,7 +12,7 @@ use rstest::rstest;
 fn shared_node_computed_once<T: FloatLikeTensorElement>(#[case] _t: T) {
     // t shared across two branches: t*2 - t = t
     let t: Tensor<T> = arange!(4);
-    let p = t.as_promise();
+    let p = t.to_promise();
     let lhs = &p * T::from_f64(2.0);
     let rhs = p.clone();
     let result = (lhs - rhs).materialize();
@@ -26,7 +26,7 @@ fn shared_node_computed_once<T: FloatLikeTensorElement>(#[case] _t: T) {
 fn diamond_graph_correctness<T: FloatLikeTensorElement>(#[case] _t: T) {
     // t shared: lhs = t * 2, rhs = t + 1, result = lhs - rhs = (2x) - (x+1) = x - 1
     let t: Tensor<T> = arange!(4);
-    let p = t.as_promise();
+    let p = t.to_promise();
     let lhs = &p * T::from_f64(2.0);
     let rhs = &p + T::from_f64(1.0);
     let result = (lhs - rhs).materialize();

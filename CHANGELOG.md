@@ -16,7 +16,7 @@ you run.
   runs with new data, skipping per-call planning.
   - `SkeletonSlot` - a typed hole in the graph: a `Layout` with no data behind
     it. Built from a `Layout` via `SkeletonSlot::new`, or borrowed from an
-    existing tensor or promise with `.as_slot()`.
+    existing tensor or promise with `.to_slot()`.
   - `SkeletonPromise` - what any op chain containing a slot becomes. The slot
     taint is enforced at the type level: an expression with a slot in its
     lineage has no `.materialize()`, so forgetting a slot is a compile error.

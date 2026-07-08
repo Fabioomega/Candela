@@ -38,7 +38,7 @@ use it.
 **Bad pattern to avoid:**
 ```rust
 // Tutorial narration - does not belong in the prose section
-/// A tensor you can use to do computations. Call `.as_promise()` to start
+/// A tensor you can use to do computations. Call `.to_promise()` to start
 /// building a graph and then `.materialize()` to run it.
 ```
 
@@ -52,8 +52,8 @@ must compile and pass. Asserting the output is preferred over just printing it.
 [`CachedTensorPromise`](../../src/tensor/promise.rs) - each has a focused `# Examples`
 block that shows one realistic pattern and asserts the output.
 
-**Good example:** [`Tensor::as_promise`](../../src/tensor/tensor_interface.rs) - shows the
-specific pattern (`as_promise()` seeding a loop variable) that motivated the
+**Good example:** [`Tensor::to_promise`](../../src/tensor/tensor_interface.rs) - shows the
+specific pattern (`to_promise()` seeding a loop variable) that motivated the
 method's existence.
 
 #### Other sections

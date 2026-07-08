@@ -5,6 +5,7 @@ use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::errors::OpError;
 use crate::tensor::internals::calculate_adjacent_dim_stride;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SliceBounds {
     Beginning,
     Index(usize),
@@ -12,6 +13,26 @@ enum SliceBounds {
     End,
 }
 
+/// A per-axis range for [`slice`](crate::Tensor::slice), one entry per axis.
+///
+/// You rarely name `SliceRange` directly - the [`s!`](crate::s) macro builds the
+/// list from ordinary range syntax. It converts from `a..b`, `a..`, `..b`, `..`,
+/// and bare integers (a single index); negative bounds count from the end.
+///
+/// # Examples
+///
+/// ```
+/// use candela::{s, Dimension, Tensor};
+///
+/// let t = Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0], &[2, 3]);
+/// // row 0, columns 1..3
+/// let sub = t.slice(s![0..1, 1..3])?.materialize();
+/// assert_eq!(sub.shape(), &[1, 2]);
+/// let vals: Vec<f64> = sub.iter().copied().collect();
+/// assert_eq!(vals, [1.0, 2.0]);
+/// # Ok::<(), candela::OpError>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SliceRange {
     start: SliceBounds,
     end: SliceBounds,

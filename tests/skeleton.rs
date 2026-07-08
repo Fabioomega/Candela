@@ -15,7 +15,7 @@ fn skeleton_scalar_chain<T: FloatLikeTensorElement>(#[case] _t: T) {
     // (s + s) * 0.5 + 1 = s + 1
 
     let base: Tensor<T> = arange!(4);
-    let slot = base.as_slot();
+    let slot = base.to_slot();
     let sk = ((&slot + &slot) * T::from_f64(0.5) + T::from_f64(1.0))
         .into_skeleton(std::slice::from_ref(&slot))
         .unwrap();
@@ -31,7 +31,7 @@ fn skeleton_repeated_runs<T: FloatLikeTensorElement>(#[case] _t: T) {
     // The same compiled plan executed against different inputs.
 
     let base: Tensor<T> = arange!(4);
-    let slot = base.as_slot();
+    let slot = base.to_slot();
     let sk = ((&slot + &slot) * T::from_f64(0.5) + T::from_f64(1.0))
         .into_skeleton(std::slice::from_ref(&slot))
         .unwrap();
@@ -55,8 +55,8 @@ fn skeleton_matmul_reduction<T: FloatLikeTensorElement>(#[case] _t: T) {
     let a: Tensor<T> = srange!(6, &[2, 3]);
     let b: Tensor<T> = srange!(6, &[3, 2]);
 
-    let slot_a = a.as_slot();
-    let slot_b = b.as_slot();
+    let slot_a = a.to_slot();
+    let slot_b = b.to_slot();
 
     let sk = slot_a
         .matmul(&slot_b)
@@ -85,8 +85,8 @@ fn skeleton_matmul_reduction<T: FloatLikeTensorElement>(#[case] _t: T) {
 fn skeleton_compose_tensor<T: FloatLikeTensorElement>(#[case] _t: T) {
     let base: Tensor<T> = arange!(4);
 
-    let slot = base.as_slot();
-    let slot2 = base.as_slot();
+    let slot = base.to_slot();
+    let slot2 = base.to_slot();
 
     let sk = (&slot + &slot2).into_skeleton(&[slot, slot2]).unwrap();
 
@@ -94,7 +94,7 @@ fn skeleton_compose_tensor<T: FloatLikeTensorElement>(#[case] _t: T) {
     let composed = sk
         .compose(&[&base, &base])
         .unwrap()
-        .as_promise()
+        .to_promise()
         .materialize();
 
     assert_approx_eq_by(run_output.data(), composed.data(), 1e-6);
@@ -113,7 +113,7 @@ fn skeleton_compose_promise<T: FloatLikeTensorElement>(#[case] _t: T) {
     let promise2 = (&base2 + T::from_f64(3.0)).log2();
     let promise_output2 = promise2.clone_and_materialize();
 
-    let slot = base.as_slot();
+    let slot = base.to_slot();
     let slot2 = slot.deep_clone();
 
     let sk = (&slot + &slot2).into_skeleton(&[slot, slot2]).unwrap();
@@ -122,7 +122,7 @@ fn skeleton_compose_promise<T: FloatLikeTensorElement>(#[case] _t: T) {
     let composed = sk
         .compose(&[&promise, &promise2])
         .unwrap()
-        .as_promise()
+        .to_promise()
         .materialize();
 
     assert_approx_eq_by(run_output.data(), composed.data(), 1e-6);
@@ -136,7 +136,7 @@ fn skeleton_compose_promise_same_input<T: FloatLikeTensorElement>(#[case] _t: T)
     let promise = (&base + T::from_f64(3.0)).log2();
     let promise_output = promise.clone_and_materialize();
 
-    let slot = base.as_slot();
+    let slot = base.to_slot();
     let slot2 = slot.deep_clone();
 
     let sk = (&slot + &slot2).into_skeleton(&[slot, slot2]).unwrap();
@@ -145,7 +145,7 @@ fn skeleton_compose_promise_same_input<T: FloatLikeTensorElement>(#[case] _t: T)
     let composed = sk
         .compose(&[&promise, &promise])
         .unwrap()
-        .as_promise()
+        .to_promise()
         .materialize();
 
     assert_approx_eq_by(run_output.data(), composed.data(), 1e-6);
@@ -158,7 +158,7 @@ fn skeleton_slot_count_mismatch() {
     // The skeleton declares one slot; running it with two inputs is rejected.
 
     let base: Tensor<f64> = arange!(4);
-    let slot = base.as_slot();
+    let slot = base.to_slot();
     let sk = (&slot * 2.0)
         .into_skeleton(std::slice::from_ref(&slot))
         .unwrap();
@@ -175,8 +175,8 @@ fn skeleton_unused_slot() {
     // slot (same layout, distinct identity) does not match the graph.
 
     let base: Tensor<f64> = arange!(4);
-    let used = base.as_slot();
-    let unused = base.as_slot();
+    let used = base.to_slot();
+    let unused = base.to_slot();
 
     assert!(matches!(
         (&used * 2.0).into_skeleton(std::slice::from_ref(&unused)),
@@ -189,7 +189,7 @@ fn skeleton_layout_mismatch() {
     // The slot was declared for shape [4]; a [8] input has an incompatible layout.
 
     let base: Tensor<f64> = arange!(4);
-    let slot = base.as_slot();
+    let slot = base.to_slot();
     let sk = (&slot * 2.0)
         .into_skeleton(std::slice::from_ref(&slot))
         .unwrap();

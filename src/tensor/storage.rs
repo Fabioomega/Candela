@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crate::tensor::definitions::ChunkedIter;
 use crate::tensor::iter::{
-    ChunkedContiguousIter, ChunkedSliceIter, ContiguousIter, InformedSliceIter, MutSliceIter,
-    SliceIter, StepInfo,
+    ChunkedContiguousIter, ChunkedSliceIter, ContiguousIter, InformedIter, Iter, MutSliceIter,
+    StepInfo,
 };
 use crate::tensor::mem_formats::layout::{Layout, validate_shape};
 use crate::tensor::traits::Dimension;
@@ -176,8 +176,8 @@ impl<T: Clone> TensorData<T> {
     }
 
     #[inline]
-    pub fn iter(&self) -> SliceIter<'_, T> {
-        SliceIter::new(&self.storage.buffer, self.len(), self.layout())
+    pub fn iter(&self) -> Iter<'_, T> {
+        Iter::new(&self.storage.buffer, self.len(), self.layout())
     }
 
     #[inline]
@@ -201,27 +201,27 @@ impl<T: Clone> TensorData<T> {
     /// undefined behaviour. The `debug_assert!` below is only a coarse guard, not
     /// a full bounds check.
     #[inline]
-    pub unsafe fn iter_as_layout<'a>(&'a self, layout: &'a Layout) -> SliceIter<'a, T> {
+    pub unsafe fn iter_as_layout<'a>(&'a self, layout: &'a Layout) -> Iter<'a, T> {
         debug_assert!(
             self.layout().len() >= layout.len() && self.layout.offset() >= layout.offset()
         );
-        SliceIter::new(&self.storage.buffer, layout.len(), layout)
+        Iter::new(&self.storage.buffer, layout.len(), layout)
     }
 
     #[inline]
-    pub fn fast_iter(&self) -> IterImpl<ContiguousIter<'_, T>, SliceIter<'_, T>> {
+    pub fn fast_iter(&self) -> IterImpl<ContiguousIter<'_, T>, Iter<'_, T>> {
         let buffer = &self.storage.buffer;
 
         if self.is_contiguous() {
             IterImpl::Contiguous(ContiguousIter::new(buffer, self.offset(), self.len()))
         } else {
-            IterImpl::NotContiguous(SliceIter::new(buffer, self.len(), self.layout()))
+            IterImpl::NotContiguous(Iter::new(buffer, self.len(), self.layout()))
         }
     }
 
     #[inline]
-    pub fn informed_iter(&self) -> InformedSliceIter<'_, T> {
-        InformedSliceIter::new(&self.storage.buffer, &self.layout)
+    pub fn informed_iter(&self) -> InformedIter<'_, T> {
+        InformedIter::new(&self.storage.buffer, &self.layout)
     }
 
     #[inline]

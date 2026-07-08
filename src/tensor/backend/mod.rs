@@ -93,6 +93,18 @@ pub trait Backend: Sized + Debug {
 /// [`Tensor`](crate::tensor::Tensor) construction site. Defaults to the
 /// pure-Rust backend; enabling the `mkl` feature switches it to the Intel MKL
 /// backend.
+///
+/// # Examples
+///
+/// ```
+/// use candela::backend::DefaultBackend;
+/// use candela::Tensor;
+///
+/// // `Tensor<T>` is shorthand for `Tensor<T, DefaultBackend>` - the same type.
+/// let a: Tensor<f64> = Tensor::from_scalar(1.0, &[3]);
+/// let b: Tensor<f64, DefaultBackend> = Tensor::from_scalar(1.0, &[3]);
+/// assert_eq!(a.data(), b.data());
+/// ```
 #[cfg(feature = "mkl")]
 pub type DefaultBackend = cpu_mkl::CpuMkl;
 #[cfg(not(feature = "mkl"))]

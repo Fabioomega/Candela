@@ -28,6 +28,67 @@
 //!   new data, skipping per-call planning. See the [`skeleton`] module for the
 //!   dynamic-shape and caching variants.
 //!
+//! # Building a graph
+//!
+//! A promise is built up op by op and stays inert until you materialize it.
+//! Fallible ops (anything shape-dependent, like [`matmul`](Tensor::matmul))
+//! return a `Result` at *construction* time, so a graph that could never run is
+//! rejected before any compute happens.
+//!
+//! ```
+//! use candela::{srange, Dimension, OpError, Tensor};
+//!
+//! # fn main() -> Result<(), OpError> {
+//! let a: Tensor<f32> = srange![2 * 3, &[2, 3]];   // 2x3, values 0..6
+//! let b: Tensor<f32> = srange![3 * 2, &[3, 2]];   // 3x2, values 0..6
+//!
+//! let c = a.matmul(&b)?.materialize();            // shape mismatch would fail here
+//! assert_eq!(c.shape(), &[2, 2]);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Reusing intermediate results
+//!
+//! [`.materialize()`](TensorPromise::materialize) consumes the graph and frees
+//! every intermediate buffer. When you want to keep a mid-graph value alive -
+//! to inspect it, or to branch off it more than once - call
+//! [`.cache()`](TensorPromise::cache) to turn the promise into a
+//! [`CachedTensorPromise`]. It computes at most once and hands the stored result
+//! to everyone downstream.
+//!
+//! ```
+//! use candela::Tensor;
+//!
+//! let a = Tensor::from_scalar(1.0_f64, &[3, 3]);
+//! let b = (a + 2.0).cache();               // will hold onto its result
+//!
+//! let peek = b.snapshot();                 // computes b once, fills the cache
+//! assert_eq!(peek.data(), &[3.0; 9]);
+//!
+//! let c = (b * 10.0).materialize();        // reuses the cached b, no recompute
+//! assert_eq!(c.data(), &[30.0; 9]);
+//! ```
+//!
+//! # Errors
+//!
+//! Candela splits failures by how likely they are to be a bug:
+//!
+//! - The inline arithmetic operators (`+`, `-`, `*`, `/`) **panic** on a shape
+//!   mismatch. A mismatch there is almost always a programming error, and making
+//!   them fallible would force an `.unwrap()` onto every expression.
+//! - Everything else that can fail returns `Result<_, `[`OpError`]`>` - and,
+//!   because the graph is built eagerly, it fails at construction time rather
+//!   than deep inside `.materialize()`.
+//!
+//! # Feature flags
+//!
+//! - `mkl` - swap the default pure-Rust backend for Intel MKL. Links against
+//!   MKL (handled by `intel-mkl-src`), so the libraries must be available on the
+//!   build host. See the [`backends`](docs::backends) docs.
+//! - `tracing` - emit [`tracing`](https://docs.rs/tracing) spans through the
+//!   planner and execution for profiling and debugging.
+//!
 //! # Concepts
 //!
 //! The [`docs`] module shows in detail how the processing pipeline actually works,
@@ -39,7 +100,10 @@ mod tensor;
 pub use tensor::arange;
 pub use tensor::errors::OpError;
 pub use tensor::traits::Composable;
-pub use tensor::{CachedTensorPromise, Dimension, Layout, SliceRange, Tensor, TensorPromise};
+pub use tensor::{
+    CachedTensorPromise, Dimension, InformedIter, Iter, Layout, SliceRange, StepInfo, Tensor,
+    TensorPromise,
+};
 
 pub mod backend {
     pub use crate::tensor::backend::implementation::*;

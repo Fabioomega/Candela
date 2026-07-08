@@ -22,12 +22,46 @@ use crate::{Dimension, Layout, OpError, Tensor, TensorPromise};
 ///
 /// [`into_skeleton`]: SkeletonPromise::into_skeleton
 /// [`TensorPromise`]: crate::TensorPromise
+///
+/// # Examples
+///
+/// ```
+/// use candela::skeleton::SkeletonSlot;
+/// use candela::Tensor;
+///
+/// // A slot stands in for a [4] input; the graph is planned once here...
+/// let slot = SkeletonSlot::from_shape(&[4]);
+/// let skeleton = (&slot * 2.0 + 1.0).into_skeleton(&[slot])?;
+///
+/// // ...then run against as many real tensors as you like.
+/// let out = skeleton.run(&[&Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0], &[4])])?;
+/// assert_eq!(out.data(), &[1.0, 3.0, 5.0, 7.0]);
+/// # Ok::<(), candela::OpError>(())
+/// ```
 pub struct SkeletonSlot<T, B: Backend = DefaultBackend> {
     pub(crate) graph: Arc<TensorGraphSlot<T, B>>,
 }
 
+impl<T, B: Backend> std::fmt::Debug for SkeletonSlot<T, B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SkeletonSlot")
+            .field("layout", self.graph.layout())
+            .finish()
+    }
+}
+
 impl<T, B: Backend> SkeletonSlot<T, B> {
     /// Creates a new input slot with the given [`Layout`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::SkeletonSlot;
+    /// use candela::{Dimension, Layout};
+    ///
+    /// let slot: SkeletonSlot<f64> = SkeletonSlot::new(Layout::new(&[2, 3]));
+    /// assert_eq!(slot.shape(), &[2, 3]);
+    /// ```
     #[inline]
     pub fn new(layout: Layout) -> Self {
         Self {
@@ -41,6 +75,17 @@ impl<T, B: Backend> SkeletonSlot<T, B> {
     /// If you just need to reuse the slot use [`clone`] instead.
     ///
     /// [`clone`]: SkeletonSlot::clone
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::SkeletonSlot;
+    /// use candela::Dimension;
+    ///
+    /// let a: SkeletonSlot<f64> = SkeletonSlot::from_shape(&[4]);
+    /// let b = a.deep_clone(); // independent slot, same layout
+    /// assert_eq!(a.shape(), b.shape());
+    /// ```
     #[inline]
     pub fn deep_clone(&self) -> Self {
         Self::new(self.graph.layout().clone())
@@ -49,6 +94,19 @@ impl<T, B: Backend> SkeletonSlot<T, B> {
 
 impl<T> SkeletonSlot<T, DefaultBackend> {
     /// Creates a new contiguous input slot with the given shape.
+    ///
+    /// A shorthand for `SkeletonSlot::new(Layout::new(shape))`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::SkeletonSlot;
+    /// use candela::Dimension;
+    ///
+    /// let slot: SkeletonSlot<f64> = SkeletonSlot::from_shape(&[2, 3]);
+    /// assert_eq!(slot.shape(), &[2, 3]);
+    /// assert!(slot.is_contiguous());
+    /// ```
     #[inline]
     pub fn from_shape(shape: &[usize]) -> Self {
         SkeletonSlot::new(Layout::new(shape))
@@ -92,12 +150,18 @@ impl<T, B: Backend> Clone for SkeletonSlot<T, B> {
 /// Produced by [`Skeleton::compose`]. It holds the skeleton's plan with its
 /// inputs already bound, so it can be used like a regular promise inside
 /// operations - it is treated as an opaque node during planning. It can only be
-/// materialized through [`as_promise`], because computing it still requires
+/// materialized through [`to_promise`], because computing it still requires
 /// planning.
 ///
-/// [`as_promise`]: BakedPromise::as_promise
+/// [`to_promise`]: BakedPromise::to_promise
 pub struct BakedPromise<T, B: Backend> {
     graph: Arc<TensorGraphBaked<T, B>>,
+}
+
+impl<T: std::fmt::Debug, B: Backend> std::fmt::Debug for BakedPromise<T, B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.graph, f)
+    }
 }
 
 impl<T: Clone + PartialEq, B: Backend> BakedPromise<T, B> {
@@ -115,7 +179,22 @@ impl<T: Clone + PartialEq, B: Backend> BakedPromise<T, B> {
     }
 
     /// Creates a fresh [`SkeletonSlot`] matching the shape of this promise's output.
-    pub fn as_slot(&self) -> SkeletonSlot<T, B> {
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::SkeletonSlot;
+    /// use candela::{Dimension, Tensor};
+    ///
+    /// let a = Tensor::from_scalar(1.0, &[4]);
+    /// let x = SkeletonSlot::from_shape(&[4]);
+    /// let baked = (&x * 2.0).into_skeleton(&[x])?.compose(&[&a])?;
+    ///
+    /// let slot = baked.to_slot(); // fresh slot shaped like the baked output
+    /// assert_eq!(slot.shape(), &[4]);
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
+    pub fn to_slot(&self) -> SkeletonSlot<T, B> {
         SkeletonSlot::new(self.layout().clone())
     }
 }
@@ -144,11 +223,11 @@ impl<T: Numeric, B: Backend> BakedPromise<T, B> {
     /// let y = x.deep_clone();
     /// let baked = (&x + &y).into_skeleton(&[x, y])?.compose(&[&a, &b])?;
     ///
-    /// let result = baked.as_promise().materialize();
+    /// let result = baked.to_promise().materialize();
     /// assert_eq!(result.data(), &[22.0, 23.0, 24.0, 25.0]);
     /// # Ok::<(), candela::OpError>(())
     /// ```
-    pub fn as_promise(&self) -> TensorPromise<T, B> {
+    pub fn to_promise(&self) -> TensorPromise<T, B> {
         // The promise can always be unwrapped as it's a noop
         unsafe {
             TensorPromise::new(
@@ -190,6 +269,12 @@ impl<T, B: Backend> Composable<T, B> for BakedPromise<T, B> {}
 /// [`into_skeleton`]: SkeletonPromise::into_skeleton
 pub struct SkeletonPromise<T, B: Backend>(TensorPromise<T, B>);
 
+impl<T: std::fmt::Debug, B: Backend> std::fmt::Debug for SkeletonPromise<T, B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
 impl<T, B: Backend> SkeletonPromise<T, B> {
     pub(crate) fn from_promise(promise: TensorPromise<T, B>) -> Self {
         Self(promise)
@@ -204,6 +289,21 @@ impl<T: ComputeFor<B>, B: Backend> SkeletonPromise<T, B> {
     /// expect their inputs.
     ///
     /// Planning happens once, during the construction of the skeleton.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::SkeletonSlot;
+    /// use candela::Tensor;
+    ///
+    /// let slot = SkeletonSlot::from_shape(&[4]);
+    /// // Building over the slot yields a SkeletonPromise; into_skeleton compiles it.
+    /// let skeleton = (&slot + 10.0).into_skeleton(&[slot])?;
+    ///
+    /// let out = skeleton.run(&[&Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0], &[4])])?;
+    /// assert_eq!(out.data(), &[10.0, 11.0, 12.0, 13.0]);
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     ///
     /// # Errors
     ///
@@ -344,7 +444,7 @@ where
 /// let b = Tensor::from_scalar(0.3, &[8]);
 ///
 /// // Creates a slot for a tensor with the same shape as a
-/// let slot = a.as_slot();
+/// let slot = a.to_slot();
 ///
 /// // Create a skeleton with that slot
 /// let skeleton = (&slot * 2.0 + 1.0).log2().into_skeleton(&[slot]).unwrap();
@@ -365,6 +465,15 @@ pub struct Skeleton<T, B: Backend = DefaultBackend> {
     plan: Arc<OwnedCorePlan<T, B>>,
     declared_slots: Vec<(usize, Layout)>,
     layout: Layout,
+}
+
+impl<T, B: Backend> std::fmt::Debug for Skeleton<T, B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Skeleton")
+            .field("declared_slots", &self.declared_slots)
+            .field("layout", &self.layout)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<T: Clone + PartialEq + ComputeFor<B>, B: Backend> Skeleton<T, B> {
@@ -545,7 +654,22 @@ impl<T, B: Backend> Dimension for Skeleton<T, B> {
 /// All allocations are reported as Candela sees them; they do not account for
 /// caching or memory reuse by the system allocator, so the figures may differ
 /// from what actually happens at runtime.
-#[derive(Debug)]
+///
+/// # Examples
+///
+/// ```
+/// use candela::skeleton::SkeletonSlot;
+///
+/// let slot = SkeletonSlot::from_shape(&[4]);
+/// let skeleton = (&slot * 2.0 + 1.0).into_skeleton(&[slot])?;
+///
+/// let report = skeleton.memory_report();
+/// // Every field is in bytes; a [4] f64 output is 4 * 8 = 32 bytes.
+/// assert_eq!(report.output_memory_usage, 32);
+/// assert!(report.peak_memory_usage >= report.output_memory_usage);
+/// # Ok::<(), candela::OpError>(())
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryMetrics {
     /// peak memory usage in bytes
     pub peak_memory_usage: usize,
@@ -700,6 +824,20 @@ impl<T, B: Backend> Skeleton<T, B> {
     ///
     /// For the most accurate results rerun this function every time a cache part of this
     /// [`Skeleton`] is changed (even by itself on the first run).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::SkeletonSlot;
+    ///
+    /// let slot = SkeletonSlot::from_shape(&[8]);
+    /// let skeleton = (&slot * 2.0).into_skeleton(&[slot])?;
+    ///
+    /// let report = skeleton.memory_report();
+    /// assert!(report.total_number_of_allocations >= 1);
+    /// assert_eq!(report.output_memory_usage, 64); // [8] f64 = 64 bytes
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     pub fn memory_report(&self) -> MemoryMetrics {
         self.memory_report_plan(self.plan.root_id, &self.plan.plan)
     }

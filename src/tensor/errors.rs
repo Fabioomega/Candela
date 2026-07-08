@@ -6,6 +6,16 @@
 /// caught at the call site rather than deep inside execution. `OpError`
 /// implements [`Error`](std::error::Error) and [`Display`](std::fmt::Display),
 /// so it composes with `?` and `Box<dyn Error>`.
+///
+/// # Examples
+///
+/// ```
+/// use candela::{OpError, Tensor};
+///
+/// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+/// // A view must preserve the element count; 3 * 3 = 9 != 4.
+/// assert!(matches!(t.view(&[3, 3]), Err(OpError::InvalidViewShape)));
+/// ```
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum OpError {

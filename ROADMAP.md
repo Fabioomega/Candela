@@ -186,7 +186,7 @@ let result = ((t * 2.0) - 1.0).materialize();
 assert_eq!(result.data(), &[-1.0, 1.0, 3.0, 5.0, 7.0, 9.0]);
 
 // A node used by two consumers is computed once and produces the same value for both
-let t   = arange(4).as_promise();
+let t   = arange(4).to_promise();
 let lhs = &t * 2.0;
 let rhs = &t + 1.0;
 let result = (lhs - rhs).materialize(); // (2x) - (x+1) = x - 1
@@ -287,7 +287,7 @@ assert_approx_eq!(result.data(), Tensor::eye(3,3).data());
 
 // Transposed matmul: A @ B^T where B is already transposed
 let a = arange_2d(2, 3);
-let b = arange_2d(4, 3).as_promise().transpose();
+let b = arange_2d(4, 3).to_promise().transpose();
 let c = a.matmul(&b)?.materialize();
 assert_eq!(c.shape(), &[2, 4]);
 
@@ -417,7 +417,7 @@ assert!(s.data().iter().all(|&x| x > 0.0 && x < 1.0));
 assert_approx_eq!(s.data()[1], 0.5); // sigmoid(0) = 0.5
 
 // Activation fuses with preceding scalar op
-let t = arange(4).as_promise();
+let t = arange(4).to_promise();
 let p = (t * 2.0).relu();  // should be one fused node
 let result = p.materialize();
 assert_eq!(result.data(), &[0.0, 2.0, 4.0, 6.0]);
@@ -495,7 +495,7 @@ patterns (preprocessing pipelines, repeated inference) that don't require autogr
 
 - `SkeletonSlot` - a typed hole in the graph: a `Layout` with no data behind it.
   Built from a `Layout` directly or borrowed from an existing tensor/promise via
-  `.as_slot()`.
+  `.to_slot()`.
 - `SkeletonPromise` - what any op chain containing a slot becomes. Enforced at
   the type level (the "taint algebra"): an expression with a slot anywhere in
   its lineage has no `.materialize()`; the only exit is `into_skeleton`.
@@ -516,7 +516,7 @@ the resources before it runs" promise real, nearly for free.
 - [X] Re-running one skeleton with different data reuses the plan and matches
       `.materialize()` on the equivalent graph
 - [X] A skeleton containing matmul and a reduction, not just scalar chains
-- [X] `compose` + `BakedPromise::as_promise().materialize()` round-trip
+- [X] `compose` + `BakedPromise::to_promise().materialize()` round-trip
 - [X] Layout strictness: a same-shape but transposed input is rejected at `run`
 
 ```rust
@@ -526,7 +526,7 @@ let skeleton = (&slot * 2.0 + 1.0).into_skeleton(std::slice::from_ref(&slot))?;
 
 let input = Tensor::from_slice(&[0.0, 1.0, 2.0, 3.0], &[4]);
 let from_skeleton    = skeleton.run(std::slice::from_ref(&input))?;
-let from_materialize = (input.as_promise() * 2.0 + 1.0).materialize();
+let from_materialize = (input.to_promise() * 2.0 + 1.0).materialize();
 assert_eq!(from_skeleton.data(), from_materialize.data());
 
 // Re-running with different data uses the same plan
@@ -616,13 +616,13 @@ memory traffic (saving one intermediate buffer write+read is almost always a win
 ### Tests
 ```rust
 // Two-input elementwise expression collapses to one kernel pass.
-let x = arange(4).as_promise();
-let y = arange(4).as_promise();
+let x = arange(4).to_promise();
+let y = arange(4).to_promise();
 let result = ((&x + 1.0) * (&y - 2.0)).materialize();
 // Verify the graph has exactly one FusedElementwise node before execution.
 
 // Algebraic identity: x * 0 produces zeros without computing x.
-let x = (arange(4) + 100.0).as_promise();  // expensive-looking subgraph
+let x = (arange(4) + 100.0).to_promise();  // expensive-looking subgraph
 let zero = Tensor::from_scalar(0.0, &[4]);
 let result = (&x * zero).materialize();
 assert_eq!(result.data(), &[0.0; 4]);
@@ -806,13 +806,13 @@ than degrading.
 ```rust
 // Gradient of sum(x^2) w.r.t. x = 2x
 let x = Parameter::new(Tensor::from_data(&[1.0, 2.0, 3.0], &[3]));
-let loss = (x.as_promise() * x.as_promise()).sum(0, false);
+let loss = (x.to_promise() * x.to_promise()).sum(0, false);
 let grads = loss.backward();
 assert_approx_eq!(grads[&x].data(), &[2.0, 4.0, 6.0]);
 
 // Chain rule: d/dx (3x + 1)^2 = 2(3x+1)*3 = 6(3x+1)
 let x = Parameter::new(Tensor::from_scalar(2.0, &[1]));
-let y = ((x.as_promise() * 3.0 + 1.0) * (x.as_promise() * 3.0 + 1.0)).sum(0, false);
+let y = ((x.to_promise() * 3.0 + 1.0) * (x.to_promise() * 3.0 + 1.0)).sum(0, false);
 let grads = y.backward();
 assert_approx_eq!(grads[&x].data(), &[42.0]);
 
@@ -981,7 +981,7 @@ fn tensor_add_shape_mismatch_panics() {
 ```rust
 // A node used by two branches is computed exactly once
 #[test] fn shared_node_computed_once() {
-    let t = arange(4).as_promise();
+    let t = arange(4).to_promise();
     let result = (&t * 2.0 - &t).materialize(); // == t
     assert_eq!(result.data(), &[0.0, 1.0, 2.0, 3.0]);
 }
@@ -989,7 +989,7 @@ fn tensor_add_shape_mismatch_panics() {
 // CachedTensorPromise returns the same result on repeated materializations
 #[test] fn cached_promise_stable() {
     let raw = arange(4);
-    let cached = (raw.as_promise() + 1.0).cache();
+    let cached = (raw.to_promise() + 1.0).cache();
     let r1 = (&cached * 2.0).materialize();
     let r2 = (&cached * 2.0).materialize();
     assert_eq!(r1.data(), r2.data());
@@ -1026,7 +1026,7 @@ One test per bug that was found. Named clearly so it's obvious what broke.
 // Bug: unordered buffer reuse could pick rhs for output, reversing Sub/Div.
 #[test] fn regression_sub_ordering_with_reusable_rhs() {
     let a = Tensor::from_scalar(10.0, &[4]);
-    let b = (Tensor::from_scalar(3.0, &[4]).as_promise() + 0.0); // reusable
+    let b = (Tensor::from_scalar(3.0, &[4]).to_promise() + 0.0); // reusable
     assert_eq!((a - b).materialize().data(), &[7.0; 4]); // not [-7.0; 4]
 }
 
@@ -1097,7 +1097,7 @@ proptest! {
         data in vec(-1e6f64..1e6, 1..1000),
     ) {
         let t = Tensor::from_data(&data, &[data.len()]);
-        let fused      = (t.as_promise() * a + b - c).materialize();
+        let fused      = (t.to_promise() * a + b - c).materialize();
         let sequential = data.iter().map(|&x| x * a + b - c).collect::<Vec<_>>();
         assert_relative_eq!(fused.data(), sequential.as_slice(), max_relative = 1e-10);
     }
@@ -1129,7 +1129,7 @@ fn bench_scalar_fusion(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, &n| {
             let t = arange(n);
             b.iter(|| {
-                let mut p = t.as_promise();
+                let mut p = t.to_promise();
                 for i in 0..20 {
                     p = p + black_box(i as f64);
                 }

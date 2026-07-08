@@ -92,12 +92,12 @@ pub(crate) fn get_inputs_layout<T: NumberLike, B: Backend>(
 
 /// Leaf node in the computation graph - a plain [`Tensor`] entering the graph.
 ///
-/// Created by [`Tensor::as_promise`], which wraps the underlying [`TensorData`]
+/// Created by [`Tensor::to_promise`], which wraps the underlying [`TensorData`]
 /// in an edge and assigns it a unique ID. The edge carries no op; its only job
 /// is to make existing data addressable within the graph.
 ///
 /// [`Tensor`]: crate::tensor::tensor::Tensor
-/// [`Tensor::as_promise`]: crate::tensor::tensor::Tensor::as_promise
+/// [`Tensor::to_promise`]: crate::tensor::tensor::Tensor::to_promise
 pub struct TensorGraphEdge<T, B: Backend> {
     pub(crate) id: usize,
     pub(crate) data: TensorData<T>,

@@ -4,9 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use candela::backend::DefaultBackend;
-use candela::skeleton::{
-    BuildFunction, DynamicSkeleton, SkeletonSlot, UnboundedDynamicSkeleton,
-};
+use candela::skeleton::{BuildFunction, DynamicSkeleton, SkeletonSlot, UnboundedDynamicSkeleton};
 use candela::{Dimension, FloatLikeTensorElement, Layout, Tensor, arange};
 use common::{assert_approx_eq, assert_approx_eq_by, tensor_of};
 use rstest::rstest;
@@ -14,8 +12,8 @@ use rstest::rstest;
 // A `x * 2` build function over a single slot, paired with a counter that records
 // how many times the cache asked it to build. The counter is how every test below
 // distinguishes a cache hit from a miss.
-fn counting_double<T: FloatLikeTensorElement>() -> (BuildFunction<T, DefaultBackend>, Arc<AtomicUsize>)
-{
+fn counting_double<T: FloatLikeTensorElement>()
+-> (BuildFunction<T, DefaultBackend>, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let seen = calls.clone();
     let build: BuildFunction<T, DefaultBackend> = Box::new(move |inputs: &[Layout]| {
@@ -29,7 +27,8 @@ fn counting_double<T: FloatLikeTensorElement>() -> (BuildFunction<T, DefaultBack
 }
 
 // An `a + b` build function over two slots, so the cache key is the pair of layouts.
-fn counting_add<T: FloatLikeTensorElement>() -> (BuildFunction<T, DefaultBackend>, Arc<AtomicUsize>) {
+fn counting_add<T: FloatLikeTensorElement>() -> (BuildFunction<T, DefaultBackend>, Arc<AtomicUsize>)
+{
     let calls = Arc::new(AtomicUsize::new(0));
     let seen = calls.clone();
     let build: BuildFunction<T, DefaultBackend> = Box::new(move |inputs: &[Layout]| {
@@ -135,7 +134,7 @@ fn dynamic_compose_tensor<T: FloatLikeTensorElement>(#[case] _t: T) {
     let sk: DynamicSkeleton<T> = DynamicSkeleton::new(4, build);
 
     let run_output = sk.run(&[&a]).unwrap();
-    let composed = sk.compose(&[&a]).unwrap().as_promise().materialize();
+    let composed = sk.compose(&[&a]).unwrap().to_promise().materialize();
 
     assert_approx_eq_by(run_output.data(), composed.data(), 1e-6);
 }

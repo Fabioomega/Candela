@@ -233,7 +233,7 @@ When `shifted` is reached, no claim on `transposed` exists yet, so its frozen in
 
 - **It needs a shared node, not shared data.** Two `AsContiguous` ops collapse only if they
   wrap the same `Arc<TensorGraphNode>` - the same ID. If two parts of the graph each build
-  their own path to "the same data" (e.g. by calling `.as_promise()` on the same tensor
+  their own path to "the same data" (e.g. by calling `.to_promise()` on the same tensor
   twice), they produce separate nodes with separate IDs and each gets its own buffer.
 
 - **DFS order picks the canonical node, and the map is rebuilt every `.materialize()`.**

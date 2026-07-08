@@ -15,6 +15,17 @@ use super::frame::{BakedPromise, Skeleton};
 /// needs space. Implemented by [`LRUPolicy`] and [`UnboundedPolicy`].
 ///
 /// [`evict`]: EvictionPolicy::evict
+///
+/// # Examples
+///
+/// ```
+/// // The two built-in policies plug in as a SkeletonCache's third type parameter.
+/// use candela::skeleton::{LRUPolicy, SkeletonCache, UnboundedPolicy};
+/// use candela::Layout;
+///
+/// let _lru: SkeletonCache<Box<[Layout]>, LRUPolicy, f32> = SkeletonCache::new(4);
+/// let _unbounded: SkeletonCache<Box<[Layout]>, UnboundedPolicy, f32> = SkeletonCache::new(0);
+/// ```
 pub trait EvictionPolicy {
     /// The constructor of the policy
     ///
@@ -56,6 +67,23 @@ pub trait EvictionPolicy {
 ///
 /// The cache grows without bound, keeping every skeleton it has ever built. Use it
 /// when the set of input shapes is small and known to be finite.
+///
+/// # Examples
+///
+/// ```
+/// use candela::skeleton::{SkeletonSlot, UnboundedDynamicSkeleton};
+/// use candela::{Layout, Tensor};
+///
+/// // Selected here through the UnboundedDynamicSkeleton alias.
+/// let sk: UnboundedDynamicSkeleton<f32> =
+///     UnboundedDynamicSkeleton::new(0, Box::new(|inputs: &[Layout]| {
+///         let a = SkeletonSlot::new(inputs[0].clone());
+///         (&a * 2.0).into_skeleton(&[a]).unwrap()
+///     }));
+/// assert_eq!(sk.run(&[&Tensor::from_scalar(3.0, &[4])])?.data(), &[6.0; 4]);
+/// # Ok::<(), candela::OpError>(())
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct UnboundedPolicy;
 
 impl EvictionPolicy for UnboundedPolicy {
@@ -95,6 +123,7 @@ struct Cache<Key: Clone + Hash, T, B: Backend> {
     map: HashMap<Key, usize>,
 }
 
+#[derive(Debug)]
 struct Link {
     prev: usize,
     next: usize,
@@ -104,6 +133,26 @@ struct Link {
 ///
 /// Tracks access order in an intrusive doubly linked list and, once the cache is
 /// full, evicts the entry that has gone longest without a hit.
+///
+/// # Examples
+///
+/// ```
+/// use candela::skeleton::{DynamicSkeleton, SkeletonSlot};
+/// use candela::{Layout, Tensor};
+///
+/// // LRUPolicy is DynamicSkeleton's default; a size-1 cache drops the older shape.
+/// let sk: DynamicSkeleton<f32> = DynamicSkeleton::new(1, Box::new(|inputs: &[Layout]| {
+///     let a = SkeletonSlot::new(inputs[0].clone());
+///     (&a * 2.0).into_skeleton(&[a]).unwrap()
+/// }));
+///
+/// let a = Tensor::from_scalar(3.0, &[4]);
+/// sk.run(&[&a])?;
+/// sk.run(&[&Tensor::from_scalar(3.0, &[8])])?; // evicts the [4] entry
+/// assert!(!sk.contains_key(&[&a]));
+/// # Ok::<(), candela::OpError>(())
+/// ```
+#[derive(Debug)]
 pub struct LRUPolicy {
     order: HashMap<usize, Link>,
     head: usize,
@@ -240,10 +289,55 @@ struct SkeletonCacheInner<Key: Clone + Hash + Eq, P: EvictionPolicy, T, B: Backe
 /// A concurrent store of skeletons keyed by `Key`
 ///
 /// Holds several skeletons at once and picks one by key. Eviction is delegated to
-/// the chosen [`EvictionPolicy`].
+/// the chosen [`EvictionPolicy`]. This is the primitive [`DynamicSkeleton`] is
+/// built on; reach for that first unless you need a custom key.
+///
+/// [`DynamicSkeleton`]: crate::skeleton::DynamicSkeleton
+///
+/// # Examples
+///
+/// ```
+/// use candela::skeleton::{BuildFunction, LRUPolicy, SkeletonCache, SkeletonSlot};
+/// use candela::{Layout, Tensor};
+///
+/// // Keyed by input layouts, evicting under an LRU policy.
+/// let cache: SkeletonCache<Box<[Layout]>, LRUPolicy, f32> = SkeletonCache::new(4);
+/// let build: BuildFunction<f32> = Box::new(|inputs: &[Layout]| {
+///     let a = SkeletonSlot::new(inputs[0].clone());
+///     (&a * 2.0).into_skeleton(&[a]).unwrap()
+/// });
+///
+/// let out = cache.run(&[&Tensor::from_scalar(3.0, &[4])], &build)?;
+/// assert_eq!(out.data(), &[6.0; 4]);
+/// # Ok::<(), candela::OpError>(())
+/// ```
 pub struct SkeletonCache<Key: Clone + Hash + Eq, P: EvictionPolicy, T, B: Backend = DefaultBackend>(
     Mutex<SkeletonCacheInner<Key, P, T, B>>,
 );
+
+impl<Key: Clone + Hash + Eq, P: EvictionPolicy, T, B: Backend> std::fmt::Debug
+    for SkeletonCache<Key, P, T, B>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut db_struct = f.debug_struct("SkeletonCache");
+        match self.0.try_lock() {
+            Ok(inner) => {
+                db_struct.field("cached", &inner.cache.map.len());
+                db_struct.field("arena_size", &inner.cache.arena.len());
+            }
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                let inner = poisoned.get_ref();
+                db_struct.field("cached", &inner.cache.map.len());
+                db_struct.field("arena_size", &inner.cache.arena.len());
+                db_struct.field("state", &format_args!("<poisoned>"));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                db_struct.field("state", &format_args!("<locked by another thread>"));
+            }
+        }
+        db_struct.finish_non_exhaustive()
+    }
+}
 
 impl<Key, P: EvictionPolicy, T, B> SkeletonCache<Key, P, T, B>
 where
@@ -300,6 +394,16 @@ where
     ///
     /// Reserves room for at least `cache_size` entries. The policy decides whether the
     /// cache stays at that size or grows past it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::{LRUPolicy, SkeletonCache};
+    /// use candela::Layout;
+    ///
+    /// let cache: SkeletonCache<Box<[Layout]>, LRUPolicy, f32> = SkeletonCache::new(4);
+    /// # let _ = cache;
+    /// ```
     pub fn new(cache_size: usize) -> Self {
         let mut v: Vec<Option<Slot<Key, T, B>>> = Vec::with_capacity(cache_size);
         v.resize(cache_size, None);
@@ -321,6 +425,24 @@ where
     /// Returns the cached skeleton if `key` is present. Otherwise `build` is called,
     /// the result is stored under `key`, and a handle to it is returned. `build` runs
     /// at most once, and only on a miss.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::{LRUPolicy, SkeletonCache, SkeletonSlot};
+    /// use candela::{Layout, Tensor};
+    ///
+    /// let cache: SkeletonCache<Box<[Layout]>, LRUPolicy, f32> = SkeletonCache::new(4);
+    /// let key: Box<[Layout]> = Box::new([Layout::new(&[4])]);
+    ///
+    /// // Built on the first call; a second call with the same key reuses it.
+    /// let sk = cache.get_or_insert_with(&key, || {
+    ///     let a = SkeletonSlot::from_shape(&[4]);
+    ///     (&a * 2.0).into_skeleton(&[a]).unwrap()
+    /// });
+    /// assert_eq!(sk.run(&[&Tensor::from_scalar(3.0, &[4])])?.data(), &[6.0; 4]);
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     pub fn get_or_insert_with<F>(&self, key: &Key, build: F) -> Arc<Skeleton<T, B>>
     where
         F: FnOnce() -> Skeleton<T, B>,
@@ -357,6 +479,23 @@ where
     ///
     /// Returns the skeleton that was stored, or `None` if `key` was not present. The
     /// freed slot is returned to the cache for reuse.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::{LRUPolicy, SkeletonCache, SkeletonSlot};
+    /// use candela::Layout;
+    ///
+    /// let cache: SkeletonCache<Box<[Layout]>, LRUPolicy, f32> = SkeletonCache::new(4);
+    /// let key: Box<[Layout]> = Box::new([Layout::new(&[4])]);
+    /// cache.get_or_insert_with(&key, || {
+    ///     let a = SkeletonSlot::from_shape(&[4]);
+    ///     (&a * 2.0).into_skeleton(&[a]).unwrap()
+    /// });
+    ///
+    /// assert!(cache.remove(&key).is_some());
+    /// assert!(!cache.contains_key(&key));
+    /// ```
     pub fn remove<Q>(&self, key: &Q) -> Option<Arc<Skeleton<T, B>>>
     where
         Key: Borrow<Q>,
@@ -373,6 +512,23 @@ where
     }
 
     /// Returns whether `key` currently has an entry in the cache
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::{LRUPolicy, SkeletonCache, SkeletonSlot};
+    /// use candela::Layout;
+    ///
+    /// let cache: SkeletonCache<Box<[Layout]>, LRUPolicy, f32> = SkeletonCache::new(4);
+    /// let key: Box<[Layout]> = Box::new([Layout::new(&[4])]);
+    ///
+    /// assert!(!cache.contains_key(&key));
+    /// cache.get_or_insert_with(&key, || {
+    ///     let a = SkeletonSlot::from_shape(&[4]);
+    ///     (&a * 2.0).into_skeleton(&[a]).unwrap()
+    /// });
+    /// assert!(cache.contains_key(&key));
+    /// ```
     pub fn contains_key<Q>(&self, key: &Q) -> bool
     where
         Key: Borrow<Q>,
@@ -389,7 +545,21 @@ where
 /// Called on a cache miss with the layouts of the current inputs. It must create its
 /// slots from those layouts and bind them in the same order, so the resulting skeleton
 /// accepts exactly that shape.
-pub type BuildFunction<T, B> = Box<dyn Fn(&[Layout]) -> Skeleton<T, B> + Send + Sync>;
+///
+/// # Examples
+///
+/// ```
+/// use candela::skeleton::{BuildFunction, SkeletonSlot};
+/// use candela::Layout;
+///
+/// // Doubles whatever single input it is handed, whatever its shape.
+/// let build: BuildFunction<f32> = Box::new(|inputs: &[Layout]| {
+///     let a = SkeletonSlot::new(inputs[0].clone());
+///     (&a * 2.0).into_skeleton(&[a]).unwrap()
+/// });
+/// # let _ = build;
+/// ```
+pub type BuildFunction<T, B = DefaultBackend> = Box<dyn Fn(&[Layout]) -> Skeleton<T, B> + Send + Sync>;
 
 impl<P, T, B> SkeletonCache<Box<[Layout]>, P, T, B>
 where
@@ -401,6 +571,23 @@ where
     ///
     /// Keys the cache by the inputs' layouts; on a miss `on_miss` builds the
     /// [`Skeleton`], which is then cached and run. See [`Skeleton::run`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::{BuildFunction, LRUPolicy, SkeletonCache, SkeletonSlot};
+    /// use candela::{Layout, Tensor};
+    ///
+    /// let cache: SkeletonCache<Box<[Layout]>, LRUPolicy, f32> = SkeletonCache::new(4);
+    /// let build: BuildFunction<f32> = Box::new(|inputs: &[Layout]| {
+    ///     let a = SkeletonSlot::new(inputs[0].clone());
+    ///     (&a + 1.0).into_skeleton(&[a]).unwrap()
+    /// });
+    ///
+    /// let out = cache.run(&[&Tensor::from_scalar(3.0, &[4])], &build)?;
+    /// assert_eq!(out.data(), &[4.0; 4]);
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     pub fn run(
         &self,
         inputs: &[&Tensor<T, B>],
@@ -422,6 +609,25 @@ where
     /// instead of executing it. See [`Skeleton::compose`].
     ///
     /// [`run`]: SkeletonCache::run
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::{BuildFunction, LRUPolicy, SkeletonCache, SkeletonSlot};
+    /// use candela::{Layout, Tensor};
+    ///
+    /// let cache: SkeletonCache<Box<[Layout]>, LRUPolicy, f32> = SkeletonCache::new(4);
+    /// let build: BuildFunction<f32> = Box::new(|inputs: &[Layout]| {
+    ///     let a = SkeletonSlot::new(inputs[0].clone());
+    ///     (&a * 2.0).into_skeleton(&[a]).unwrap()
+    /// });
+    ///
+    /// // Compose over a lazy promise and fold the result into a larger graph.
+    /// let a = Tensor::from_scalar(1.0, &[4]) + 2.0;
+    /// let baked = cache.compose(&[&a], &build)?;
+    /// assert_eq!(baked.to_promise().materialize().data(), &[6.0; 4]);
+    /// # Ok::<(), candela::OpError>(())
+    /// ```
     pub fn compose<C>(
         &self,
         inputs: &[&C],
