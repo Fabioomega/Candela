@@ -23,7 +23,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let y = x.deep_clone();
     let sum = (&x + &y).into_skeleton(&[x, y])?;
 
-    let baked = sum.compose(&[&Tensor::from_scalar(1.0, &[4]), &Tensor::from_scalar(10.0, &[4])])?;
+    let baked = sum.compose(&[
+        &Tensor::from_scalar(1.0, &[4]),
+        &Tensor::from_scalar(10.0, &[4]),
+    ])?;
     let result = (baked * 2.0).materialize();
     println!("composed: {result}");
 

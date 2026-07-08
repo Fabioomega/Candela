@@ -559,7 +559,8 @@ where
 /// });
 /// # let _ = build;
 /// ```
-pub type BuildFunction<T, B = DefaultBackend> = Box<dyn Fn(&[Layout]) -> Skeleton<T, B> + Send + Sync>;
+pub type BuildFunction<T, B = DefaultBackend> =
+    Box<dyn Fn(&[Layout]) -> Skeleton<T, B> + Send + Sync>;
 
 impl<P, T, B> SkeletonCache<Box<[Layout]>, P, T, B>
 where
