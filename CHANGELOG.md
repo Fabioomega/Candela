@@ -50,6 +50,12 @@ you run.
   `trace` level - enable it with `--features tracing` when you need it.
 - **Renamed `Tensor::clone_deep` to `Tensor::deep_clone`** for a consistent
   `verb_noun` method name. (breaking)
+- **Renamed `Tensor::as_promise` to `Tensor::to_promise`.** These methods build a
+  new value rather than borrow one, so they now use the `to_` prefix per the Rust
+  API guidelines' naming conventions. (breaking)
+- **Renamed the public iterator types** `SliceIter` to `Iter` and
+  `InformedSliceIter` to `InformedIter`. The methods returning them (`iter`,
+  `informed_iter`) keep their names. (breaking)
 - **Reworked `Layout`'s constructors into a friendlier, more consistent API.**
   `Layout::new` now takes just a shape (`Layout::new(&[usize])`) for the common
   contiguous case; the old raw-field constructor is now `Layout::from_raw_parts`;
