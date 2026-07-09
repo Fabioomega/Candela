@@ -47,10 +47,19 @@ pub struct Tensor<T, B: Backend = DefaultBackend> {
     pub(crate) graph: Arc<TensorGraphEdge<T, B>>,
 }
 
-impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
-    /// Create a tensor with every element set to `scalar`.
+impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
+    /// Like [`Tensor::from_scalar`], but on an explicit backend `B`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    /// use candela::backend::CpuPure;
+    /// let t: Tensor<f64, CpuPure> = Tensor::from_scalar_in(7.0, &[3]);
+    /// assert_eq!(t.data(), &vec![7.0; 3]);
+    /// ```
     #[inline]
-    pub fn from_scalar(scalar: T, shape: &[usize]) -> Self {
+    pub fn from_scalar_in(scalar: T, shape: &[usize]) -> Self {
         Self {
             graph: Arc::new(TensorGraphEdge::from_tensor_data(TensorData::from_scalar(
                 scalar, shape,
@@ -58,13 +67,22 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
         }
     }
 
-    /// Create a tensor from `vector` interpreted with `shape`.
+    /// Like [`Tensor::from_vec`], but on an explicit backend `B`.
     ///
     /// # Panics
     ///
     /// Panics if `vector` length does not equal the product of `shape`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    /// use candela::backend::CpuPure;
+    /// let t: Tensor<f64, CpuPure> = Tensor::from_vec_in(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
+    /// assert_eq!(t.data(), &[1.0, 2.0, 3.0, 4.0]);
+    /// ```
     #[inline]
-    pub fn from_vec(vector: Vec<T>, shape: &[usize]) -> Self {
+    pub fn from_vec_in(vector: Vec<T>, shape: &[usize]) -> Self {
         Self {
             graph: Arc::new(TensorGraphEdge::from_tensor_data(TensorData::from_vec(
                 vector, shape, 0,
@@ -72,17 +90,112 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
         }
     }
 
+    /// Like [`Tensor::from_slice`], but on an explicit backend `B`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `data` length does not equal the product of `shape`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    /// use candela::backend::CpuPure;
+    /// let t: Tensor<f64, CpuPure> = Tensor::from_slice_in(&[1.0, 2.0, 3.0], &[3]);
+    /// assert_eq!(t.data(), &[1.0, 2.0, 3.0]);
+    /// ```
+    #[inline]
+    pub fn from_slice_in(data: &[T], shape: &[usize]) -> Self {
+        Self::from_vec_in(data.to_vec(), shape)
+    }
+
+    /// Like [`Tensor::from_iter`], but on an explicit backend `B`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `iter` length does not equal the product of `shape`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    /// use candela::backend::CpuPure;
+    /// let t: Tensor<f64, CpuPure> = Tensor::from_iter_in([1.0, 2.0, 3.0], &[3]);
+    /// assert_eq!(t.data(), &[1.0, 2.0, 3.0]);
+    /// ```
+    #[inline]
+    pub fn from_iter_in<I>(iter: I, shape: &[usize]) -> Self
+    where
+        I: IntoIterator<Item = T>,
+    {
+        let vector: Vec<T> = std::vec::Vec::from_iter(iter);
+        Self::from_vec_in(vector, shape)
+    }
+
+    /// Like [`Tensor::eye`], but on an explicit backend `B`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    /// use candela::backend::CpuPure;
+    /// let i: Tensor<f64, CpuPure> = Tensor::eye_in(2, 2);
+    /// assert_eq!(i.data(), &[1.0, 0.0, 0.0, 1.0]);
+    /// ```
+    #[inline]
+    pub fn eye_in(n: usize, m: usize) -> Self {
+        let mut data: Vec<T> = vec![T::ZERO; n * m];
+
+        let mut i: usize = 0;
+        while i < data.len() {
+            data[i] = T::ONE;
+            i += m + 1;
+        }
+
+        Self::from_vec_in(data, &[n, m])
+    }
+}
+
+impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
+    /// Create a tensor with every element set to `scalar`.
+    ///
+    /// Uses [`DefaultBackend`]; see [`from_scalar_in`](Self::from_scalar_in) to
+    /// pick a backend explicitly.
+    #[inline]
+    pub fn from_scalar(scalar: T, shape: &[usize]) -> Self {
+        Self::from_scalar_in(scalar, shape)
+    }
+
+    /// Create a tensor from `vector` interpreted with `shape`.
+    ///
+    /// Uses [`DefaultBackend`]; see [`from_vec_in`](Self::from_vec_in) to pick a
+    /// backend explicitly.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `vector` length does not equal the product of `shape`.
+    #[inline]
+    pub fn from_vec(vector: Vec<T>, shape: &[usize]) -> Self {
+        Self::from_vec_in(vector, shape)
+    }
+
     /// Create a tensor by copying `data` into a buffer with the given `shape`.
+    ///
+    /// Uses [`DefaultBackend`]; see [`from_slice_in`](Self::from_slice_in) to
+    /// pick a backend explicitly.
     ///
     /// # Panics
     ///
     /// Panics if `data` length does not equal the product of `shape`.
     #[inline]
     pub fn from_slice(data: &[T], shape: &[usize]) -> Self {
-        Self::from_vec(data.to_vec(), shape)
+        Self::from_slice_in(data, shape)
     }
 
     /// Create a tensor by collecting `iter` into a buffer with the given `shape`.
+    ///
+    /// Uses [`DefaultBackend`]; see [`from_iter_in`](Self::from_iter_in) to pick
+    /// a backend explicitly.
     ///
     /// # Panics
     ///
@@ -92,13 +205,15 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     where
         I: IntoIterator<Item = T>,
     {
-        let vector: Vec<T> = std::vec::Vec::from_iter(iter);
-        Self::from_vec(vector, shape)
+        Self::from_iter_in(iter, shape)
     }
 
     /// Create an `n`×`m` matrix with ones on the main diagonal and zeros elsewhere.
     ///
     /// With `n == m` this is the identity matrix.
+    ///
+    /// Uses [`DefaultBackend`]; see [`eye_in`](Self::eye_in) to pick a backend
+    /// explicitly.
     ///
     /// # Examples
     ///
@@ -109,15 +224,7 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     /// ```
     #[inline]
     pub fn eye(n: usize, m: usize) -> Self {
-        let mut data: Vec<T> = vec![T::ZERO; n * m];
-
-        let mut i: usize = 0;
-        while i < data.len() {
-            data[i] = T::ONE;
-            i += m + 1;
-        }
-
-        Self::from_vec(data, &[n, m])
+        Self::eye_in(n, m)
     }
 }
 

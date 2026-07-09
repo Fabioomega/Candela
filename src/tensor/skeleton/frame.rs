@@ -90,12 +90,33 @@ impl<T, B: Backend> SkeletonSlot<T, B> {
     pub fn deep_clone(&self) -> Self {
         Self::new(self.graph.layout().clone())
     }
+
+    /// Like [`SkeletonSlot::from_shape`], but on an explicit backend `B`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::skeleton::SkeletonSlot;
+    /// use candela::backend::CpuPure;
+    /// use candela::Dimension;
+    ///
+    /// let slot: SkeletonSlot<f64, CpuPure> = SkeletonSlot::from_shape_in(&[2, 3]);
+    /// assert_eq!(slot.shape(), &[2, 3]);
+    /// assert!(slot.is_contiguous());
+    /// ```
+    #[inline]
+    pub fn from_shape_in(shape: &[usize]) -> Self {
+        SkeletonSlot::new(Layout::new(shape))
+    }
 }
 
 impl<T> SkeletonSlot<T, DefaultBackend> {
     /// Creates a new contiguous input slot with the given shape.
     ///
     /// A shorthand for `SkeletonSlot::new(Layout::new(shape))`.
+    ///
+    /// Uses [`DefaultBackend`]; see [`from_shape_in`](Self::from_shape_in) to
+    /// pick a backend explicitly.
     ///
     /// # Examples
     ///
