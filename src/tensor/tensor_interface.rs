@@ -43,21 +43,30 @@ use std::sync::Arc;
 /// let result = (t * 2.0 + 1.0).materialize();
 /// assert_eq!(result.data(), &vec![7.0; 4]);
 /// ```
+///
+/// # The `_in` variants
+///
+/// Every constructor comes in two forms. The bare name (e.g.
+/// [`from_scalar`](Self::from_scalar)) builds on [`DefaultBackend`]; the
+/// `_in`-suffixed form (e.g. [`from_scalar_in`](Self::from_scalar_in)) is generic
+/// over the backend `B`, taken from the tensor's type annotation. The two are
+/// otherwise identical.
+///
+/// ```
+/// use candela::Tensor;
+/// use candela::backend::CpuPure;
+///
+/// let a: Tensor<f64> = Tensor::from_scalar(1.0, &[3]);             // DefaultBackend
+/// let b: Tensor<f64, CpuPure> = Tensor::from_scalar_in(1.0, &[3]); // explicit B
+/// assert_eq!(a.data(), b.data());
+/// ```
 pub struct Tensor<T, B: Backend = DefaultBackend> {
     pub(crate) graph: Arc<TensorGraphEdge<T, B>>,
 }
 
 impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
-    /// Like [`Tensor::from_scalar`], but on an explicit backend `B`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use candela::Tensor;
-    /// use candela::backend::CpuPure;
-    /// let t: Tensor<f64, CpuPure> = Tensor::from_scalar_in(7.0, &[3]);
-    /// assert_eq!(t.data(), &vec![7.0; 3]);
-    /// ```
+    /// Like [`Tensor::from_scalar`], but on an explicit backend `B`. See
+    /// [`Tensor`] for the `_in` convention.
     #[inline]
     pub fn from_scalar_in(scalar: T, shape: &[usize]) -> Self {
         Self {
@@ -67,20 +76,12 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
         }
     }
 
-    /// Like [`Tensor::from_vec`], but on an explicit backend `B`.
+    /// Like [`Tensor::from_vec`], but on an explicit backend `B`. See [`Tensor`]
+    /// for the `_in` convention.
     ///
     /// # Panics
     ///
     /// Panics if `vector` length does not equal the product of `shape`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use candela::Tensor;
-    /// use candela::backend::CpuPure;
-    /// let t: Tensor<f64, CpuPure> = Tensor::from_vec_in(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
-    /// assert_eq!(t.data(), &[1.0, 2.0, 3.0, 4.0]);
-    /// ```
     #[inline]
     pub fn from_vec_in(vector: Vec<T>, shape: &[usize]) -> Self {
         Self {
@@ -90,58 +91,40 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
         }
     }
 
-    /// Like [`Tensor::from_slice`], but on an explicit backend `B`.
+    /// Like [`Tensor::from_slice`], but on an explicit backend `B`. See [`Tensor`]
+    /// for the `_in` convention.
     ///
     /// # Panics
     ///
     /// Panics if `data` length does not equal the product of `shape`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use candela::Tensor;
-    /// use candela::backend::CpuPure;
-    /// let t: Tensor<f64, CpuPure> = Tensor::from_slice_in(&[1.0, 2.0, 3.0], &[3]);
-    /// assert_eq!(t.data(), &[1.0, 2.0, 3.0]);
-    /// ```
     #[inline]
     pub fn from_slice_in(data: &[T], shape: &[usize]) -> Self {
         Self::from_vec_in(data.to_vec(), shape)
     }
 
-    /// Like [`Tensor::from_iter`], but on an explicit backend `B`.
+    /// Like [`Tensor::from_iter`], but on an explicit backend `B`. See [`Tensor`]
+    /// for the `_in` convention.
     ///
     /// # Panics
     ///
-    /// Panics if `iter` length does not equal the product of `shape`.
+    /// Panics if `iter` yields fewer than the product of `shape` elements.
     ///
-    /// # Examples
+    /// # Note
     ///
-    /// ```
-    /// use candela::Tensor;
-    /// use candela::backend::CpuPure;
-    /// let t: Tensor<f64, CpuPure> = Tensor::from_iter_in([1.0, 2.0, 3.0], &[3]);
-    /// assert_eq!(t.data(), &[1.0, 2.0, 3.0]);
-    /// ```
+    /// Surplus elements beyond the product of `shape` are ignored.
     #[inline]
     pub fn from_iter_in<I>(iter: I, shape: &[usize]) -> Self
     where
         I: IntoIterator<Item = T>,
     {
-        let vector: Vec<T> = std::vec::Vec::from_iter(iter);
+        let size: usize = shape.iter().product();
+
+        let vector: Vec<T> = std::vec::Vec::from_iter(iter.into_iter().take(size));
         Self::from_vec_in(vector, shape)
     }
 
-    /// Like [`Tensor::eye`], but on an explicit backend `B`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use candela::Tensor;
-    /// use candela::backend::CpuPure;
-    /// let i: Tensor<f64, CpuPure> = Tensor::eye_in(2, 2);
-    /// assert_eq!(i.data(), &[1.0, 0.0, 0.0, 1.0]);
-    /// ```
+    /// Like [`Tensor::eye`], but on an explicit backend `B`. See [`Tensor`] for
+    /// the `_in` convention.
     #[inline]
     pub fn eye_in(n: usize, m: usize) -> Self {
         let mut data: Vec<T> = vec![T::ZERO; n * m];
@@ -199,7 +182,11 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     ///
     /// # Panics
     ///
-    /// Panics if `iter` length does not equal the product of `shape`.
+    /// Panics if `iter` yields fewer than the product of `shape` elements.
+    ///
+    /// # Note
+    ///
+    /// Surplus elements beyond the product of `shape` are ignored.
     #[inline]
     pub fn from_iter<I>(iter: I, shape: &[usize]) -> Self
     where
@@ -225,6 +212,74 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     #[inline]
     pub fn eye(n: usize, m: usize) -> Self {
         Self::eye_in(n, m)
+    }
+}
+
+#[cfg(feature = "rand")]
+impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
+    /// Like [`Tensor::rand`], but on an explicit backend `B` and driven by a
+    /// caller-supplied `rng`. See [`Tensor`] for the `_in` convention.
+    #[inline]
+    pub fn rand_with_in<R: rand::Rng>(shape: &[usize], rng: &mut R) -> Self
+    where
+        rand::distr::StandardUniform: rand::distr::Distribution<T>,
+    {
+        use rand::distr::Distribution;
+
+        Self::from_iter_in(rand::distr::StandardUniform.sample_iter(rng), shape)
+    }
+
+    /// Like [`Tensor::rand`], but on an explicit backend `B`. See [`Tensor`] for
+    /// the `_in` convention.
+    #[inline]
+    pub fn rand_in(shape: &[usize]) -> Self
+    where
+        rand::distr::StandardUniform: rand::distr::Distribution<T>,
+    {
+        Self::rand_with_in(shape, &mut rand::rng())
+    }
+
+    /// Like [`Tensor::randn`], but on an explicit backend `B` and driven by a
+    /// caller-supplied `rng`. See [`Tensor`] for the `_in` convention.
+    #[inline]
+    pub fn randn_with_in<R: rand::Rng>(shape: &[usize], rng: &mut R) -> Self
+    where
+        rand_distr::StandardNormal: rand::distr::Distribution<T>,
+    {
+        use rand::distr::Distribution;
+
+        Self::from_iter_in(rand_distr::StandardNormal.sample_iter(rng), shape)
+    }
+
+    /// Like [`Tensor::randn`], but on an explicit backend `B`. See [`Tensor`] for
+    /// the `_in` convention.
+    #[inline]
+    pub fn randn_in(shape: &[usize]) -> Self
+    where
+        rand_distr::StandardNormal: rand::distr::Distribution<T>,
+    {
+        Self::randn_with_in(shape, &mut rand::rng())
+    }
+
+    /// Like [`Tensor::sample`], but on an explicit backend `B` and driven by a
+    /// caller-supplied `rng`. See [`Tensor`] for the `_in` convention.
+    #[inline]
+    pub fn sample_with_in<D, R>(shape: &[usize], dist: D, rng: &mut R) -> Self
+    where
+        D: rand::distr::Distribution<T>,
+        R: rand::Rng,
+    {
+        Self::from_iter_in(dist.sample_iter(rng), shape)
+    }
+
+    /// Like [`Tensor::sample`], but on an explicit backend `B`. See [`Tensor`] for
+    /// the `_in` convention.
+    #[inline]
+    pub fn sample_in<D>(shape: &[usize], dist: D) -> Self
+    where
+        D: rand::distr::Distribution<T>,
+    {
+        Self::sample_with_in(shape, dist, &mut rand::rng())
     }
 }
 
@@ -354,6 +409,129 @@ impl<T: Clone, B: Backend> Tensor<T, B> {
         Self {
             graph: Arc::new(TensorGraphEdge::from_tensor_data(data.clone())),
         }
+    }
+}
+
+#[cfg(feature = "rand")]
+impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
+    /// Fill a tensor of the given `shape` with samples from the uniform
+    /// distribution over `[0, 1)`.
+    ///
+    /// Uses [`DefaultBackend`] and [`rand::rng()`]; see [`rand_in`](Self::rand_in)
+    /// to pick a backend and [`rand_with`](Self::rand_with) to supply the RNG. For
+    /// any other distribution, see [`sample`](Self::sample).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    /// let t: Tensor<f64> = Tensor::rand(&[2, 3]);
+    /// assert_eq!(t.data().len(), 6);
+    /// assert!(t.data().iter().all(|&x| (0.0..1.0).contains(&x)));
+    /// ```
+    #[inline]
+    pub fn rand(shape: &[usize]) -> Self
+    where
+        rand::distr::StandardUniform: rand::distr::Distribution<T>,
+    {
+        Self::rand_in(shape)
+    }
+
+    /// Like [`rand`](Self::rand), but driven by a caller-supplied `rng`. Seeding
+    /// the RNG makes the result reproducible.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    /// use rand::SeedableRng;
+    /// use rand::rngs::StdRng;
+    ///
+    /// let a: Tensor<f64> = Tensor::rand_with(&[2, 2], &mut StdRng::seed_from_u64(42));
+    /// let b: Tensor<f64> = Tensor::rand_with(&[2, 2], &mut StdRng::seed_from_u64(42));
+    /// assert_eq!(a.data(), b.data()); // same seed, same tensor
+    /// ```
+    #[inline]
+    pub fn rand_with<R: rand::Rng>(shape: &[usize], rng: &mut R) -> Self
+    where
+        rand::distr::StandardUniform: rand::distr::Distribution<T>,
+    {
+        Self::rand_with_in(shape, rng)
+    }
+
+    /// Fill a tensor of the given `shape` with samples from the standard normal
+    /// distribution (mean `0`, standard deviation `1`).
+    ///
+    /// Uses [`DefaultBackend`] and [`rand::rng()`]; see
+    /// [`randn_in`](Self::randn_in) to pick a backend and
+    /// [`randn_with`](Self::randn_with) to supply the RNG. For any other
+    /// distribution, see [`sample`](Self::sample).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    /// let t: Tensor<f32> = Tensor::randn(&[1000]);
+    /// assert_eq!(t.data().len(), 1000);
+    /// ```
+    #[inline]
+    pub fn randn(shape: &[usize]) -> Self
+    where
+        rand_distr::StandardNormal: rand::distr::Distribution<T>,
+    {
+        Self::randn_in(shape)
+    }
+
+    /// Like [`randn`](Self::randn), but driven by a caller-supplied `rng`. Seeding
+    /// the RNG makes the result reproducible.
+    #[inline]
+    pub fn randn_with<R: rand::Rng>(shape: &[usize], rng: &mut R) -> Self
+    where
+        rand_distr::StandardNormal: rand::distr::Distribution<T>,
+    {
+        Self::randn_with_in(shape, rng)
+    }
+
+    /// Fill a tensor of the given `shape` with samples from `dist`, drawn from any
+    /// [`Distribution`].
+    ///
+    /// [`rand`](Self::rand) and [`randn`](Self::randn) are the uniform and
+    /// standard-normal specializations of this; reach for `sample` for anything
+    /// else.
+    ///
+    /// Uses [`DefaultBackend`] and [`rand::rng()`]; see
+    /// [`sample_in`](Self::sample_in) to pick a backend and
+    /// [`sample_with`](Self::sample_with) to supply the RNG.
+    ///
+    /// [`Distribution`]: rand::distr::Distribution
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Tensor;
+    /// use rand::distr::Uniform;
+    ///
+    /// let dist = Uniform::new(-1.0, 1.0).unwrap();
+    /// let t: Tensor<f64> = Tensor::sample(&[4], dist);
+    /// assert!(t.data().iter().all(|&x| (-1.0..1.0).contains(&x)));
+    /// ```
+    #[inline]
+    pub fn sample<D>(shape: &[usize], dist: D) -> Self
+    where
+        D: rand::distr::Distribution<T>,
+    {
+        Self::sample_in(shape, dist)
+    }
+
+    /// Like [`sample`](Self::sample), but driven by a caller-supplied `rng`.
+    /// Seeding the RNG makes the result reproducible.
+    #[inline]
+    pub fn sample_with<D, R>(shape: &[usize], dist: D, rng: &mut R) -> Self
+    where
+        D: rand::distr::Distribution<T>,
+        R: rand::Rng,
+    {
+        Self::sample_with_in(shape, dist, rng)
     }
 }
 

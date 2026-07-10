@@ -5,6 +5,25 @@ All notable changes to Candela are recorded here. The format follows
 follows the pre-1.0 Cargo convention where a minor bump (`0.x → 0.(x+1)`) is a
 release arc allowed to break the API.
 
+## [0.3.0] - Unreleased
+
+### Added
+
+- **Random tensor constructors**, behind the `rand` feature (enabled by
+  default; opt out with `--no-default-features`). `Tensor::rand` fills a tensor
+  from the uniform distribution over `[0, 1)`, `Tensor::randn` from the standard
+  normal, and `Tensor::sample` from any `rand` `Distribution`. Each comes in the
+  usual four forms - the bare name, `_in` (explicit backend), `_with`
+  (caller-supplied RNG, for reproducible tensors), and `_with_in`. Normal
+  sampling is backed by `rand_distr`; `tests/random.rs` covers them.
+
+### Changed
+
+- **`Tensor::from_iter` and `from_iter_in` now take exactly `product(shape)`
+  elements** from the iterator, ignoring any surplus, rather than panicking when
+  the iterator is longer. A too-short iterator still panics. Passing exactly the
+  right number of elements is unchanged.
+
 ## [0.2.0] - 2026-07-08
 
 Skeletons: compile a graph once, run it many times, and know your costs before
@@ -77,4 +96,5 @@ you run.
 - The `approx` dev-dependency, replaced by in-house approximate-equality helpers
   in `tests/common`.
 
+[0.3.0]: https://github.com/Fabioomega/candela/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Fabioomega/candela/releases/tag/v0.2.0

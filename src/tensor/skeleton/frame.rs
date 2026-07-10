@@ -91,19 +91,8 @@ impl<T, B: Backend> SkeletonSlot<T, B> {
         Self::new(self.graph.layout().clone())
     }
 
-    /// Like [`SkeletonSlot::from_shape`], but on an explicit backend `B`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use candela::skeleton::SkeletonSlot;
-    /// use candela::backend::CpuPure;
-    /// use candela::Dimension;
-    ///
-    /// let slot: SkeletonSlot<f64, CpuPure> = SkeletonSlot::from_shape_in(&[2, 3]);
-    /// assert_eq!(slot.shape(), &[2, 3]);
-    /// assert!(slot.is_contiguous());
-    /// ```
+    /// Like [`SkeletonSlot::from_shape`], but on an explicit backend `B`. See
+    /// [`Tensor`](crate::Tensor) for the `_in` convention.
     #[inline]
     pub fn from_shape_in(shape: &[usize]) -> Self {
         SkeletonSlot::new(Layout::new(shape))
