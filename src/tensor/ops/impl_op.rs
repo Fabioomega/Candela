@@ -10,6 +10,7 @@ use crate::tensor::mem_formats::slice::SliceRange;
 use crate::tensor::ops::capabilities::{CanMatMul, FloatLike, NumericOp};
 use crate::tensor::ops::compute_layout;
 use crate::tensor::ops::def_op::{OpKind, OpKindScalar};
+use crate::tensor::shape::IntoShape;
 use crate::tensor::skeleton::{
     BakedPromise, BinaryResult, Clean, SkeletonPromise, SkeletonSlot, Tainting, UnaryResult,
 };
@@ -773,9 +774,9 @@ macro_rules! impl_view {
             #[inline]
             pub fn view(
                 &self,
-                shape: &[usize],
+                shape: impl IntoShape,
             ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
-                view_impl(self, shape).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
+                view_impl(self, &shape.into_shape()).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
 
             /// Reinterprets the tensor's data as having shape `shape`,
@@ -805,9 +806,9 @@ macro_rules! impl_view {
             #[inline]
             pub fn reshape(
                 &self,
-                shape: &[usize],
+                shape: impl IntoShape,
             ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
-                reshape_impl(self, shape).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
+                reshape_impl(self, &shape.into_shape()).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }
     };
@@ -922,9 +923,10 @@ macro_rules! impl_transpose_axes {
             #[inline]
             pub fn transpose_axes(
                 &self,
-                axes: &[usize],
+                axes: impl IntoShape,
             ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
-                transpose_axes_impl(self, axes).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
+                transpose_axes_impl(self, &axes.into_shape())
+                    .map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }
     };
@@ -1002,9 +1004,10 @@ macro_rules! impl_broadcast {
             #[inline]
             pub fn broadcast(
                 &self,
-                shape: &[usize],
+                shape: impl IntoShape,
             ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
-                broadcast_impl(self, shape).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
+                broadcast_impl(self, &shape.into_shape())
+                    .map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }
     };
