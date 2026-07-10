@@ -5,6 +5,7 @@ use crate::tensor::graph::{NodeKind, TensorGraphEdge};
 use crate::tensor::iter::{InformedIter, Iter, StepInfo};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::promise::TensorPromise;
+use crate::tensor::shape::IntoShape;
 use crate::tensor::skeleton::SkeletonSlot;
 use crate::tensor::skeleton::{Clean, Tainting};
 use crate::tensor::storage::TensorData;
@@ -27,19 +28,19 @@ use std::sync::Arc;
 /// use candela::Tensor;
 ///
 /// // Fill every element with the same value.
-/// let t = Tensor::from_scalar(1.0_f64, &[3, 3]);
+/// let t = Tensor::from_scalar(1.0_f64, (3, 3));
 /// assert_eq!(t.data().len(), 9);
 ///
 /// // From an existing vec - total elements must equal the product of `shape`.
-/// let t = Tensor::from_vec(vec![1.0_f64, 2.0, 3.0], &[3]);
+/// let t = Tensor::from_vec(vec![1.0_f64, 2.0, 3.0], 3);
 /// assert_eq!(t.data(), &vec![1.0, 2.0, 3.0]);
 ///
 /// // From any iterator.
-/// let t = Tensor::from_iter([1.0_f64, 2.0, 3.0, 4.0], &[4]);
+/// let t = Tensor::from_iter([1.0_f64, 2.0, 3.0, 4.0], 4);
 /// assert_eq!(t.data().len(), 4);
 ///
 /// // Ops build a graph and run when you materialize.
-/// let t = Tensor::from_scalar(3.0_f64, &[4]);
+/// let t = Tensor::from_scalar(3.0_f64, 4);
 /// let result = (t * 2.0 + 1.0).materialize();
 /// assert_eq!(result.data(), &vec![7.0; 4]);
 /// ```
@@ -56,8 +57,8 @@ use std::sync::Arc;
 /// use candela::Tensor;
 /// use candela::backend::CpuPure;
 ///
-/// let a: Tensor<f64> = Tensor::from_scalar(1.0, &[3]);             // DefaultBackend
-/// let b: Tensor<f64, CpuPure> = Tensor::from_scalar_in(1.0, &[3]); // explicit B
+/// let a: Tensor<f64> = Tensor::from_scalar(1.0, 3);             // DefaultBackend
+/// let b: Tensor<f64, CpuPure> = Tensor::from_scalar_in(1.0, 3); // explicit B
 /// assert_eq!(a.data(), b.data());
 /// ```
 pub struct Tensor<T, B: Backend = DefaultBackend> {
@@ -68,10 +69,11 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
     /// Like [`Tensor::from_scalar`], but on an explicit backend `B`. See
     /// [`Tensor`] for the `_in` convention.
     #[inline]
-    pub fn from_scalar_in(scalar: T, shape: &[usize]) -> Self {
+    pub fn from_scalar_in(scalar: T, shape: impl IntoShape) -> Self {
         Self {
             graph: Arc::new(TensorGraphEdge::from_tensor_data(TensorData::from_scalar(
-                scalar, shape,
+                scalar,
+                &shape.into_shape(),
             ))),
         }
     }
@@ -83,10 +85,12 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
     ///
     /// Panics if `vector` length does not equal the product of `shape`.
     #[inline]
-    pub fn from_vec_in(vector: Vec<T>, shape: &[usize]) -> Self {
+    pub fn from_vec_in(vector: Vec<T>, shape: impl IntoShape) -> Self {
         Self {
             graph: Arc::new(TensorGraphEdge::from_tensor_data(TensorData::from_vec(
-                vector, shape, 0,
+                vector,
+                &shape.into_shape(),
+                0,
             ))),
         }
     }
@@ -98,7 +102,7 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
     ///
     /// Panics if `data` length does not equal the product of `shape`.
     #[inline]
-    pub fn from_slice_in(data: &[T], shape: &[usize]) -> Self {
+    pub fn from_slice_in(data: &[T], shape: impl IntoShape) -> Self {
         Self::from_vec_in(data.to_vec(), shape)
     }
 
@@ -113,10 +117,11 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
     ///
     /// Surplus elements beyond the product of `shape` are ignored.
     #[inline]
-    pub fn from_iter_in<I>(iter: I, shape: &[usize]) -> Self
+    pub fn from_iter_in<I>(iter: I, shape: impl IntoShape) -> Self
     where
         I: IntoIterator<Item = T>,
     {
+        let shape = shape.into_shape();
         let size: usize = shape.iter().product();
 
         let vector: Vec<T> = std::vec::Vec::from_iter(iter.into_iter().take(size));
@@ -145,7 +150,7 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     /// Uses [`DefaultBackend`]; see [`from_scalar_in`](Self::from_scalar_in) to
     /// pick a backend explicitly.
     #[inline]
-    pub fn from_scalar(scalar: T, shape: &[usize]) -> Self {
+    pub fn from_scalar(scalar: T, shape: impl IntoShape) -> Self {
         Self::from_scalar_in(scalar, shape)
     }
 
@@ -158,7 +163,7 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     ///
     /// Panics if `vector` length does not equal the product of `shape`.
     #[inline]
-    pub fn from_vec(vector: Vec<T>, shape: &[usize]) -> Self {
+    pub fn from_vec(vector: Vec<T>, shape: impl IntoShape) -> Self {
         Self::from_vec_in(vector, shape)
     }
 
@@ -171,7 +176,7 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     ///
     /// Panics if `data` length does not equal the product of `shape`.
     #[inline]
-    pub fn from_slice(data: &[T], shape: &[usize]) -> Self {
+    pub fn from_slice(data: &[T], shape: impl IntoShape) -> Self {
         Self::from_slice_in(data, shape)
     }
 
@@ -188,7 +193,7 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     ///
     /// Surplus elements beyond the product of `shape` are ignored.
     #[inline]
-    pub fn from_iter<I>(iter: I, shape: &[usize]) -> Self
+    pub fn from_iter<I>(iter: I, shape: impl IntoShape) -> Self
     where
         I: IntoIterator<Item = T>,
     {
@@ -220,7 +225,7 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
     /// Like [`Tensor::rand`], but on an explicit backend `B` and driven by a
     /// caller-supplied `rng`. See [`Tensor`] for the `_in` convention.
     #[inline]
-    pub fn rand_with_in<R: rand::Rng>(shape: &[usize], rng: &mut R) -> Self
+    pub fn rand_with_in<R: rand::Rng>(shape: impl IntoShape, rng: &mut R) -> Self
     where
         rand::distr::StandardUniform: rand::distr::Distribution<T>,
     {
@@ -232,7 +237,7 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
     /// Like [`Tensor::rand`], but on an explicit backend `B`. See [`Tensor`] for
     /// the `_in` convention.
     #[inline]
-    pub fn rand_in(shape: &[usize]) -> Self
+    pub fn rand_in(shape: impl IntoShape) -> Self
     where
         rand::distr::StandardUniform: rand::distr::Distribution<T>,
     {
@@ -242,7 +247,7 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
     /// Like [`Tensor::randn`], but on an explicit backend `B` and driven by a
     /// caller-supplied `rng`. See [`Tensor`] for the `_in` convention.
     #[inline]
-    pub fn randn_with_in<R: rand::Rng>(shape: &[usize], rng: &mut R) -> Self
+    pub fn randn_with_in<R: rand::Rng>(shape: impl IntoShape, rng: &mut R) -> Self
     where
         rand_distr::StandardNormal: rand::distr::Distribution<T>,
     {
@@ -254,7 +259,7 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
     /// Like [`Tensor::randn`], but on an explicit backend `B`. See [`Tensor`] for
     /// the `_in` convention.
     #[inline]
-    pub fn randn_in(shape: &[usize]) -> Self
+    pub fn randn_in(shape: impl IntoShape) -> Self
     where
         rand_distr::StandardNormal: rand::distr::Distribution<T>,
     {
@@ -264,7 +269,7 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
     /// Like [`Tensor::sample`], but on an explicit backend `B` and driven by a
     /// caller-supplied `rng`. See [`Tensor`] for the `_in` convention.
     #[inline]
-    pub fn sample_with_in<D, R>(shape: &[usize], dist: D, rng: &mut R) -> Self
+    pub fn sample_with_in<D, R>(shape: impl IntoShape, dist: D, rng: &mut R) -> Self
     where
         D: rand::distr::Distribution<T>,
         R: rand::Rng,
@@ -275,7 +280,7 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
     /// Like [`Tensor::sample`], but on an explicit backend `B`. See [`Tensor`] for
     /// the `_in` convention.
     #[inline]
-    pub fn sample_in<D>(shape: &[usize], dist: D) -> Self
+    pub fn sample_in<D>(shape: impl IntoShape, dist: D) -> Self
     where
         D: rand::distr::Distribution<T>,
     {
@@ -304,7 +309,7 @@ impl<T: Clone, B: Backend> Tensor<T, B> {
     ///
     /// ```
     /// use candela::Tensor;
-    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], (2, 2));
     /// assert_eq!(t.data(), &[1.0, 2.0, 3.0, 4.0]);
     /// ```
     #[inline]
@@ -322,7 +327,7 @@ impl<T: Clone, B: Backend> Tensor<T, B> {
     ///
     /// ```
     /// use candela::Tensor;
-    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0], &[3]);
+    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0], 3);
     /// let collected: Vec<f64> = t.iter().copied().collect();
     /// assert_eq!(collected, vec![1.0, 2.0, 3.0]);
     /// ```
@@ -365,7 +370,7 @@ impl<T: Clone, B: Backend> Tensor<T, B> {
     /// ```
     /// use candela::{StepInfo, Tensor};
     ///
-    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], (2, 2));
     ///
     /// let mut rows: Vec<Vec<f64>> = Vec::new();
     /// for step in t.informed_iter() {
@@ -425,12 +430,12 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     ///
     /// ```
     /// use candela::Tensor;
-    /// let t: Tensor<f64> = Tensor::rand(&[2, 3]);
+    /// let t: Tensor<f64> = Tensor::rand((2, 3));
     /// assert_eq!(t.data().len(), 6);
     /// assert!(t.data().iter().all(|&x| (0.0..1.0).contains(&x)));
     /// ```
     #[inline]
-    pub fn rand(shape: &[usize]) -> Self
+    pub fn rand(shape: impl IntoShape) -> Self
     where
         rand::distr::StandardUniform: rand::distr::Distribution<T>,
     {
@@ -447,12 +452,12 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     /// use rand::SeedableRng;
     /// use rand::rngs::StdRng;
     ///
-    /// let a: Tensor<f64> = Tensor::rand_with(&[2, 2], &mut StdRng::seed_from_u64(42));
-    /// let b: Tensor<f64> = Tensor::rand_with(&[2, 2], &mut StdRng::seed_from_u64(42));
+    /// let a: Tensor<f64> = Tensor::rand_with((2, 2), &mut StdRng::seed_from_u64(42));
+    /// let b: Tensor<f64> = Tensor::rand_with((2, 2), &mut StdRng::seed_from_u64(42));
     /// assert_eq!(a.data(), b.data()); // same seed, same tensor
     /// ```
     #[inline]
-    pub fn rand_with<R: rand::Rng>(shape: &[usize], rng: &mut R) -> Self
+    pub fn rand_with<R: rand::Rng>(shape: impl IntoShape, rng: &mut R) -> Self
     where
         rand::distr::StandardUniform: rand::distr::Distribution<T>,
     {
@@ -471,11 +476,11 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     ///
     /// ```
     /// use candela::Tensor;
-    /// let t: Tensor<f32> = Tensor::randn(&[1000]);
+    /// let t: Tensor<f32> = Tensor::randn(1000);
     /// assert_eq!(t.data().len(), 1000);
     /// ```
     #[inline]
-    pub fn randn(shape: &[usize]) -> Self
+    pub fn randn(shape: impl IntoShape) -> Self
     where
         rand_distr::StandardNormal: rand::distr::Distribution<T>,
     {
@@ -485,7 +490,7 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     /// Like [`randn`](Self::randn), but driven by a caller-supplied `rng`. Seeding
     /// the RNG makes the result reproducible.
     #[inline]
-    pub fn randn_with<R: rand::Rng>(shape: &[usize], rng: &mut R) -> Self
+    pub fn randn_with<R: rand::Rng>(shape: impl IntoShape, rng: &mut R) -> Self
     where
         rand_distr::StandardNormal: rand::distr::Distribution<T>,
     {
@@ -512,11 +517,11 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     /// use rand::distr::Uniform;
     ///
     /// let dist = Uniform::new(-1.0, 1.0).unwrap();
-    /// let t: Tensor<f64> = Tensor::sample(&[4], dist);
+    /// let t: Tensor<f64> = Tensor::sample(4, dist);
     /// assert!(t.data().iter().all(|&x| (-1.0..1.0).contains(&x)));
     /// ```
     #[inline]
-    pub fn sample<D>(shape: &[usize], dist: D) -> Self
+    pub fn sample<D>(shape: impl IntoShape, dist: D) -> Self
     where
         D: rand::distr::Distribution<T>,
     {
@@ -526,7 +531,7 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     /// Like [`sample`](Self::sample), but driven by a caller-supplied `rng`.
     /// Seeding the RNG makes the result reproducible.
     #[inline]
-    pub fn sample_with<D, R>(shape: &[usize], dist: D, rng: &mut R) -> Self
+    pub fn sample_with<D, R>(shape: impl IntoShape, dist: D, rng: &mut R) -> Self
     where
         D: rand::distr::Distribution<T>,
         R: rand::Rng,
@@ -576,7 +581,7 @@ impl<T: Numeric, B: Backend> Tensor<T, B> {
     ///
     /// ```
     /// use candela::Tensor;
-    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], (2, 3));
     /// assert_eq!(*t.get(&[1, 2])?, 6.0);
     /// assert!(t.get(&[2, 0]).is_err()); // row 2 is past the end
     /// # Ok::<(), candela::OpError>(())
@@ -595,7 +600,7 @@ impl<T: Numeric, B: Backend> Tensor<T, B> {
     ///
     /// ```
     /// use candela::Tensor;
-    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], &[2, 2]);
+    /// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0], (2, 2));
     /// let total = t.sum().materialize();
     /// assert_eq!(*total.item(), 10.0);
     /// ```
@@ -615,7 +620,7 @@ impl<T: Numeric, B: Backend> Tensor<T, B> {
     /// ```
     /// use candela::Tensor;
     ///
-    /// let a = Tensor::from_scalar(0.3, &[4]);
+    /// let a = Tensor::from_scalar(0.3, 4);
     /// let slot = a.to_slot();                       // placeholder shaped like a
     /// let skeleton = (&slot * 2.0 + 1.0).into_skeleton(&[slot])?;
     /// assert!(skeleton.run(&[&a]).is_ok());

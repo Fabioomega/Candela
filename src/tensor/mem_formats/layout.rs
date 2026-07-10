@@ -1,6 +1,7 @@
 use std::{hash::Hash, iter::zip};
 
 use crate::tensor::{
+    IntoShape,
     errors::OpError,
     internals::{calculate_adjacent_dim_stride, calculate_dim_stride},
     mem_formats::slice::{SliceInfo, SliceRange},
@@ -26,7 +27,7 @@ use crate::tensor::{
 /// use candela::{Dimension, Layout, Tensor};
 ///
 /// // Shape/stride are available straight off the tensor via `Dimension`.
-/// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+/// let t = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], (2, 3));
 /// assert_eq!(t.shape(), &[2, 3]);
 /// assert_eq!(t.layout(), &Layout::new(&[2, 3]));
 ///
@@ -63,19 +64,24 @@ impl Layout {
     ///
     /// ```
     /// use candela::Layout;
-    /// let l = Layout::new(&[2, 3]);
+    /// let l = Layout::new((2, 3));
     /// assert_eq!(l.shape(), &[2, 3]);
     /// assert_eq!(l.stride(), &[3, 1]);
     /// assert_eq!(l.len(), 6);
     /// ```
-    pub fn new(shape: &[usize]) -> Self {
-        validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
+    pub fn new(shape: impl IntoShape) -> Self {
+        let shape = shape.into_shape();
+
+        validate_shape(&shape).unwrap_or_else(|e| panic!("{}", e));
         let len: usize = shape.iter().product();
+        let shape_len = shape.len();
+
+        let stride = calculate_dim_stride(&shape);
 
         Self {
-            shape: shape.into(),
-            stride: calculate_dim_stride(shape),
-            adj_stride: vec![1; shape.len()].into_boxed_slice(),
+            shape,
+            stride,
+            adj_stride: vec![1; shape_len].into_boxed_slice(),
             offset: 0,
             len,
         }
@@ -174,7 +180,7 @@ impl Layout {
     ///
     /// ```
     /// use candela::Layout;
-    /// let l = Layout::new(&[4]).with_offset(3);
+    /// let l = Layout::new(4).with_offset(3);
     /// assert_eq!(l.offset(), 3);
     /// ```
     pub fn with_offset(mut self, offset: usize) -> Self {
@@ -200,7 +206,9 @@ impl Layout {
     /// assert!(l.view(&[4, 4]).is_err()); // 16 != 6 elements
     /// # Ok::<(), candela::OpError>(())
     /// ```
-    pub fn view(&self, shape: &[usize]) -> Result<Self, OpError> {
+    pub fn view(&self, shape: impl IntoShape) -> Result<Self, OpError> {
+        let shape = shape.into_shape();
+
         if shape.iter().product::<usize>() != self.len() {
             return Err(OpError::InvalidViewShape);
         }
@@ -224,7 +232,7 @@ impl Layout {
     ///
     /// ```
     /// use candela::{s, Layout};
-    /// let l = Layout::new(&[2, 3]);
+    /// let l = Layout::new((2, 3));
     /// let sub = l.slice(s![0..1, 1..3])?;
     /// assert_eq!(sub.shape(), &[1, 2]);
     /// # Ok::<(), candela::OpError>(())
@@ -249,7 +257,7 @@ impl Layout {
     ///
     /// ```
     /// use candela::Layout;
-    /// let t = Layout::new(&[2, 3]).transpose();
+    /// let t = Layout::new((2, 3)).transpose();
     /// assert_eq!(t.shape(), &[3, 2]);
     /// assert_eq!(t.stride(), &[1, 3]);
     /// ```
@@ -302,7 +310,9 @@ impl Layout {
     /// Returns [`OpError::NotEnoughAxes`] if `axes` doesn't have one entry per
     /// axis, or [`OpError::AxesOutOfBounds`] if an index is out of range or
     /// repeated (so the list isn't a valid permutation).
-    pub fn transpose_axes(&self, axes: &[usize]) -> Result<Self, OpError> {
+    pub fn transpose_axes(&self, axes: impl IntoShape) -> Result<Self, OpError> {
+        let axes = axes.into_shape();
+
         if axes.len() != self.stride.len() {
             return Err(OpError::NotEnoughAxes(self.stride.len(), axes.len()));
         }
@@ -349,8 +359,8 @@ impl Layout {
     /// ```
     /// use candela::Layout;
     ///
-    /// let row = Layout::new(&[1, 3]);
-    /// let b = row.broadcast(&[2, 3])?;
+    /// let row = Layout::new((1, 3));
+    /// let b = row.broadcast((2, 3))?;
     /// assert_eq!(b.shape(), &[2, 3]);
     /// # Ok::<(), candela::OpError>(())
     /// ```
@@ -360,7 +370,9 @@ impl Layout {
     /// Returns [`OpError::CannotBroadcast`] if the target shape has fewer axes
     /// than the source, or an axis is neither equal to the source nor expandable
     /// from 1.
-    pub fn broadcast(&self, shape: &[usize]) -> Result<Self, OpError> {
+    pub fn broadcast(&self, shape: impl IntoShape) -> Result<Self, OpError> {
+        let shape = shape.into_shape();
+
         if shape.len() < self.shape.len() {
             return Err(OpError::CannotBroadcast);
         }
@@ -386,11 +398,11 @@ impl Layout {
             }
         }
 
-        let adj_stride = calculate_adjacent_dim_stride(&new_stride, shape);
+        let adj_stride = calculate_adjacent_dim_stride(&new_stride, &shape);
         let len: usize = shape.iter().product();
 
         Ok(Self {
-            shape: shape.into(),
+            shape,
             stride: new_stride.into_boxed_slice(),
             adj_stride,
             offset: self.offset,
@@ -408,10 +420,10 @@ impl Layout {
     ///
     /// ```
     /// use candela::Layout;
-    /// assert_eq!(Layout::new(&[5]).shape_as_3d(), [1, 1, 5]);
-    /// assert_eq!(Layout::new(&[2, 3]).shape_as_3d(), [1, 2, 3]);
-    /// assert_eq!(Layout::new(&[2, 3, 4]).shape_as_3d(), [2, 3, 4]);
-    /// assert_eq!(Layout::new(&[6, 2, 3, 4]).shape_as_3d(), [12, 3, 4]);
+    /// assert_eq!(Layout::new(5).shape_as_3d(), [1, 1, 5]);
+    /// assert_eq!(Layout::new((2, 3)).shape_as_3d(), [1, 2, 3]);
+    /// assert_eq!(Layout::new((2, 3, 4)).shape_as_3d(), [2, 3, 4]);
+    /// assert_eq!(Layout::new((6, 2, 3, 4)).shape_as_3d(), [12, 3, 4]);
     /// ```
     #[inline]
     pub fn shape_as_3d(&self) -> [usize; 3] {
@@ -443,7 +455,7 @@ impl Layout {
     ///
     /// ```
     /// use candela::Layout;
-    /// let r = Layout::new(&[2, 3, 4]).rotate_axis_innermost(0)?;
+    /// let r = Layout::new((2, 3, 4)).rotate_axis_innermost(0)?;
     /// assert_eq!(r.shape(), &[3, 4, 2]);
     /// # Ok::<(), candela::OpError>(())
     /// ```
@@ -471,8 +483,8 @@ impl Layout {
     ///
     /// ```
     /// use candela::Layout;
-    /// assert!(Layout::new(&[3, 4]).is_contiguous());
-    /// assert!(!Layout::new(&[3, 4]).transpose().is_contiguous());
+    /// assert!(Layout::new((3, 4)).is_contiguous());
+    /// assert!(!Layout::new((3, 4)).transpose().is_contiguous());
     /// ```
     #[inline]
     pub fn is_contiguous(&self) -> bool {
@@ -488,7 +500,7 @@ impl Layout {
     ///
     /// ```
     /// use candela::Layout;
-    /// let l = Layout::new(&[2, 3]);
+    /// let l = Layout::new((2, 3));
     /// assert!(l.is_contiguous_at_axis(0));
     /// assert!(!l.is_contiguous_at_axis(9)); // out of range
     /// ```
@@ -509,8 +521,8 @@ impl Layout {
     ///
     /// ```
     /// use candela::Layout;
-    /// assert!(!Layout::new(&[3, 4]).is_transposed());
-    /// assert!(Layout::new(&[3, 4]).transpose().is_transposed());
+    /// assert!(!Layout::new((3, 4)).is_transposed());
+    /// assert!(Layout::new((3, 4)).transpose().is_transposed());
     /// ```
     #[inline]
     pub fn is_transposed(&self) -> bool {
@@ -531,7 +543,7 @@ impl Layout {
     ///
     /// ```
     /// use candela::Layout;
-    /// let l = Layout::new(&[3, 4]); // fresh: no axis is transposed
+    /// let l = Layout::new((3, 4)); // fresh: no axis is transposed
     /// assert!(!l.is_transposed_at_axis(0));
     /// assert!(!l.is_transposed_at_axis(9)); // out of range
     /// ```
@@ -551,8 +563,8 @@ impl Layout {
     ///
     /// ```
     /// use candela::Layout;
-    /// assert!(Layout::new(&[3, 4]).transpose().is_last_axes_transposed());
-    /// assert!(!Layout::new(&[3, 4]).is_last_axes_transposed());
+    /// assert!(Layout::new((3, 4)).transpose().is_last_axes_transposed());
+    /// assert!(!Layout::new((3, 4)).is_last_axes_transposed());
     /// ```
     // Restricted to 2D on purpose: the matmul kernel uses this to pick the BLAS
     // trans-flag, and its batch-stride handling assumes there is no batch dim.
@@ -582,7 +594,7 @@ impl Layout {
     ///
     /// ```
     /// use candela::Layout;
-    /// assert_eq!(Layout::new(&[2, 3]).shape(), &[2, 3]);
+    /// assert_eq!(Layout::new((2, 3)).shape(), &[2, 3]);
     /// ```
     #[inline]
     pub fn shape(&self) -> &'_ [usize] {
@@ -596,7 +608,7 @@ impl Layout {
     ///
     /// ```
     /// use candela::Layout;
-    /// assert_eq!(Layout::new(&[2, 3]).stride(), &[3, 1]);
+    /// assert_eq!(Layout::new((2, 3)).stride(), &[3, 1]);
     /// ```
     #[inline]
     pub fn stride(&self) -> &'_ [i32] {
@@ -611,7 +623,7 @@ impl Layout {
     /// ```
     /// use candela::Layout;
     /// // All ones for a freshly built contiguous layout.
-    /// assert_eq!(Layout::new(&[2, 3]).adj_stride(), &[1, 1]);
+    /// assert_eq!(Layout::new((2, 3)).adj_stride(), &[1, 1]);
     /// ```
     #[inline]
     pub fn adj_stride(&self) -> &'_ [i32] {
@@ -624,7 +636,7 @@ impl Layout {
     ///
     /// ```
     /// use candela::Layout;
-    /// assert_eq!(Layout::new(&[4]).with_offset(3).offset(), 3);
+    /// assert_eq!(Layout::new(4).with_offset(3).offset(), 3);
     /// ```
     #[inline]
     pub fn offset(&self) -> usize {
@@ -637,7 +649,7 @@ impl Layout {
     ///
     /// ```
     /// use candela::Layout;
-    /// assert_eq!(Layout::new(&[2, 3, 4]).len(), 24);
+    /// assert_eq!(Layout::new((2, 3, 4)).len(), 24);
     /// ```
     #[inline]
     pub fn len(&self) -> usize {
@@ -651,7 +663,7 @@ impl Layout {
     /// ```
     /// use candela::Layout;
     /// assert!(Layout::empty().is_empty());
-    /// assert!(!Layout::new(&[3]).is_empty());
+    /// assert!(!Layout::new(3).is_empty());
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {

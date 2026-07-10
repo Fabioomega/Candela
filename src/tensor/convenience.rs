@@ -20,7 +20,7 @@ macro_rules! s {
 
 /// Build a tensor of the given shape filled with zeros.
 ///
-/// The element type is inferred from the binding: `let t: Tensor<f64> = zeros!(&[2, 3]);`.
+/// The element type is inferred from the binding: `let t: Tensor<f64> = zeros!((2, 3));`.
 ///
 /// # Examples
 ///
@@ -38,13 +38,13 @@ macro_rules! zeros {
 
 /// Build a tensor of the given shape filled with ones.
 ///
-/// The element type is inferred from the binding: `let t: Tensor<f64> = ones!(&[2, 3]);`.
+/// The element type is inferred from the binding: `let t: Tensor<f64> = ones!((2, 3));`.
 ///
 /// # Examples
 ///
 /// ```
 /// use candela::{ones, Tensor};
-/// let t: Tensor<f64> = ones!(&[3]);
+/// let t: Tensor<f64> = ones!(3);
 /// assert_eq!(t.data(), &[1.0, 1.0, 1.0]);
 /// ```
 #[macro_export]
@@ -56,9 +56,9 @@ macro_rules! ones {
 
 #[allow(private_bounds)]
 pub mod arange {
-    use crate::tensor::Tensor;
     use crate::tensor::backend::{ComputeFor, DefaultBackend};
     use crate::tensor::traits::FromIndex;
+    use crate::tensor::{IntoShape, Tensor};
 
     /// Build a 1D tensor of evenly spaced values, NumPy-`arange` style.
     ///
@@ -136,7 +136,7 @@ pub mod arange {
     ///
     /// ```
     /// use candela::{srange, Dimension, Tensor};
-    /// let t: Tensor<f64> = srange![6, &[2, 3]];
+    /// let t: Tensor<f64> = srange![6, (2, 3)];
     /// assert_eq!(t.shape(), &[2, 3]);
     /// assert_eq!(t.data(), &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
     /// ```
@@ -158,7 +158,7 @@ pub mod arange {
     #[doc(hidden)]
     pub fn _arange_default_shape<T: FromIndex + ComputeFor<DefaultBackend>>(
         size: usize,
-        shape: &[usize],
+        shape: impl IntoShape,
     ) -> Tensor<T> {
         let v: Vec<T> = (0..size).map(T::from_index).collect();
         Tensor::from_vec(v, shape)
@@ -168,7 +168,7 @@ pub mod arange {
     pub fn _arange_start_shape<T: FromIndex + ComputeFor<DefaultBackend>>(
         start: usize,
         end: usize,
-        shape: &[usize],
+        shape: impl IntoShape,
     ) -> Tensor<T> {
         let v: Vec<T> = (start..end).map(T::from_index).collect();
         Tensor::from_vec(v, shape)
@@ -179,7 +179,7 @@ pub mod arange {
         start: usize,
         end: usize,
         step: usize,
-        shape: &[usize],
+        shape: impl IntoShape,
     ) -> Tensor<T> {
         let v: Vec<T> = (start..end).step_by(step).map(T::from_index).collect();
         Tensor::from_vec(v, shape)
