@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crate::tensor::definitions::ChunkedIter;
 use crate::tensor::iter::{
-    ChunkedContiguousIter, ChunkedSliceIter, ContiguousIter, InformedIter, Iter, MutSliceIter,
-    StepInfo,
+    ChunkedContiguousIter, ChunkedSliceIter, ContiguousIter, ElementIter, InformedIter, Iter,
+    MutSliceIter, StepInfo,
 };
 use crate::tensor::mem_formats::layout::{Layout, validate_shape};
 use crate::tensor::traits::Dimension;
@@ -130,6 +130,23 @@ impl<T: Clone> TensorData<T> {
         Self {
             storage: Storage::from_vec(vector),
             layout: Layout::new(shape).with_offset(offset),
+        }
+    }
+
+    #[inline]
+    pub fn from_vec_with_layout(vector: Vec<T>, layout: Layout) -> Self {
+        assert!(
+            layout.stride().iter().all(|s| *s >= 0),
+            "negative strides are not supported"
+        );
+        assert!(
+            layout.last() < vector.len(),
+            "the layout indexes outside of the buffer"
+        );
+
+        Self {
+            storage: Storage::from_vec(vector),
+            layout,
         }
     }
 

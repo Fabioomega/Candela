@@ -669,6 +669,20 @@ impl Layout {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    /// Return the memory position of the last element from offset.
+    ///
+    /// This is akin to (offset + (shape - 1) * stride).
+    #[inline]
+    pub fn last(&self) -> usize {
+        let mut acc: i64 = 0;
+
+        for (d, s) in zip(&self.shape, &self.stride) {
+            acc += (*d - 1) as i64 * *s as i64;
+        }
+
+        self.offset + (acc as usize)
+    }
 }
 
 impl PartialEq for Layout {

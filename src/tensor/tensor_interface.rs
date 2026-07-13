@@ -2,7 +2,7 @@
 use crate::OpError;
 use crate::tensor::backend::{Backend, ComputeFor, DefaultBackend};
 use crate::tensor::graph::{NodeKind, TensorGraphEdge};
-use crate::tensor::iter::{InformedIter, Iter, StepInfo};
+use crate::tensor::iter::{ElementIter, InformedIter, Iter, StepInfo};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::promise::TensorPromise;
 use crate::tensor::shape::IntoShape;
@@ -95,6 +95,23 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
         }
     }
 
+    /// Like [`Tensor::from_vec_with_layout`], but on an explicit backend `B`. See [`Tensor`]
+    /// for the `_in` convention.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `layout` can address memory outside of `vector` - the last
+    /// addressable index (`offset + (shape - 1) * stride` summed over all axes)
+    /// must be within the buffer - or if any stride is negative.
+    #[inline]
+    pub fn from_vec_with_layout_in(vector: Vec<T>, layout: Layout) -> Self {
+        Self {
+            graph: Arc::new(TensorGraphEdge::from_tensor_data(
+                TensorData::from_vec_with_layout(vector, layout),
+            )),
+        }
+    }
+
     /// Like [`Tensor::from_slice`], but on an explicit backend `B`. See [`Tensor`]
     /// for the `_in` convention.
     ///
@@ -165,6 +182,26 @@ impl<T: ComputeFor<DefaultBackend>> Tensor<T> {
     #[inline]
     pub fn from_vec(vector: Vec<T>, shape: impl IntoShape) -> Self {
         Self::from_vec_in(vector, shape)
+    }
+
+    /// Creates a tensor from `vector` interpreted with `layout`.
+    ///
+    /// The buffer may be larger than the layout requires: gapped (strided)
+    /// layouts leave elements unread, and stride-0 (broadcast) layouts read
+    /// the same elements repeatedly.
+    ///
+    /// Uses [`DefaultBackend`]; see
+    /// [`from_vec_with_layout_in`](Self::from_vec_with_layout_in) to pick a
+    /// backend explicitly.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `layout` can address memory outside of `vector` - the last
+    /// addressable index (`offset + (shape - 1) * stride` summed over all axes)
+    /// must be within the buffer - or if any stride is negative.
+    #[inline]
+    pub fn from_vec_with_layout(vector: Vec<T>, layout: Layout) -> Self {
+        Self::from_vec_with_layout_in(vector, layout)
     }
 
     /// Create a tensor by copying `data` into a buffer with the given `shape`.
