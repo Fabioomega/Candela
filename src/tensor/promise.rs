@@ -114,7 +114,7 @@ impl<T: NumberLike + ComputeFor<B>, B: Backend> TensorPromise<T, B> {
     /// let result = (t - 1.0).materialize();
     /// assert_eq!(result.data(), &vec![3.0; 3]);
     /// ```
-    pub fn materialize(self) -> Tensor<T> {
+    pub fn materialize(self) -> Tensor<T, B> {
         Tensor::from_data(self.graph.compute())
     }
 
@@ -134,7 +134,7 @@ impl<T: NumberLike + ComputeFor<B>, B: Backend> TensorPromise<T, B> {
     /// let result2 = t.materialize(); // consumes t
     /// assert_eq!(result1.data(), result2.data());
     /// ```
-    pub fn clone_and_materialize(&self) -> Tensor<T> {
+    pub fn clone_and_materialize(&self) -> Tensor<T, B> {
         Tensor::from_data(self.graph.compute())
     }
 
