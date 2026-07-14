@@ -28,9 +28,11 @@ criterion = { version = "0.8", features = ["html_reports"] }
 proptest = "1"
 rstest = "0.26.1"
 rstest_reuse = "0.7"
+cache-size = "0.7.0"
+rand = "0.10.2"
 
 [[bench]]
-name = "my_bench"
+name = "iterator"
 harness = false
 
 [dependencies]
