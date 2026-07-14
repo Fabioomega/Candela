@@ -45,46 +45,153 @@ impl<'a, T: Clone> FusedIterator for ContiguousIter<'a, T> {}
 
 ///////////////////////////////////////////////////////////////
 
-// TODO: This impl is not correct anymore. If used please fix it like
-// the non-mut one.
+const MAX_DIMS: usize = 8;
 
-// pub struct MutContiguousIter<'a, T: Clone> {
-//     data: RwLockWriteGuard<'a, Vec<T>>,
-//     index: usize,
-// }
-//
-// impl<'a, T: Clone> MutContiguousIter<'a, T> {
-//     pub fn new(lock: &'a RwLock<Vec<T>>) -> Self {
-//         let data: RwLockWriteGuard<'_, Vec<T>> = lock.write();
-//         Self { data, index: 0 }
-//     }
-// }
-//
-// impl<'a, T: Clone> Iterator for MutContiguousIter<'a, T> {
-//     type Item = &'a mut T;
-//
-//     fn next(&mut self) -> Option<Self::Item> {
-//         if self.index >= self.data.len() {
-//             return None;
-//         }
-//
-//         let mut item = NonNull::new(&mut self.data[self.index] as *mut T).unwrap();
-//         self.index += 1;
-//
-//         return Some(unsafe { item.as_mut() });
-//     }
-//
-//     fn size_hint(&self) -> (usize, Option<usize>) {
-//         let len = self.data.len() - self.index;
-//
-//         (len, Some(len))
-//     }
-// }
-//
-// impl<'a, T: Clone> ExactSizeIterator for MutContiguousIter<'a, T> {}
-//
-// impl<'a, T: Clone> FusedIterator for MutContiguousIter<'a, T> {}
-//
+#[derive(Debug)]
+pub struct ChunkIter<'a, T> {
+    data: &'a [T],
+    pos: usize,
+    shape: [usize; MAX_DIMS],
+    adj_stride: [i32; MAX_DIMS],
+    counter: [usize; MAX_DIMS],
+    rank: usize,
+    step: isize,
+    left_over: usize,
+}
+
+#[derive(Debug)]
+pub enum ChunkKind<'a, T> {
+    Contiguous {
+        data: &'a [T],
+        start: usize,
+        times: usize,
+    },
+    Strided {
+        data: &'a [T],
+        start: usize,
+        times: usize,
+        step: isize,
+    },
+}
+
+fn simplify_layout(layout: &Layout) -> (usize, [usize; MAX_DIMS], [i32; MAX_DIMS]) {
+    let rank: usize = layout.shape().len();
+    let mut shape = [0usize; MAX_DIMS];
+    let mut adj_stride = [0i32; MAX_DIMS];
+
+    let mut w: usize = 0;
+
+    shape[0] = layout.shape()[0];
+    adj_stride[0] = layout.adj_stride()[0];
+    for i in 1..rank {
+        if layout.adj_stride()[i] == layout.adj_stride()[i - 1] {
+            shape[w] *= layout.shape()[i];
+        } else {
+            w += 1;
+            shape[w] = layout.shape()[i];
+            adj_stride[w] = layout.adj_stride()[i];
+        }
+    }
+
+    (w + 1, shape, adj_stride)
+}
+
+impl<'a, T> ChunkIter<'a, T> {
+    pub fn new(data: &'a [T], layout: &Layout) -> Self {
+        debug_assert!(
+            layout.shape().len() <= MAX_DIMS,
+            "dimensions higher than 8 are not support for iteration!"
+        );
+
+        let (mut rank, mut shape, mut adj_stride) = simplify_layout(layout);
+
+        if rank == 1 {
+            shape[1] = shape[0];
+            shape[0] = 1;
+
+            adj_stride[1] = adj_stride[0];
+
+            rank += 1;
+        }
+
+        let last = rank - 1;
+        let step = adj_stride[last] as isize * (shape[last] - 1) as isize;
+
+        let left_over: usize = shape[0..last].iter().product();
+
+        Self {
+            data,
+            pos: layout.offset(),
+            shape,
+            adj_stride,
+            counter: [0; MAX_DIMS],
+            step,
+            rank,
+            left_over,
+        }
+    }
+}
+
+impl<'a, T> Iterator for ChunkIter<'a, T> {
+    type Item = ChunkKind<'a, T>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.left_over == 0 {
+            return None;
+        }
+
+        let last = self.rank - 1;
+
+        // TODO: self.adj_stride[last] is a constant, we can store that.
+        let chunk = if self.adj_stride[last] == 1 {
+            ChunkKind::Contiguous {
+                data: self.data,
+                start: self.pos as usize,
+                times: self.shape[last],
+            }
+        } else {
+            ChunkKind::Strided {
+                data: self.data,
+                start: self.pos as usize,
+                times: self.shape[last],
+                step: self.adj_stride[last] as isize,
+            }
+        };
+
+        self.left_over -= 1;
+
+        let last_counter = last - 1;
+
+        self.counter[last_counter] += 1;
+        let mut step_dim = last_counter;
+        for dim in (1..last).rev() {
+            if self.counter[dim] == self.shape[dim] {
+                self.counter[dim] = 0;
+                self.counter[dim - 1] += 1;
+
+                step_dim = dim - 1;
+                continue;
+            }
+            break;
+        }
+
+        // TODO: We can change the adj_stride so it has self.step already summed on it
+        self.pos = self
+            .pos
+            .wrapping_add_signed(self.adj_stride[step_dim] as isize + self.step);
+
+        Some(chunk)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.left_over, Some(self.left_over))
+    }
+}
+
+impl<'a, T> ExactSizeIterator for ChunkIter<'a, T> {}
+
+impl<'a, T> FusedIterator for ChunkIter<'a, T> {}
 
 ///////////////////////////////////////////////////////////////
 
@@ -97,40 +204,43 @@ impl<'a, T: Clone> FusedIterator for ContiguousIter<'a, T> {}
 #[derive(Debug, Clone)]
 pub struct Iter<'a, T> {
     data: &'a [T],
-    pos: isize,
-    counter: Box<[usize]>,
+    pos: usize,
+    counter: [usize; MAX_DIMS],
     layout: &'a Layout,
     left_over: usize,
 }
 
-impl<'a, T: Clone> Iter<'a, T> {
-    // TODO: data_len is used anywhere? Like at all? If not, maybe just remove it.
-    pub fn new(data: &'a [T], data_len: usize, layout: &'a Layout) -> Self {
-        let counter = vec![0; layout.shape().len()].into_boxed_slice();
+impl<'a, T> Iter<'a, T> {
+    pub fn new(data: &'a [T], layout: &'a Layout) -> Self {
+        debug_assert!(
+            layout.shape().len() <= MAX_DIMS,
+            "dimensions higher than 8 are not support for iteration!"
+        );
 
         Self {
             data,
-            pos: layout.offset() as isize,
+            pos: layout.offset(),
             layout,
-            counter,
-            left_over: data_len,
+            counter: [0; MAX_DIMS],
+            left_over: layout.len(),
         }
     }
 }
 
-impl<'a, T: Clone> Iterator for Iter<'a, T> {
+impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.left_over == 0 {
             return None;
         }
 
-        let last = self.counter.len() - 1;
+        let last = self.layout.shape().len() - 1;
         self.counter[last] += 1;
         let mut step_dim = last;
 
-        for dim in (1..self.counter.len()).rev() {
+        for dim in (1..self.layout.shape().len()).rev() {
             if self.counter[dim] == self.layout.shape()[dim] {
                 self.counter[dim] = 0;
                 self.counter[dim - 1] += 1;
@@ -143,23 +253,108 @@ impl<'a, T: Clone> Iterator for Iter<'a, T> {
 
         let pos = self.pos as usize;
 
-        unsafe {
-            let item = &self.data[pos] as *const T;
-            self.pos += self.layout.adj_stride()[step_dim] as isize;
-            self.left_over -= 1;
+        let item = &self.data[pos];
 
-            Some(&*item)
-        }
+        self.pos = self
+            .pos
+            .wrapping_add_signed(self.layout.adj_stride()[step_dim] as isize);
+
+        self.left_over -= 1;
+
+        Some(&item)
     }
 
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.left_over, Some(self.left_over))
     }
+
+    #[inline]
+    fn fold<B, F>(self, init: B, mut f: F) -> B
+    where
+        F: FnMut(B, Self::Item) -> B,
+    {
+        let mut acc = init;
+
+        if self.layout.is_contiguous() {
+            for el in
+                self.data[self.layout.offset()..self.layout.offset() + self.layout.len()].iter()
+            {
+                acc = f(acc, el);
+            }
+
+            return acc;
+        }
+
+        let (mut rank, mut shape, mut adj_stride) = simplify_layout(self.layout);
+
+        if rank == 1 {
+            shape[1] = shape[0];
+            shape[0] = 1;
+
+            adj_stride[1] = adj_stride[0];
+
+            rank += 1;
+        }
+
+        let last = rank - 1;
+        let mut counter: [usize; MAX_DIMS] = [0; MAX_DIMS];
+        let mut pos = self.layout.offset();
+        let left_over: usize = shape[0..last].iter().product();
+
+        let n = shape[last];
+        let step = adj_stride[last] as isize * (shape[last] - 1) as isize;
+        let stride = adj_stride[last] as isize;
+
+        let next_chunk = |counter: &mut [usize; MAX_DIMS]| -> isize {
+            let last_counter = last - 1;
+            counter[last_counter] += 1;
+            let mut step_dim = last_counter;
+            for dim in (1..last).rev() {
+                if counter[dim] == shape[dim] {
+                    counter[dim] = 0;
+                    counter[dim - 1] += 1;
+                    step_dim = dim - 1;
+                    continue;
+                }
+                break;
+            }
+            adj_stride[step_dim] as isize + step
+        };
+
+        if stride == 1 {
+            for _ in 0..left_over {
+                for el in self.data[pos..pos + n].iter() {
+                    acc = f(acc, el);
+                }
+
+                pos = pos.wrapping_add_signed(next_chunk(&mut counter));
+            }
+        } else {
+            for _ in 0..left_over {
+                let mut pos_inner = pos;
+                for _ in 0..n {
+                    debug_assert!(pos_inner < self.data.len());
+                    // SAFETY: a well-formed layout only ever visits in-bounds
+                    // positions of its own buffer, so `pos_inner` is a valid
+                    // index. Dropping the bounds check keeps the strided read
+                    // from stalling memory-level parallelism on gather-heavy
+                    // layouts (e.g. transposed).
+                    acc = f(acc, unsafe { self.data.get_unchecked(pos_inner) });
+
+                    pos_inner = pos_inner.wrapping_add_signed(stride);
+                }
+                pos = pos.wrapping_add_signed(next_chunk(&mut counter));
+            }
+        }
+
+        acc
+    }
 }
 
-impl<'a, T: Clone> ExactSizeIterator for Iter<'a, T> {}
+impl<'a, T> ExactSizeIterator for Iter<'a, T> {}
 
-impl<'a, T: Clone> FusedIterator for Iter<'a, T> {}
+impl<'a, T> FusedIterator for Iter<'a, T> {}
 
 ///////////////////////////////////////////////////////////////
 

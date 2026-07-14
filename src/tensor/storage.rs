@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crate::tensor::definitions::ChunkedIter;
 use crate::tensor::iter::{
-    ChunkedContiguousIter, ChunkedSliceIter, ContiguousIter, ElementIter, InformedIter, Iter,
-    MutSliceIter, StepInfo,
+    ChunkedContiguousIter, ChunkedSliceIter, ContiguousIter, InformedIter, Iter, MutSliceIter,
+    StepInfo,
 };
 use crate::tensor::mem_formats::layout::{Layout, validate_shape};
 use crate::tensor::traits::Dimension;
@@ -194,7 +194,7 @@ impl<T: Clone> TensorData<T> {
 
     #[inline]
     pub fn iter(&self) -> Iter<'_, T> {
-        Iter::new(&self.storage.buffer, self.len(), self.layout())
+        Iter::new(&self.storage.buffer, self.layout())
     }
 
     #[inline]
@@ -222,7 +222,7 @@ impl<T: Clone> TensorData<T> {
         debug_assert!(
             self.layout().len() >= layout.len() && self.layout.offset() >= layout.offset()
         );
-        Iter::new(&self.storage.buffer, layout.len(), layout)
+        Iter::new(&self.storage.buffer, layout)
     }
 
     #[inline]
@@ -232,7 +232,7 @@ impl<T: Clone> TensorData<T> {
         if self.is_contiguous() {
             IterImpl::Contiguous(ContiguousIter::new(buffer, self.offset(), self.len()))
         } else {
-            IterImpl::NotContiguous(Iter::new(buffer, self.len(), self.layout()))
+            IterImpl::NotContiguous(Iter::new(buffer, self.layout()))
         }
     }
 

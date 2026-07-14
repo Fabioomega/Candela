@@ -21,7 +21,7 @@ pub mod promise;
 pub mod tensor_interface;
 pub use convenience::*;
 
-pub use iter::{InformedIter, Iter, StepInfo};
+pub use iter::{ChunkIter, ChunkKind, InformedIter, Iter, StepInfo};
 pub use mem_formats::layout::Layout;
 pub use mem_formats::slice::SliceRange;
 pub use promise::{CachedTensorPromise, TensorPromise};

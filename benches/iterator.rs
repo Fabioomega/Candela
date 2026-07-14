@@ -43,34 +43,31 @@ enum ChunkKind<'a, T> {
 }
 
 fn simplify_layout(layout: &Layout) -> (usize, [usize; MAX_DIMS], [i32; MAX_DIMS]) {
-    let mut rank: usize = layout.shape().len();
+    let rank: usize = layout.shape().len();
     let mut shape = [0usize; MAX_DIMS];
     let mut adj_stride = [0i32; MAX_DIMS];
 
-    let mut i = rank - 1;
+    let mut w: usize = 0;
 
     shape[0] = layout.shape()[0];
     adj_stride[0] = layout.adj_stride()[0];
-    while 0 < i {
-        if adj_stride[i] == layout.adj_stride()[i - 1] {
-            shape[i - 1] = shape[i] * layout.shape()[i - 1];
-            rank -= 1;
+    for i in 1..rank {
+        if layout.adj_stride()[i] == layout.adj_stride()[i - 1] {
+            shape[w] *= layout.shape()[i];
         } else {
-            shape[i - 1] = layout.shape()[i - 1];
-            adj_stride[i - 1] = layout.adj_stride()[i - 1];
+            w += 1;
+            shape[w] = layout.shape()[i];
+            adj_stride[w] = layout.adj_stride()[i];
         }
-
-        i -= 1;
     }
 
-    (rank, shape, adj_stride)
+    (w + 1, shape, adj_stride)
 }
 
 impl<'a, T> ChunkIter<'a, T> {
     pub fn new(data: &'a [T], layout: &Layout) -> Self {
-        // TODO: Add support for dimensions higher than 8 (use smallvec or something similar)
         debug_assert!(
-            layout.shape().len() <= 8,
+            layout.shape().len() <= MAX_DIMS,
             "dimensions higher than 8 are not support for iteration!"
         );
 
@@ -85,10 +82,10 @@ impl<'a, T> ChunkIter<'a, T> {
             rank += 1;
         }
 
-        let last = layout.shape().len() - 1;
-        let step = layout.adj_stride()[last] as isize * (layout.shape()[last] - 1) as isize;
+        let last = rank - 1;
+        let step = adj_stride[last] as isize * (shape[last] - 1) as isize;
 
-        let left_over: usize = layout.shape()[0..last].iter().product();
+        let left_over: usize = shape[0..last].iter().product();
 
         Self {
             data,
@@ -100,10 +97,6 @@ impl<'a, T> ChunkIter<'a, T> {
             rank,
             left_over,
         }
-    }
-
-    pub fn len(&self) -> usize {
-        self.rank
     }
 }
 
@@ -118,6 +111,7 @@ impl<'a, T> Iterator for ChunkIter<'a, T> {
 
         let last = self.rank - 1;
 
+        // TODO: self.adj_stride[last] is a constant, we can store that.
         let chunk = if self.adj_stride[last] == 1 {
             ChunkKind::Contiguous {
                 data: self.data,
@@ -139,24 +133,27 @@ impl<'a, T> Iterator for ChunkIter<'a, T> {
 
         self.counter[last_counter] += 1;
         let mut step_dim = last_counter;
-        for dim in (1..last_counter).rev() {
+        for dim in (1..last).rev() {
             if self.counter[dim] == self.shape[dim] {
                 self.counter[dim] = 0;
                 self.counter[dim - 1] += 1;
 
-                step_dim = dim;
+                step_dim = dim - 1;
                 continue;
             }
             break;
         }
 
-        self.pos = unsafe {
-            self.pos
-                .checked_add_signed(self.adj_stride[step_dim] as isize + self.step)
-                .unwrap_unchecked()
-        };
+        // TODO: We can change the adj_stride so it has self.step already summed on it
+        self.pos = self
+            .pos
+            .wrapping_add_signed(self.adj_stride[step_dim] as isize + self.step);
 
         Some(chunk)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.left_over, Some(self.left_over))
     }
 }
 
@@ -190,22 +187,27 @@ fn collect_chunks<T: Clone>(it: ChunkIter<'_, T>) -> Vec<T> {
 
 //////////////////////////////////////////////////////////////////
 
-struct Iter<'a, T> {
-    it: ChunkIter<'a, T>,
+pub struct Iter<'a, T> {
     data: &'a [T],
     pos: usize,
-    stride: isize,
-    times: usize,
+    counter: [usize; MAX_DIMS],
+    layout: &'a Layout,
+    left_over: usize,
 }
 
 impl<'a, T> Iter<'a, T> {
-    fn new(data: &'a [T], layout: &Layout) -> Self {
+    pub fn new(data: &'a [T], layout: &'a Layout) -> Self {
+        debug_assert!(
+            layout.shape().len() <= MAX_DIMS,
+            "dimensions higher than 8 are not support for iteration!"
+        );
+
         Self {
-            it: ChunkIter::new(data, layout),
             data,
-            pos: 0,
-            stride: 0,
-            times: 0,
+            pos: layout.offset(),
+            layout,
+            counter: [0; MAX_DIMS],
+            left_over: layout.len(),
         }
     }
 }
@@ -215,66 +217,119 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if self.times == 0 {
-            match self.it.next()? {
-                ChunkKind::Contiguous { data, start, times } => {
-                    self.data = data;
-                    self.pos = start;
-                    self.stride = 1;
-                    self.times = times;
-                }
-                ChunkKind::Strided {
-                    data,
-                    start,
-                    times,
-                    step,
-                } => {
-                    self.data = data;
-                    self.pos = start;
-                    self.stride = step;
-                    self.times = times;
-                }
-            }
+        if self.left_over == 0 {
+            return None;
         }
 
-        let output = unsafe { self.data.get_unchecked(self.pos) };
-        self.pos = unsafe { self.pos.checked_add_signed(self.stride).unwrap_unchecked() };
-        self.times -= 1;
+        let last = self.layout.shape().len() - 1;
+        self.counter[last] += 1;
+        let mut step_dim = last;
 
-        Some(output)
+        for dim in (1..self.layout.shape().len()).rev() {
+            if self.counter[dim] == self.layout.shape()[dim] {
+                self.counter[dim] = 0;
+                self.counter[dim - 1] += 1;
+
+                step_dim = dim - 1;
+                continue;
+            }
+            break;
+        }
+
+        let pos = self.pos as usize;
+
+        let item = &self.data[pos];
+
+        self.pos = self
+            .pos
+            .wrapping_add_signed(self.layout.adj_stride()[step_dim] as isize);
+
+        self.left_over -= 1;
+
+        Some(&item)
     }
 
     #[inline]
-    fn fold<Acc, F>(mut self, init: Acc, mut f: F) -> Acc
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.left_over, Some(self.left_over))
+    }
+
+    #[inline]
+    fn fold<B, F>(self, init: B, mut f: F) -> B
     where
-        F: FnMut(Acc, Self::Item) -> Acc,
+        F: FnMut(B, Self::Item) -> B,
     {
         let mut acc = init;
 
-        // Clear starting run (if it exists)
-        while self.times > 0 {
-            acc = f(acc, unsafe { self.data.get_unchecked(self.pos) });
-            self.pos = self.pos.wrapping_add_signed(self.stride);
-            self.times -= 1;
+        if self.layout.is_contiguous() {
+            for el in
+                self.data[self.layout.offset()..self.layout.offset() + self.layout.len()].iter()
+            {
+                acc = f(acc, el);
+            }
+
+            return acc;
         }
 
-        while let Some(chunk) = self.it.next() {
-            match chunk {
-                ChunkKind::Contiguous { data, start, times } => {
-                    for x in &data[start..start + times] {
-                        acc = f(acc, x);
-                    }
+        let (mut rank, mut shape, mut adj_stride) = simplify_layout(self.layout);
+
+        if rank == 1 {
+            shape[1] = shape[0];
+            shape[0] = 1;
+
+            adj_stride[1] = adj_stride[0];
+
+            rank += 1;
+        }
+
+        let last = rank - 1;
+        let mut counter: [usize; MAX_DIMS] = [0; MAX_DIMS];
+        let mut pos = self.layout.offset();
+        let left_over: usize = shape[0..last].iter().product();
+
+        let n = shape[last];
+        let step = adj_stride[last] as isize * (shape[last] - 1) as isize;
+        let stride = adj_stride[last] as isize;
+
+        let next_chunk = |counter: &mut [usize; MAX_DIMS]| -> isize {
+            let last_counter = last - 1;
+            counter[last_counter] += 1;
+            let mut step_dim = last_counter;
+            for dim in (1..last).rev() {
+                if counter[dim] == shape[dim] {
+                    counter[dim] = 0;
+                    counter[dim - 1] += 1;
+                    step_dim = dim - 1;
+                    continue;
                 }
-                ChunkKind::Strided {
-                    data,
-                    start,
-                    times,
-                    step,
-                } => {
-                    for i in successors(Some(start), |&i| i.checked_add_signed(step)).take(times) {
-                        acc = f(acc, unsafe { data.get_unchecked(i) });
-                    }
+                break;
+            }
+            adj_stride[step_dim] as isize + step
+        };
+
+        if stride == 1 {
+            for _ in 0..left_over {
+                for el in self.data[pos..pos + n].iter() {
+                    acc = f(acc, el);
                 }
+
+                pos = pos.wrapping_add_signed(next_chunk(&mut counter));
+            }
+        } else {
+            for _ in 0..left_over {
+                let mut pos_inner = pos;
+                for _ in 0..n {
+                    debug_assert!(pos_inner < self.data.len());
+                    // SAFETY: a well-formed layout only ever visits in-bounds
+                    // positions of its own buffer, so `pos_inner` is a valid
+                    // index. Dropping the bounds check keeps the strided read
+                    // from stalling memory-level parallelism on gather-heavy
+                    // layouts (e.g. transposed).
+                    acc = f(acc, unsafe { self.data.get_unchecked(pos_inner) });
+
+                    pos_inner = pos_inner.wrapping_add_signed(stride);
+                }
+                pos = pos.wrapping_add_signed(next_chunk(&mut counter));
             }
         }
 
@@ -282,7 +337,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
     }
 }
 
-// impl<'a, T> ExactSizeIterator for Iter<'a, T> {}
+impl<'a, T> ExactSizeIterator for Iter<'a, T> {}
 
 impl<'a, T> FusedIterator for Iter<'a, T> {}
 
@@ -325,17 +380,52 @@ fn copy_kernel(a: &[f32], layout: &Layout, out: &mut [f32]) {
             }
         }
     } else {
-        panic!("no baseline copy kernel for layout {layout:?}");
+        panic!("no best copy kernel for layout {layout:?}");
     }
 }
 
-fn iteration(c: &mut Criterion) {
-    let plot_config = PlotConfiguration::default().summary_scale(AxisScale::Logarithmic);
+/// Hand-rolled vectorizable `* 2.0` kernel. Unlike [`copy_kernel`] it can't fall
+/// back to `copy_from_slice`, so it's the fair best for a non-copy op: every
+/// path multiplies element-by-element, the same work `fold` has to do.
+fn mul_kernel(a: &[f32], layout: &Layout, out: &mut [f32]) {
+    let a = &a[layout.offset()..];
 
-    let mut group = c.benchmark_group("iteration");
-    group.plot_config(plot_config);
+    if layout.is_contiguous() {
+        for (o, x) in out.iter_mut().zip(a.iter()) {
+            *o = *x * 2.0;
+        }
+    } else if layout.shape().len() == 1 && layout.stride()[0] > 1 {
+        let step = layout.stride()[0] as usize;
+        for (o, x) in out.iter_mut().zip(a.iter().step_by(step)) {
+            *o = *x * 2.0;
+        }
+    } else if layout.shape().len() == 2 && layout.stride()[1] == 1 {
+        let cols = layout.shape()[1];
+        let pitch = layout.stride()[0] as usize;
+        for (r, row_out) in out.chunks_exact_mut(cols).enumerate() {
+            for (o, x) in row_out
+                .iter_mut()
+                .zip(a[r * pitch..r * pitch + cols].iter())
+            {
+                *o = *x * 2.0;
+            }
+        }
+    } else if layout.shape().len() == 2 && layout.stride()[0] == 1 {
+        let (rows, cols) = (layout.shape()[0], layout.shape()[1]);
+        let inner = layout.stride()[1] as usize;
+        for i in 0..rows {
+            for j in 0..cols {
+                out[i * cols + j] = a[j * inner + i] * 2.0;
+            }
+        }
+    } else {
+        panic!("no best mul kernel for layout {layout:?}");
+    }
+}
 
-    let cfg = FillConfig::new(1)
+/// The layout/size sweep shared by every bench in this file.
+fn standard_config() -> FillConfig {
+    FillConfig::new(1)
         .variants(&[
             Variant::Contig,
             Variant::Step,
@@ -349,7 +439,16 @@ fn iteration(c: &mut Criterion) {
             SizeSpec::L2,
             SizeSpec::L3,
             SizeSpec::Dram,
-        ]);
+        ])
+}
+
+fn iteration(c: &mut Criterion) {
+    let plot_config = PlotConfiguration::default().summary_scale(AxisScale::Logarithmic);
+
+    let mut group = c.benchmark_group("iteration");
+    group.plot_config(plot_config);
+
+    let cfg = standard_config();
 
     for case in common::fill_cases(&cfg, scalar_add::<CpuPure>) {
         group.throughput(case.throughput);
@@ -373,12 +472,23 @@ fn iteration(c: &mut Criterion) {
         );
         assert_eq!(from_elem2, expected, "Iter order wrong at {}", case.label);
 
+        let from_fold: Vec<f32> = {
+            let mut v = Vec::with_capacity(n);
+            Iter::new(data, layout).for_each(|x| v.push(*x));
+            v
+        };
+        assert_eq!(
+            from_fold, expected,
+            "Iter::fold order wrong at {}",
+            case.label
+        );
+
         let from_old: Vec<f32> = input.iter().copied().collect();
         assert_eq!(from_old, expected, "Iter order wrong at {}", case.label);
 
         let mut out = vec![0.0f32; n];
 
-        group.bench_function(BenchmarkId::new("base", &case.label), |bencher| {
+        group.bench_function(BenchmarkId::new("best", &case.label), |bencher| {
             bencher.iter(|| {
                 copy_kernel(black_box(data), layout, &mut out);
                 black_box(&out);
@@ -404,10 +514,11 @@ fn iteration(c: &mut Criterion) {
                             times,
                             step,
                         } => {
-                            for i in
-                                successors(Some(start), |&i| i.checked_add_signed(step)).take(times)
-                            {
-                                out[current] = data[i];
+                            let mut pos = start;
+                            for _ in 0..times {
+                                out[current] = data[pos];
+                                pos = pos.wrapping_add_signed(step);
+
                                 current += 1;
                             }
                         }
@@ -429,6 +540,19 @@ fn iteration(c: &mut Criterion) {
             });
         });
 
+        group.bench_function(BenchmarkId::new("fold", &case.label), |bencher| {
+            bencher.iter(|| {
+                let it = black_box(Iter::new(data, layout));
+
+                let mut i = 0usize;
+                it.for_each(|x| {
+                    out[i] = *x;
+                    i += 1;
+                });
+                black_box(&out);
+            });
+        });
+
         group.bench_function(BenchmarkId::new("old", &case.label), |bencher| {
             bencher.iter(|| {
                 for (o, x) in out.iter_mut().zip(black_box(input).iter()) {
@@ -442,5 +566,109 @@ fn iteration(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, iteration);
+/// Same sweep as [`iteration`], but the op is `* 2.0` instead of a copy. Multiply
+/// has no `copy_from_slice` shortcut, so `best` must go element-wise too - this
+/// isolates `fold`'s per-element cost against a fair element-wise best,
+/// without a `memcpy` handing `best` a free win.
+fn multiplication(c: &mut Criterion) {
+    let plot_config = PlotConfiguration::default().summary_scale(AxisScale::Logarithmic);
+
+    let mut group = c.benchmark_group("multiplication");
+    group.plot_config(plot_config);
+
+    let cfg = standard_config();
+
+    for case in common::fill_cases(&cfg, scalar_add::<CpuPure>) {
+        group.throughput(case.throughput);
+
+        let input = &case.inputs[0];
+        let data = input.data();
+        let layout = input.layout();
+        let n = case.skeleton.len();
+
+        // Multiply by a power of two is exact for f32, so this compares
+        // byte-for-byte against the hand-rolled kernel.
+        let mut expected = vec![0.0f32; n];
+        mul_kernel(data, layout, &mut expected);
+        let from_fold: Vec<f32> = {
+            let mut v = vec![0.0f32; n];
+            Iter::new(data, layout)
+                .enumerate()
+                .for_each(|(i, x)| v[i] = *x * 2.0);
+            v
+        };
+        assert_eq!(from_fold, expected, "fold *2.0 wrong at {}", case.label);
+
+        let mut out = vec![0.0f32; n];
+
+        group.bench_function(BenchmarkId::new("best", &case.label), |bencher| {
+            bencher.iter(|| {
+                mul_kernel(black_box(data), black_box(layout), &mut out);
+                black_box(&out);
+            });
+        });
+
+        group.bench_function(BenchmarkId::new("elem", &case.label), |bencher| {
+            bencher.iter(|| {
+                let it = black_box(ChunkIter::new(data, layout));
+
+                let mut current: usize = 0;
+
+                for chunk in it {
+                    match chunk {
+                        ChunkKind::Contiguous { data, start, times } => {
+                            data[start..start + times]
+                                .iter()
+                                .enumerate()
+                                .for_each(|(i, x)| out[current + i] = *x * 2.0);
+                            current += times;
+                        }
+                        ChunkKind::Strided {
+                            data,
+                            start,
+                            times,
+                            step,
+                        } => {
+                            let mut pos = start;
+                            for _ in 0..times {
+                                out[current] = data[pos] * 2.0;
+                                pos = pos.wrapping_add_signed(step);
+
+                                current += 1;
+                            }
+                        }
+                    }
+                }
+
+                black_box(&out);
+            });
+        });
+
+        group.bench_function(BenchmarkId::new("iter", &case.label), |bencher| {
+            bencher.iter(|| {
+                let it = black_box(Iter::new(data, layout));
+
+                for (o, x) in out.iter_mut().zip(it) {
+                    *o = *x * 2.0;
+                }
+                black_box(&out);
+            });
+        });
+
+        group.bench_function(BenchmarkId::new("fold", &case.label), |bencher| {
+            bencher.iter(|| {
+                let it = black_box(Iter::new(data, layout));
+
+                it.enumerate().for_each(|(i, x)| {
+                    out[i] = *x * 2.0;
+                });
+                black_box(&out);
+            });
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, iteration, multiplication);
 criterion_main!(benches);

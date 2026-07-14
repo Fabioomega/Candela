@@ -2,7 +2,7 @@
 use crate::OpError;
 use crate::tensor::backend::{Backend, ComputeFor, DefaultBackend};
 use crate::tensor::graph::{NodeKind, TensorGraphEdge};
-use crate::tensor::iter::{ElementIter, InformedIter, Iter, StepInfo};
+use crate::tensor::iter::{InformedIter, Iter, StepInfo};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::promise::TensorPromise;
 use crate::tensor::shape::IntoShape;

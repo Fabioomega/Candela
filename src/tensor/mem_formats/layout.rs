@@ -675,13 +675,13 @@ impl Layout {
     /// This is akin to (offset + (shape - 1) * stride).
     #[inline]
     pub fn last(&self) -> usize {
-        let mut acc: i64 = 0;
+        let mut acc: usize = 0;
 
         for (d, s) in zip(&self.shape, &self.stride) {
-            acc += (*d - 1) as i64 * *s as i64;
+            acc = acc.wrapping_add_signed((*d - 1) as isize * *s as isize);
         }
 
-        self.offset + (acc as usize)
+        self.offset + acc
     }
 }
 
