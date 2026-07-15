@@ -1,7 +1,8 @@
 mod common;
 
-use candela::{Dimension, FloatLikeTensorElement, Tensor, srange};
-use common::{assert_approx_eq, tensor_of};
+use candela::skeleton::SkeletonSlot;
+use candela::{Dimension, FloatLikeTensorElement, Layout, Tensor, srange};
+use common::{assert_approx_eq, assert_approx_eq_by, cast, tensor_of};
 use rstest::rstest;
 
 // ── basic shape correctness ───────────────────────────────────────────────────
@@ -216,6 +217,134 @@ fn matmul_batched_plus_bias<T: FloatLikeTensorElement>(#[case] _t: T) {
     assert_approx_eq(c.data(), &vec![5.0; 2 * 3 * 5]);
 }
 
+// ── broadcast (stride-0) matrix axes ─────────────────────────────────────────
+
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn matmul_broadcast_lhs_rows<T: FloatLikeTensorElement>(#[case] _t: T) {
+    // A is [1,3] widened to [2,3] with stride [0,1]: both rows read [1,2,3].
+    // [1,2,3] @ [[1,2],[3,4],[5,6]] = [1+6+15, 2+8+18] = [22,28], twice.
+    let a = Tensor::from_vec_with_layout(
+        cast::<T>(&[1.0, 2.0, 3.0]),
+        Layout::new((1, 3)).broadcast((2, 3)).unwrap(),
+    );
+    let b = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+    let c = a.matmul(&b).unwrap().materialize();
+    assert_eq!(c.shape(), &[2, 2]);
+    assert_approx_eq(c.data(), &[22.0, 28.0, 22.0, 28.0]);
+}
+
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn matmul_broadcast_lhs_cols<T: FloatLikeTensorElement>(#[case] _t: T) {
+    // A is [2,1] widened to [2,3] with stride [1,0]: A = [[1,1,1],[2,2,2]].
+    // Row 0 = column sums of B = [9,12]; row 1 is twice that = [18,24].
+    let a = Tensor::from_vec_with_layout(
+        cast::<T>(&[1.0, 2.0]),
+        Layout::new((2, 1)).broadcast((2, 3)).unwrap(),
+    );
+    let b = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+    let c = a.matmul(&b).unwrap().materialize();
+    assert_approx_eq(c.data(), &[9.0, 12.0, 18.0, 24.0]);
+}
+
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn matmul_broadcast_rhs_rows<T: FloatLikeTensorElement>(#[case] _t: T) {
+    // B is [1,2] widened to [3,2] with stride [0,1]: every row of B reads [1,2].
+    // Each output row is [sum(A_row), 2*sum(A_row)] = [6,12] and [15,30].
+    let a = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+    let b = Tensor::from_vec_with_layout(
+        cast::<T>(&[1.0, 2.0]),
+        Layout::new((1, 2)).broadcast((3, 2)).unwrap(),
+    );
+    let c = a.matmul(&b).unwrap().materialize();
+    assert_approx_eq(c.data(), &[6.0, 12.0, 15.0, 30.0]);
+}
+
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn matmul_broadcast_rhs_cols<T: FloatLikeTensorElement>(#[case] _t: T) {
+    // B is [3,1] widened to [3,2] with stride [1,0]: B = [[1,1],[2,2],[3,3]],
+    // so both output columns are equal. Row 0 = 1+4+9 = 14; row 1 = 4+10+18 = 32.
+    let a = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+    let b = Tensor::from_vec_with_layout(
+        cast::<T>(&[1.0, 2.0, 3.0]),
+        Layout::new((3, 1)).broadcast((3, 2)).unwrap(),
+    );
+    let c = a.matmul(&b).unwrap().materialize();
+    assert_approx_eq(c.data(), &[14.0, 14.0, 32.0, 32.0]);
+}
+
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn matmul_broadcast_lhs_both_axes<T: FloatLikeTensorElement>(#[case] _t: T) {
+    // A is [1,1] widened to [2,3] with stride [0,0]: every element reads 2.0.
+    // Each output row = 2 * column sums of B = [18,24].
+    let a = Tensor::from_vec_with_layout(
+        cast::<T>(&[2.0]),
+        Layout::new((1, 1)).broadcast((2, 3)).unwrap(),
+    );
+    let b = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+    let c = a.matmul(&b).unwrap().materialize();
+    assert_approx_eq(c.data(), &[18.0, 24.0, 18.0, 24.0]);
+}
+
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn matmul_noncontiguous_lhs_matches_materialized<T: FloatLikeTensorElement>(#[case] _t: T) {
+    // Each layout below addresses the same values as its materialized twin, so
+    // handing the kernel the strided view and handing it a dense copy must agree
+    // element for element. `as_contiguous` forces the copy that a backend
+    // accepting arbitrary strides would otherwise skip, which makes this a
+    // differential check on the strided path rather than on any one expected
+    // value. The buffer is deliberately larger than the narrow layouts require.
+    let b = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+
+    let layouts = [
+        Layout::new((2, 3)),                            // dense
+        Layout::new((3, 2)).transpose(),                // transposed view
+        Layout::new((1, 3)).broadcast((2, 3)).unwrap(), // rows repeated
+        Layout::new((2, 1)).broadcast((2, 3)).unwrap(), // cols repeated
+        Layout::new((1, 1)).broadcast((2, 3)).unwrap(), // single value
+    ];
+
+    for layout in layouts {
+        let a = Tensor::from_vec_with_layout(
+            cast::<T>(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            layout.clone(),
+        );
+        let strided = a.matmul(&b).unwrap().materialize();
+        let copied = a.as_contiguous().matmul(&b).unwrap().materialize();
+        assert_eq!(
+            strided.shape(),
+            copied.shape(),
+            "shape disagrees for {layout:?}"
+        );
+        assert_approx_eq_by(strided.data(), copied.data(), 1e-6);
+    }
+}
+
+#[test]
+fn matmul_broadcast_allocations() {
+    // A backend taking arbitrary strides reaches the kernel with the stride-0 view
+    // intact. An inserted `AsContiguous` would compute identical values, so it is
+    // invisible to every other test in this group; it surfaces here as the extra
+    // buffer it would have to allocate for the widened [2,3] operand.
+    let a: SkeletonSlot<f64> = SkeletonSlot::new(Layout::new((1, 3)).broadcast((2, 3)).unwrap());
+    let b: SkeletonSlot<f64> = SkeletonSlot::new(Layout::new((3, 2)));
+    let skeleton = a.matmul(&b).unwrap().into_skeleton(&[a, b]).unwrap();
+
+    // The [2,2] f64 output, and nothing else.
+    assert_eq!(skeleton.memory_report().allocated_buffers_size, vec![32]);
+}
+
 // ── batch-dimension broadcasting ────────────────────────
 
 #[rstest]
@@ -242,6 +371,33 @@ fn matmul_broadcast_batch_rhs_one<T: FloatLikeTensorElement>(#[case] _t: T) {
     let c = a.matmul(&b).unwrap().materialize();
     assert_eq!(c.shape(), &[2, 3, 5]);
     assert_approx_eq(c.data(), &vec![4.0; 2 * 3 * 5]);
+}
+
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn matmul_broadcast_batch_axis<T: FloatLikeTensorElement>(#[case] _t: T) {
+    // A is [1,2,3] widened to [2,2,3] with stride [0,3,1]: one matrix re-read per
+    // batch, against a distinct B per batch.
+    // A     = [[1,2,3],[4,5,6]]
+    // B[0]  = [[1,2],[3,4],[5,6]]   -> [[22,28],[49,64]]
+    // B[1]  = [[7,8],[9,10],[11,12]] -> [[58,64],[139,154]]
+    let a = Tensor::from_vec_with_layout(
+        cast::<T>(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+        Layout::new((1, 2, 3)).broadcast((2, 2, 3)).unwrap(),
+    );
+    let b = tensor_of::<T>(
+        &[
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+        ],
+        &[2, 3, 2],
+    );
+    let c = a.matmul(&b).unwrap().materialize();
+    assert_eq!(c.shape(), &[2, 2, 2]);
+    assert_approx_eq(
+        c.data(),
+        &[22.0, 28.0, 49.0, 64.0, 58.0, 64.0, 139.0, 154.0],
+    );
 }
 
 // ── NumPy-style 1-D promotion ────────────────────────────────────────────────

@@ -120,16 +120,14 @@ where
     B: Backend,
     D: Operand<T, B>,
 {
-    let layout = source.layout();
     if B::SUPPORTS_NON_CONTIGUOUS_MATMUL {
-        let last_axis = layout.stride().len() - 1;
-        return layout.stride()[last_axis] != 0 && layout.stride()[last_axis - 1] != 0;
+        return true;
     }
 
     // We don't need to check if it's contiguous because it will become a zero-copy or removed if not necessary
     // by either the planner or the fusion system.
     // layout.is_contiguous() ||
-    B::SUPPORTS_2D_TRANSPOSED_MATMUL && layout.is_last_axes_transposed()
+    B::SUPPORTS_2D_TRANSPOSED_MATMUL && source.layout().is_last_axes_transposed()
 }
 
 type NodeTransform<Output, Backend> = Result<

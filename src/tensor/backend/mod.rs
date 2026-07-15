@@ -48,20 +48,35 @@ pub trait ComputeFor<B: Backend>: Dtype {
 /// materializing batch broadcasts.
 pub trait Backend: Sized + Debug {
     /// `true` if `OpKind::MatMul`
-    /// accepts a 2D input whose strides describe a transposed view
+    /// accepts a rank-2 input whose strides describe a transposed view
     /// (`row_stride == 1`, `col_stride > 1`) - i.e. the underlying GEMM is
-    /// invoked with a trans-flag and no copy is required. The fast path is
-    /// deliberately scoped to rank 2; higher-rank tensors are always
-    /// contiguified by the op layer before reaching the kernel.
+    /// invoked with a trans-flag and no copy is required. This path exists
+    /// because some BLAS accept a 2D-transposed operand as a special case,
+    /// which is significantly faster than cloning the tensor into a contiguous
+    /// buffer.
     ///
-    /// When `false`, the op layer inserts an `AsContiguous` on any matmul
-    /// input that is not already contiguous.
+    /// Only consulted when
+    /// [`SUPPORTS_NON_CONTIGUOUS_MATMUL`](Self::SUPPORTS_NON_CONTIGUOUS_MATMUL)
+    /// is `false`. Every other non-contiguous input - padded, broadcast, or
+    /// transposed above rank 2 - is contiguified by the op layer before
+    /// reaching the kernel.
+    ///
+    /// # Note
+    ///
+    /// A backend accepting arbitrary strides accepts transposed ones as a
+    /// special case, which is what the default value says. Setting this to
+    /// `false` alongside a `true`
+    /// [`SUPPORTS_NON_CONTIGUOUS_MATMUL`](Self::SUPPORTS_NON_CONTIGUOUS_MATMUL)
+    /// has no effect.
     const SUPPORTS_2D_TRANSPOSED_MATMUL: bool = Self::SUPPORTS_NON_CONTIGUOUS_MATMUL;
     /// `true` if `OpKind::MatMul`
-    /// accepts any memory configuration as long the last 2 axis are contiguous.
+    /// accepts inputs with arbitrary strides - any rank, any view, broadcast
+    /// (stride-0) axes included - so the op layer never inserts an
+    /// `AsContiguous` ahead of a matmul.
     ///
-    /// When `false`, the op layer inserts an `AsContiguous` on any matmul
-    /// input that is not already contiguous.
+    /// When `false`, the op layer falls back to
+    /// [`SUPPORTS_2D_TRANSPOSED_MATMUL`](Self::SUPPORTS_2D_TRANSPOSED_MATMUL)
+    /// and inserts an `AsContiguous` on any input that fast path misses.
     const SUPPORTS_NON_CONTIGUOUS_MATMUL: bool;
 
     /// Run `op` over `inputs` into a fresh allocation. `output_buffer` is the
