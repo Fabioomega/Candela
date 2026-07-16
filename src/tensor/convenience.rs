@@ -98,7 +98,7 @@ pub mod arange {
     #[doc(hidden)]
     pub fn _arange_default<T: FromIndex + ComputeFor<DefaultBackend>>(size: usize) -> Tensor<T> {
         let v: Vec<T> = (0..size).map(T::from_index).collect();
-        Tensor::from_vec(v, &[size])
+        Tensor::from_vec(v, size)
     }
 
     #[doc(hidden)]
@@ -108,7 +108,7 @@ pub mod arange {
     ) -> Tensor<T> {
         let v: Vec<T> = (start..end).map(T::from_index).collect();
         let size = v.len();
-        Tensor::from_vec(v, &[size])
+        Tensor::from_vec(v, size)
     }
 
     #[doc(hidden)]
@@ -119,7 +119,7 @@ pub mod arange {
     ) -> Tensor<T> {
         let v: Vec<T> = (start..end).step_by(step).map(T::from_index).collect();
         let size = v.len();
-        Tensor::from_vec(v, &[size])
+        Tensor::from_vec(v, size)
     }
 
     /// Build a tensor of evenly spaced values and reshape it in one step.

@@ -709,7 +709,7 @@ impl std::fmt::Display for Layout {
         write!(
             f,
             "Layout {{ shape: {:?}, stride: {:?}, offset: {} }}",
-            &self.shape, &self.stride, self.offset
+            self.shape, self.stride, self.offset
         )
     }
 }

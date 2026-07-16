@@ -1,6 +1,21 @@
 #![allow(dead_code)]
 use candela::{Dimension, FloatLikeTensorElement, Tensor};
 
+/// Install a fmt subscriber routed to the test writer, so tracing events from a
+/// `--features tracing` build appear under `cargo test -- --nocapture`. Idempotent:
+/// safe to call from every test; the first call wins and later ones are no-ops.
+/// The default filter is `candela=debug` (plan dump + root layout); override with
+/// `RUST_LOG` for per-step detail.
+pub fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("candela=debug")),
+        )
+        .with_test_writer()
+        .try_init();
+}
+
 pub fn assert_approx_eq<T: FloatLikeTensorElement>(data: &[T], expected: &[f64]) {
     assert_eq!(data.len(), expected.len());
     for (a, b) in data.iter().zip(expected.iter()) {

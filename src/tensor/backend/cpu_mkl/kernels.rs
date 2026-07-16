@@ -6,7 +6,7 @@ use crate::tensor::backend::common::clone_to_buffer;
 use crate::tensor::definitions::{ChunkedIter, NumberLike};
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKindScalar;
-use crate::tensor::storage::{Storage, TensorData};
+use crate::tensor::storage::TensorData;
 use crate::tensor::traits::{StreamingIterator, StreamingZip};
 use cblas_sys::CBLAS_LAYOUT::{self, CblasRowMajor};
 use cblas_sys::CBLAS_TRANSPOSE::{self, CblasNoTrans, CblasTrans};
@@ -222,13 +222,13 @@ pub(crate) fn compute_scalar_inplace<T: NumberLike, F: Fn(T, T) -> T>(
 #[inline]
 pub(crate) fn compute_scalar<T: NumberLike, F: Fn(T, T) -> T>(
     ops: &[OpKindScalar<T>],
-    mut output_buffer: Vec<T>,
+    output_buffer: &mut [T],
     output_layout: &Layout,
     inputs: &[TensorData<T>],
     blas: CommonBLASOps<T>,
     zero: T,
     max: F,
-) -> TensorData<T> {
+) {
     if inputs[0].is_contiguous() {
         compute_blas_scalar_op(
             ops,
@@ -243,18 +243,13 @@ pub(crate) fn compute_scalar<T: NumberLike, F: Fn(T, T) -> T>(
     } else {
         compute_non_cont_scalar_op(ops, &inputs[0], output_buffer.as_mut_ptr(), blas, zero, max);
     }
-
-    TensorData::new(
-        crate::tensor::storage::Storage::from_vec(output_buffer),
-        output_layout.clone(),
-    )
 }
 
 pub(crate) fn compute_elementwise_tensor_tensor<T: Copy + Default>(
     inputs: &[TensorData<T>],
-    mut output_buffer: Vec<T>,
+    output_buffer: &mut [T],
     operation: unsafe extern "C" fn(i32, *const T, *const T, *mut T),
-) -> TensorData<T> {
+) {
     match (inputs[0].is_contiguous(), inputs[1].is_contiguous()) {
         (true, true) => {
             let lhs_buffer = inputs[0].as_ptr();
@@ -350,8 +345,6 @@ pub(crate) fn compute_elementwise_tensor_tensor<T: Copy + Default>(
             }
         }
     };
-
-    TensorData::from_vec(output_buffer, inputs[0].shape(), 0)
 }
 
 // The reused tensor must be contiguous; guaranteed by the planner (as_mut_ptr returns None otherwise).
@@ -410,8 +403,7 @@ pub(crate) fn compute_matmul_sum<T: Copy>(
     inputs: &[TensorData<T>],
     alpha: T,
     beta: T,
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
+    output_buffer: &mut [T],
     fill_output_with_c: bool,
     gemm_batch_strided: unsafe extern "C" fn(
         CBLAS_LAYOUT,
@@ -433,7 +425,7 @@ pub(crate) fn compute_matmul_sum<T: Copy>(
         i32,
         i32,
     ),
-) -> TensorData<T> {
+) {
     let a = &inputs[0];
     let b = &inputs[1];
 
@@ -481,7 +473,7 @@ pub(crate) fn compute_matmul_sum<T: Copy>(
 
     if fill_output_with_c {
         let c = &inputs[2];
-        output_buffer = clone_to_buffer(c, output_buffer);
+        clone_to_buffer(c, output_buffer);
     }
 
     unsafe {
@@ -506,6 +498,4 @@ pub(crate) fn compute_matmul_sum<T: Copy>(
             a_shape[0] as i32,
         );
     };
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
 }

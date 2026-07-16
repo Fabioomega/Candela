@@ -89,11 +89,11 @@ pub(crate) fn classify<T, B: Backend>(
 ) -> ExecKind {
     match op {
         // References
-        OpKind::Slice(_)
-        | OpKind::View(_)
+        OpKind::Slice
+        | OpKind::View
         | OpKind::Transpose
-        | OpKind::TransposeAxes(_)
-        | OpKind::Broadcast(_)
+        | OpKind::TransposeAxes
+        | OpKind::Broadcast
         | OpKind::NoOp => match &inputs[0] {
             NodeKind::Node(n) => match id_slot_map.get(&n.id) {
                 Some(slot_idx) => ExecKind::ReferenceSlot {

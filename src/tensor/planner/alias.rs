@@ -92,7 +92,7 @@ impl<'a, T, B: Backend> AliasMap<'a, T, B> {
         tag: Tag,
     ) {
         let old_owner_id = get_id(old_owner);
-        for (_, value) in self.map.iter_mut() {
+        for value in self.map.values_mut() {
             if get_id(value.0) == old_owner_id {
                 *value = (new_owner, tag);
             }

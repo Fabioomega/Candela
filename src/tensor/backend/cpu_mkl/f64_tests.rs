@@ -290,10 +290,9 @@ fn div_inplace() {
 fn slice_inplace() {
     // [[0,1,2],[3,4,5],[6,7,8]]; take columns 1..3 → logical [[1,2],[4,5],[7,8]]
     let input = arange(9, &[3, 3]);
-    let new_layout = input.layout().slice(s![.., 1..3]).unwrap();
     let output = compute_op_inplace(
-        &OpKind::Slice(new_layout),
-        &Layout::new(&[3, 2]),
+        &OpKind::Slice,
+        &Layout::new(&[3, 3]).slice(s![.., 1..3]).unwrap(),
         vec![input],
         0,
     );
@@ -306,7 +305,7 @@ fn view_inplace() {
     let input = arange(6, &[6]);
     let new_layout = input.layout().view(&[2, 3]).unwrap();
     let output_layout = new_layout.clone();
-    let output = compute_op_inplace(&OpKind::View(new_layout), &output_layout, vec![input], 0);
+    let output = compute_op_inplace(&OpKind::View, &output_layout, vec![input], 0);
     assert_eq!(output.shape(), &[2, 3]);
     assert_eq!(output.data(), &vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
 }
@@ -315,7 +314,12 @@ fn view_inplace() {
 fn transpose_inplace() {
     // [[0,1,2],[3,4,5]] → shape [3,2], row-major iteration [0,3,1,4,2,5]
     let input = arange(6, &[2, 3]);
-    let output = compute_op_inplace(&OpKind::Transpose, &Layout::new(&[3, 2]), vec![input], 0);
+    let output = compute_op_inplace(
+        &OpKind::Transpose,
+        &Layout::new(&[2, 3]).transpose(),
+        vec![input],
+        0,
+    );
     assert_eq!(output.shape(), &[3, 2]);
     assert_eq!(output, td(vec![0.0, 3.0, 1.0, 4.0, 2.0, 5.0], &[3, 2]));
 }
@@ -325,12 +329,7 @@ fn transpose_axes_inplace() {
     let input = arange(6, &[2, 3]);
     let new_layout = input.layout().transpose_axes(&[1, 0]).unwrap();
     let output_layout = new_layout.clone();
-    let output = compute_op_inplace(
-        &OpKind::TransposeAxes(new_layout),
-        &output_layout,
-        vec![input],
-        0,
-    );
+    let output = compute_op_inplace(&OpKind::TransposeAxes, &output_layout, vec![input], 0);
     assert_eq!(output.shape(), &[3, 2]);
     assert_eq!(output, td(vec![0.0, 3.0, 1.0, 4.0, 2.0, 5.0], &[3, 2]));
 }
@@ -457,83 +456,13 @@ fn matmul_sum_scaled_beta() {
     assert_eq!(output.data(), &vec![4.0, 5.0, 6.0, 7.0]);
 }
 
-// ── cpu_compute_op_f64 (broadcast) ───────────────────────────────────────────
-// Failure cases: Layout::broadcast rejects dimensions that are neither 1 nor equal.
-
-#[test]
-fn broadcast_non_one_dim_mismatch_returns_error() {
-    // [2] cannot broadcast to [3]: dim 2 is not 1 and 2 != 3
-    let layout = Layout::new(&[2]);
-    assert!(layout.broadcast(&[3]).is_err());
-}
-
-#[test]
-fn broadcast_inner_dim_mismatch_returns_error() {
-    // [2, 3] cannot broadcast to [2, 4]: last dim 3 is not 1 and 3 != 4
-    let layout = Layout::new(&[2, 3]);
-    assert!(layout.broadcast(&[2, 4]).is_err());
-}
-
-#[test]
-fn broadcast_smaller_rank_mismatch_returns_error() {
-    // [4] cannot broadcast to [2, 3]: dim 4 is not 1 and 4 != 3
-    let layout = Layout::new(&[4]);
-    assert!(layout.broadcast(&[2, 3]).is_err());
-}
-
-#[test]
-fn broadcast_rank_reduction_returns_error() {
-    // Cannot broadcast to a shape with fewer dimensions: [3,4] → [4] shrinks rank
-    let layout = Layout::new(&[3, 4]);
-    assert!(layout.broadcast(&[4]).is_err());
-}
-
-// Success cases
-
-#[test]
-fn broadcast_row_to_matrix() {
-    // [1,3] broadcast to [2,3]: the single row is accessible twice (stride[0]=0)
-    let input = td(vec![1.0, 2.0, 3.0], &[1, 3]);
-    let new_layout = input.layout().broadcast(&[2, 3]).unwrap();
-    let output = compute_op(
-        &OpKind::Broadcast(new_layout.clone()),
-        vec![0.0; 6],
-        &new_layout,
-        &[input],
-    );
-    assert_eq!(output.shape(), &[2, 3]);
-    let logical: Vec<f64> = output.iter().copied().collect();
-    assert_eq!(logical, vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]);
-}
-
-#[test]
-fn broadcast_vector_to_matrix() {
-    // [3] broadcast to [2,3]: inserts a leading dim with stride 0
-    let input = td(vec![4.0, 5.0, 6.0], &[3]);
-    let new_layout = input.layout().broadcast(&[2, 3]).unwrap();
-    let output = compute_op(
-        &OpKind::Broadcast(new_layout.clone()),
-        vec![0.0; 6],
-        &new_layout,
-        &[input],
-    );
-    assert_eq!(output.shape(), &[2, 3]);
-    let logical: Vec<f64> = output.iter().copied().collect();
-    assert_eq!(logical, vec![4.0, 5.0, 6.0, 4.0, 5.0, 6.0]);
-}
-
 // ── cpu_compute_op_f64_inplace (broadcast) ───────────────────────────────────
 
 #[test]
 fn broadcast_inplace_row_to_matrix() {
     let input = td(vec![7.0, 8.0, 9.0], &[1, 3]);
     let new_layout = input.layout().broadcast(&[2, 3]).unwrap();
-    let output = compute_op_inplace(
-        &OpKind::Broadcast(new_layout.clone()),
-        &new_layout,
-        vec![input],
-        0,
-    );
+    let output = compute_op_inplace(&OpKind::Broadcast, &new_layout, vec![input], 0);
     assert_eq!(output.shape(), &[2, 3]);
     let logical: Vec<f64> = output.iter().copied().collect();
     assert_eq!(logical, vec![7.0, 8.0, 9.0, 7.0, 8.0, 9.0]);

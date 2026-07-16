@@ -1,7 +1,7 @@
 use crate::tensor::definitions::NumberLike;
-use crate::tensor::storage::{Storage, TensorData};
+use crate::tensor::storage::TensorData;
 use crate::tensor::traits::Numeric;
-use crate::{Dimension, Layout, branch_fast_iter};
+use crate::{Dimension, branch_fast_iter};
 
 #[inline]
 fn compute_op_tensor<T: NumberLike, F: Fn(T, T) -> T>(
@@ -20,39 +20,27 @@ fn compute_op_tensor<T: NumberLike, F: Fn(T, T) -> T>(
 }
 
 #[inline]
-pub(crate) fn compute_sum_tensor<T: Numeric>(
-    inputs: &[TensorData<T>],
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
-) -> TensorData<T> {
-    compute_op_tensor(inputs, &mut output_buffer, T::SUM_NEUTRAL, |a, b| a + b);
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
+pub(crate) fn compute_sum_tensor<T: Numeric>(inputs: &[TensorData<T>], output_buffer: &mut [T]) {
+    compute_op_tensor(inputs, output_buffer, T::SUM_NEUTRAL, |a, b| a + b);
 }
 
 #[inline]
 pub(crate) fn compute_max_tensor<T: Numeric, F: Fn(T, T) -> T>(
     inputs: &[TensorData<T>],
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
+    output_buffer: &mut [T],
     max: F,
-) -> TensorData<T> {
-    compute_op_tensor(inputs, &mut output_buffer, T::MIN, max);
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
+) {
+    compute_op_tensor(inputs, output_buffer, T::MIN, max);
 }
 
 #[inline]
 pub(crate) fn compute_mean_tensor<T: Numeric, F: FnOnce(T, usize) -> T>(
     inputs: &[TensorData<T>],
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
+    output_buffer: &mut [T],
     div: F,
-) -> TensorData<T> {
-    compute_op_tensor(inputs, &mut output_buffer, T::SUM_NEUTRAL, |a, b| a + b);
+) {
+    compute_op_tensor(inputs, output_buffer, T::SUM_NEUTRAL, |a, b| a + b);
     output_buffer[0] = div(output_buffer[0], inputs[0].layout().len());
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
 }
 
 // TODO: Confirm that the contiguous path can vectorize
@@ -96,45 +84,32 @@ fn compute_op_axis_tensor<T: NumberLike, F: Fn(T, T) -> T>(
 pub(crate) fn compute_sum_axis_tensor<T: Numeric>(
     inputs: &[TensorData<T>],
     axis: usize,
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
-) -> TensorData<T> {
-    compute_op_axis_tensor(inputs, axis, &mut output_buffer, T::SUM_NEUTRAL, |a, b| {
-        a + b
-    });
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
+    output_buffer: &mut [T],
+) {
+    compute_op_axis_tensor(inputs, axis, output_buffer, T::SUM_NEUTRAL, |a, b| a + b);
 }
 
 #[inline]
 pub(crate) fn compute_max_axis_tensor<T: Numeric, F: Fn(T, T) -> T>(
     inputs: &[TensorData<T>],
     axis: usize,
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
+    output_buffer: &mut [T],
     max: F,
-) -> TensorData<T> {
-    compute_op_axis_tensor(inputs, axis, &mut output_buffer, T::MIN, max);
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
+) {
+    compute_op_axis_tensor(inputs, axis, output_buffer, T::MIN, max);
 }
 
 #[inline]
 pub(crate) fn compute_mean_axis_tensor<T: Numeric, F: Fn(T, usize) -> T>(
     inputs: &[TensorData<T>],
     axis: usize,
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
+    output_buffer: &mut [T],
     div: F,
-) -> TensorData<T> {
-    compute_op_axis_tensor(inputs, axis, &mut output_buffer, T::SUM_NEUTRAL, |a, b| {
-        a + b
-    });
+) {
+    compute_op_axis_tensor(inputs, axis, output_buffer, T::SUM_NEUTRAL, |a, b| a + b);
 
     let n = inputs[0].shape()[axis];
     for el in output_buffer.iter_mut() {
         *el = div(*el, n);
     }
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
 }

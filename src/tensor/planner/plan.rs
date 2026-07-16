@@ -608,6 +608,14 @@ pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
         ..
     } = state;
 
+    #[cfg(feature = "tracing")]
+    {
+        let span = tracing::Span::current();
+        span.record("ops_count", ops_len);
+        span.record("slots_count", slots.len());
+        span.record("ref_deallocs_count", ref_deallocs.len());
+    }
+
     for (node_id, dealloc_at) in &ref_deallocs {
         let Some(end) = dealloc_at else { continue };
         match &mut plan[*end] {
@@ -629,10 +637,80 @@ pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
         }
     }
 
+    #[cfg(feature = "tracing")]
+    trace_plan(&plan, root.id);
+
     CorePlan {
         plan,
         root_id: root.id,
         external_inputs,
+    }
+}
+
+/// Emit one structured trace event per plan step: the op, the chosen
+/// [`OutputKind`], the layout the executor attaches to the output
+/// (`shape`/`stride`/`offset`), and the resolved input and dealloc ids.
+#[cfg(feature = "tracing")]
+fn trace_plan<T, B: Backend>(plan: &[ComputeKind<'_, T, B>], root_id: usize) {
+    tracing::debug!(root_id, steps = plan.len(), "plan built");
+    for (i, step) in plan.iter().enumerate() {
+        match step {
+            ComputeKind::Leaf { edge } => {
+                tracing::debug!(step = i, kind = "Leaf", id = edge.id);
+            }
+            ComputeKind::Op {
+                node,
+                output,
+                resolved_inputs,
+                dealloc_after,
+            } => {
+                tracing::debug!(
+                    step = i,
+                    kind = "Op",
+                    id = node.id,
+                    op = node.op.as_str(),
+                    output = ?output,
+                    shape = ?node.layout.shape(),
+                    stride = ?node.layout.stride(),
+                    offset = node.layout.offset(),
+                    inputs = ?resolved_inputs,
+                    dealloc = ?dealloc_after,
+                );
+            }
+            ComputeKind::CachedOp {
+                cache,
+                output,
+                resolved_inputs,
+                dealloc_after,
+            } => {
+                let node = cache.get_node();
+                tracing::debug!(
+                    step = i,
+                    kind = "CachedOp",
+                    id = node.id,
+                    op = node.op.as_str(),
+                    output = ?output,
+                    shape = ?node.layout.shape(),
+                    stride = ?node.layout.stride(),
+                    offset = node.layout.offset(),
+                    inputs = ?resolved_inputs,
+                    dealloc = ?dealloc_after,
+                );
+            }
+            ComputeKind::Baked {
+                baked,
+                resolved_inputs,
+                dealloc_after,
+            } => {
+                tracing::debug!(
+                    step = i,
+                    kind = "Baked",
+                    id = baked.id,
+                    inputs = ?resolved_inputs,
+                    dealloc = ?dealloc_after,
+                );
+            }
+        }
     }
 }
 

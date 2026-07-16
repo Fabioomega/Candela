@@ -157,7 +157,7 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
             i += m + 1;
         }
 
-        Self::from_vec_in(data, &[n, m])
+        Self::from_vec_in(data, (n, m))
     }
 }
 

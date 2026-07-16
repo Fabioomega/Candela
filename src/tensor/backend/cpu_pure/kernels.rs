@@ -3,7 +3,7 @@ use std::iter::zip;
 use crate::tensor::backend::common::clone_to_buffer;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKindScalar;
-use crate::tensor::storage::{Storage, TensorData};
+use crate::tensor::storage::TensorData;
 use crate::tensor::traits::{Numeric, StreamingIterator};
 use crate::{Dimension, PACKING_BUFFER_SIZE, branch_duo_fast_iter, branch_fast_iter};
 
@@ -37,10 +37,9 @@ pub(crate) struct CommonBLASOps<T> {
 pub fn compute_scalar<T: Numeric>(
     ops: &[OpKindScalar<T>],
     inputs: &[TensorData<T>],
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
+    output_buffer: &mut [T],
     blas: CommonBLASOps<T>,
-) -> TensorData<T> {
+) {
     let input = &inputs[0];
 
     branch_fast_iter!(input.fast_packed_iter(PACKING_BUFFER_SIZE) => it, {
@@ -77,8 +76,6 @@ pub fn compute_scalar<T: Numeric>(
         }
     }
     });
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
 }
 
 pub fn compute_scalar_inplace<T: Numeric>(
@@ -107,10 +104,9 @@ pub fn compute_scalar_inplace<T: Numeric>(
 
 pub fn compute_elementwise_tensor_tensor<T: Numeric, F: Fn(T, T) -> T>(
     inputs: &[TensorData<T>],
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
+    output_buffer: &mut [T],
     op: F,
-) -> TensorData<T> {
+) {
     let a = &inputs[0];
     let b = &inputs[1];
 
@@ -119,8 +115,6 @@ pub fn compute_elementwise_tensor_tensor<T: Numeric, F: Fn(T, T) -> T>(
             *o_el = op(*a_el, *b_el);
         }
     });
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
 }
 
 pub fn compute_elementwise_tensor_tensor_inplace<T: Numeric, F: Fn(T, T) -> T>(
@@ -139,11 +133,10 @@ pub fn compute_matmul_sum<T: Clone>(
     inputs: &[TensorData<T>],
     alpha: T,
     beta: T,
-    mut output_buffer: Vec<T>,
-    output_layout: &Layout,
+    output_buffer: &mut [T],
     fill_output_with_c: bool,
     blas: CommonBLASOps<T>,
-) -> TensorData<T> {
+) {
     let a = &inputs[0];
     let b = &inputs[1];
 
@@ -168,7 +161,7 @@ pub fn compute_matmul_sum<T: Clone>(
 
     if fill_output_with_c {
         let c = &inputs[2];
-        output_buffer = clone_to_buffer(c, output_buffer);
+        clone_to_buffer(c, output_buffer);
     }
 
     // TODO: The unwrapping here should be sound. We can remove it later.
@@ -177,7 +170,7 @@ pub fn compute_matmul_sum<T: Clone>(
         a.layout().clone().rotate_axis_innermost(a_dim - 3).unwrap()
     } else {
         a.layout()
-            .broadcast(&a_shape)
+            .broadcast(a_shape)
             .unwrap()
             .rotate_axis_innermost(0)
             .unwrap()
@@ -188,7 +181,7 @@ pub fn compute_matmul_sum<T: Clone>(
         b.layout().rotate_axis_innermost(b_dim - 3).unwrap()
     } else {
         b.layout()
-            .broadcast(&b_shape)
+            .broadcast(b_shape)
             .unwrap()
             .rotate_axis_innermost(0)
             .unwrap()
@@ -224,6 +217,4 @@ pub fn compute_matmul_sum<T: Clone>(
             )
         }
     }
-
-    TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
 }

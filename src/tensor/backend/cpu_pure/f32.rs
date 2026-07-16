@@ -26,81 +26,62 @@ const BLAS: CommonBLASOps<f32> = CommonBLASOps {
     feature = "tracing",
     tracing::instrument(
         level = "debug",
-        skip(inputs, output_buffer, output_layout),
+        skip(inputs, _output_buffer, output_layout),
         fields(op = op.as_str(), out_len = output_layout.len())
     )
 )]
 pub(crate) fn compute_op(
     op: &OpKind<f32>,
-    output_buffer: Vec<f32>,
+    mut _output_buffer: Vec<f32>,
     output_layout: &Layout,
     inputs: &[TensorData<f32>],
 ) -> TensorData<f32> {
-    match op {
-        OpKind::ScalarOp(s) => compute_scalar(
-            std::slice::from_ref(s),
-            inputs,
-            output_buffer,
-            output_layout,
-            BLAS,
-        ),
-        OpKind::FusedScalar(ss) => compute_scalar(ss, inputs, output_buffer, output_layout, BLAS),
-        OpKind::AsContiguous => {
-            let output_buffer = clone_to_buffer(&inputs[0], output_buffer);
+    let output_buffer = &mut _output_buffer;
 
-            TensorData::new(Storage::from_vec(output_buffer), output_layout.clone())
-        }
-        OpKind::Add => {
-            compute_elementwise_tensor_tensor(inputs, output_buffer, output_layout, |a, b| a + b)
-        }
-        OpKind::Sub => {
-            compute_elementwise_tensor_tensor(inputs, output_buffer, output_layout, |a, b| a - b)
-        }
-        OpKind::Mul => {
-            compute_elementwise_tensor_tensor(inputs, output_buffer, output_layout, |a, b| a * b)
-        }
-        OpKind::Div => {
-            compute_elementwise_tensor_tensor(inputs, output_buffer, output_layout, |a, b| a / b)
-        }
-        OpKind::MatMul(a) => {
-            compute_matmul_sum(inputs, *a, 0.0, output_buffer, output_layout, false, BLAS)
-        }
+    let layout = output_layout.clone();
+
+    match op {
+        OpKind::ScalarOp(s) => compute_scalar(std::slice::from_ref(s), inputs, output_buffer, BLAS),
+        OpKind::FusedScalar(ss) => compute_scalar(ss, inputs, output_buffer, BLAS),
+        OpKind::AsContiguous => clone_to_buffer(&inputs[0], output_buffer),
+        OpKind::Add => compute_elementwise_tensor_tensor(inputs, output_buffer, |a, b| a + b),
+        OpKind::Sub => compute_elementwise_tensor_tensor(inputs, output_buffer, |a, b| a - b),
+        OpKind::Mul => compute_elementwise_tensor_tensor(inputs, output_buffer, |a, b| a * b),
+        OpKind::Div => compute_elementwise_tensor_tensor(inputs, output_buffer, |a, b| a / b),
+        OpKind::MatMul(a) => compute_matmul_sum(inputs, *a, 0.0, output_buffer, false, BLAS),
         OpKind::MatMulSum(a, b, sign) => {
             let beta = if *sign == Sign::Minus { -*b } else { *b };
-            compute_matmul_sum(inputs, *a, beta, output_buffer, output_layout, true, BLAS)
+            compute_matmul_sum(inputs, *a, beta, output_buffer, true, BLAS)
         }
-        OpKind::Slice(new_layout)
-        | OpKind::View(new_layout)
-        | OpKind::TransposeAxes(new_layout)
-        | OpKind::Broadcast(new_layout) => inputs[0].as_layout(new_layout.clone()),
-        OpKind::Transpose => {
-            let layout = inputs[0].layout().transpose();
-            inputs[0].as_layout(layout)
+        OpKind::Slice
+        | OpKind::View
+        | OpKind::TransposeAxes
+        | OpKind::Broadcast
+        | OpKind::Transpose
+        | OpKind::NoOp => {
+            unreachable!("a reference should never appear here");
         }
-        OpKind::Sum => compute_sum_tensor(inputs, output_buffer, output_layout),
+        OpKind::Sum => compute_sum_tensor(inputs, output_buffer),
         OpKind::SumAxis(axis, _) => {
             let axis = normalize_axis(*axis, inputs[0].shape().len());
 
-            compute_sum_axis_tensor(inputs, axis, output_buffer, output_layout)
+            compute_sum_axis_tensor(inputs, axis, output_buffer)
         }
-        OpKind::Max => compute_max_tensor(inputs, output_buffer, output_layout, BLAS.max),
+        OpKind::Max => compute_max_tensor(inputs, output_buffer, BLAS.max),
         OpKind::MaxAxis(axis, _) => {
             let axis = normalize_axis(*axis, inputs[0].shape().len());
 
-            compute_max_axis_tensor(inputs, axis, output_buffer, output_layout, BLAS.max)
+            compute_max_axis_tensor(inputs, axis, output_buffer, BLAS.max)
         }
-        OpKind::Mean => {
-            compute_mean_tensor(inputs, output_buffer, output_layout, |a, b| a / b as f32)
-        }
+        OpKind::Mean => compute_mean_tensor(inputs, output_buffer, |a, b| a / b as f32),
         OpKind::MeanAxis(axis, _) => {
             let axis = normalize_axis(*axis, inputs[0].shape().len());
 
-            compute_mean_axis_tensor(inputs, axis, output_buffer, output_layout, |a, b| {
-                a / b as f32
-            })
+            compute_mean_axis_tensor(inputs, axis, output_buffer, |a, b| a / b as f32)
         }
-        OpKind::NoOp => inputs[0].clone(),
-    }
+    };
+
+    TensorData::new(Storage::from_vec(_output_buffer), layout)
 }
 
 #[cfg_attr(
@@ -158,15 +139,19 @@ pub(crate) fn compute_op_inplace(
                 compute_elementwise_tensor_tensor_inplace(b, a, |b, a| a / b)
             }
         }
-        OpKind::Slice(new_layout)
-        | OpKind::View(new_layout)
-        | OpKind::TransposeAxes(new_layout)
-        | OpKind::Broadcast(new_layout) => {
-            unsafe { inputs.pop().unwrap_unchecked() }.into_layout(new_layout.clone())
-        }
-        OpKind::Transpose => {
-            let layout = inputs[0].layout().transpose();
-            unsafe { inputs.pop().unwrap_unchecked() }.into_layout(layout)
+        OpKind::Slice
+        | OpKind::View
+        | OpKind::TransposeAxes
+        | OpKind::Broadcast
+        | OpKind::Transpose => {
+            let input = unsafe { inputs.pop().unwrap_unchecked() };
+            let offset = input.offset();
+
+            input.into_layout(
+                output_layout
+                    .clone()
+                    .with_offset(offset + output_layout.offset()),
+            )
         }
         OpKind::NoOp | OpKind::AsContiguous => unsafe { inputs.pop().unwrap_unchecked() },
         _ => todo!("not implemented {}", op.as_str()),

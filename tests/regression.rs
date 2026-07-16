@@ -1,7 +1,7 @@
 mod common;
 
-use candela::{Dimension, FloatLikeTensorElement, Tensor, arange, ones, s};
-use common::{assert_approx_eq, tensor_of};
+use candela::{Dimension, FloatLikeTensorElement, Layout, Tensor, arange, ones, s};
+use common::{assert_approx_eq, cast, tensor_of};
 use rstest::rstest;
 
 // Bug: OpKindScalar::Sub was doing addition (copy-pasted from Add arm).
@@ -187,6 +187,92 @@ fn regression_scalar_op_offset_slice_feeds_consumer<T: FloatLikeTensorElement>(#
     let shifted = sliced + T::from_f64(1.0); // [3,4]; node must be offset 0
     let result = (&shifted + &shifted).materialize(); // [6,8]
     assert_approx_eq(result.data(), &[6.0, 8.0]);
+}
+
+// Bug: Layout equality compares shape and stride only, so Skeleton::run accepts
+// an input whose offset differs from the slot's declared layout. View bakes its
+// output layout when the graph is built, keeping the declared offset 0, so a slot
+// bound to the offset-2 window [2,3,4,5] reshaped [0,1,2,3] instead.
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn regression_slot_offset_view<T: FloatLikeTensorElement>(#[case] _t: T) {
+    let slot = tensor_of::<T>(&[0.0; 4], &[4]).to_slot();
+    let sk = (slot.view([2, 2]).unwrap() + T::from_f64(0.0))
+        .into_skeleton(std::slice::from_ref(&slot))
+        .unwrap();
+
+    let input = Tensor::<T>::from_vec_with_layout(
+        cast::<T>(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]),
+        Layout::from_strided(&[4], &[1], 2),
+    );
+    let out = sk.run(&[&input]).unwrap();
+
+    assert_eq!(out.shape(), &[2, 2]);
+    assert_approx_eq(out.data(), &[2.0, 3.0, 4.0, 5.0]);
+}
+
+// Bug: the same offset leak through Slice - the sliced offset was baked from the
+// slot's declared 0, so a slot bound to [2,3,4,5] sliced [1..3] as [1,2] instead
+// of [3,4].
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn regression_slot_offset_slice<T: FloatLikeTensorElement>(#[case] _t: T) {
+    let slot = tensor_of::<T>(&[0.0; 4], &[4]).to_slot();
+    let sk = (slot.slice(s![1..3]).unwrap() + T::from_f64(0.0))
+        .into_skeleton(std::slice::from_ref(&slot))
+        .unwrap();
+
+    let input = Tensor::<T>::from_vec_with_layout(
+        cast::<T>(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]),
+        Layout::from_strided(&[4], &[1], 2),
+    );
+    let out = sk.run(&[&input]).unwrap();
+
+    assert_approx_eq(out.data(), &[3.0, 4.0]);
+}
+
+// Bug: the same offset leak through Broadcast - a slot bound to [2,3,4] broadcast
+// to [2,3] read [0,1,2] per row.
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn regression_slot_offset_broadcast<T: FloatLikeTensorElement>(#[case] _t: T) {
+    let slot = tensor_of::<T>(&[0.0; 3], &[3]).to_slot();
+    let sk = (slot.broadcast([2, 3]).unwrap() + T::from_f64(0.0))
+        .into_skeleton(std::slice::from_ref(&slot))
+        .unwrap();
+
+    let input = Tensor::<T>::from_vec_with_layout(
+        cast::<T>(&[0.0, 1.0, 2.0, 3.0, 4.0]),
+        Layout::from_strided(&[3], &[1], 2),
+    );
+    let out = sk.run(&[&input]).unwrap();
+
+    assert_approx_eq(out.data(), &[2.0, 3.0, 4.0, 2.0, 3.0, 4.0]);
+}
+
+// Bug: the same offset leak through TransposeAxes - the permuted layout kept the
+// declared offset 0, so a slot bound to [[2,3,4],[5,6,7]] permuted to
+// [[0,3],[1,4],[2,5]].
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn regression_slot_offset_transpose_axes<T: FloatLikeTensorElement>(#[case] _t: T) {
+    let slot = tensor_of::<T>(&[0.0; 6], &[2, 3]).to_slot();
+    let sk = (slot.transpose_axes([1, 0]).unwrap() + T::from_f64(0.0))
+        .into_skeleton(std::slice::from_ref(&slot))
+        .unwrap();
+
+    let input = Tensor::<T>::from_vec_with_layout(
+        cast::<T>(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]),
+        Layout::from_strided(&[2, 3], &[3, 1], 2),
+    );
+    let out = sk.run(&[&input]).unwrap();
+
+    assert_eq!(out.shape(), &[3, 2]);
+    assert_approx_eq(out.data(), &[2.0, 5.0, 3.0, 6.0, 4.0, 7.0]);
 }
 
 // ── 0-D construction is rejected ─────────────────────────────────────────────

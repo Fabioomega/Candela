@@ -1,4 +1,3 @@
-#![allow(private_bounds)]
 use std::iter::zip;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
@@ -223,14 +222,10 @@ where
     B: Backend,
     D: Operand<T, B>,
 {
-    let input = Box::new([source.to_node()]);
-    let layout = source.layout().view(shape)?;
+    let input: Box<[NodeKind<T, B>; 1]> = Box::new([source.to_node()]);
+    let layout = source.layout().view(shape)?.with_offset(0);
 
-    Ok(TensorPromise::with_layout(
-        OpKind::View(layout.clone()),
-        input,
-        layout,
-    ))
+    Ok(TensorPromise::with_layout(OpKind::View, input, layout))
 }
 
 fn broadcast_impl<T, B, D>(source: &D, shape: &[usize]) -> Result<TensorPromise<T, B>, OpError>
@@ -240,13 +235,9 @@ where
     D: Operand<T, B>,
 {
     let input = Box::new([source.to_node()]);
-    let layout = source.layout().broadcast(shape)?;
+    let layout = source.layout().broadcast(shape)?.with_offset(0);
 
-    Ok(TensorPromise::with_layout(
-        OpKind::Broadcast(layout.clone()),
-        input,
-        layout,
-    ))
+    Ok(TensorPromise::with_layout(OpKind::Broadcast, input, layout))
 }
 
 fn reshape_impl<T, B, D>(source: &D, shape: &[usize]) -> Result<TensorPromise<T, B>, OpError>
@@ -256,14 +247,10 @@ where
     D: Operand<T, B>,
 {
     let cont: TensorPromise<T, B> = as_contiguous_impl(source);
-    let layout = cont.graph.layout.view(shape)?;
+    let layout = cont.graph.layout.view(shape)?.with_offset(0);
     let input = Box::new([NodeKind::Node(cont.graph)]);
 
-    Ok(TensorPromise::with_layout(
-        OpKind::View(layout.clone()),
-        input,
-        layout,
-    ))
+    Ok(TensorPromise::with_layout(OpKind::View, input, layout))
 }
 
 fn slice_impl<T, B, D>(source: &D, range: &[SliceRange]) -> Result<TensorPromise<T, B>, OpError>
@@ -273,13 +260,9 @@ where
     D: Operand<T, B>,
 {
     let input = Box::new([source.to_node()]);
-    let layout = source.layout().slice(range)?;
+    let layout = source.layout().clone().with_offset(0).slice(range)?;
 
-    Ok(TensorPromise::with_layout(
-        OpKind::Slice(layout.clone()),
-        input,
-        layout,
-    ))
+    Ok(TensorPromise::with_layout(OpKind::Slice, input, layout))
 }
 
 fn transpose_impl<T, B, D>(source: &D) -> TensorPromise<T, B>
@@ -289,8 +272,9 @@ where
     D: Operand<T, B>,
 {
     let input = Box::new([source.to_node()]);
+    let layout = source.layout().transpose().with_offset(0);
 
-    unsafe { TensorPromise::new(OpKind::Transpose, input).unwrap_unchecked() }
+    TensorPromise::with_layout(OpKind::Transpose, input, layout)
 }
 
 fn transpose_axes_impl<T, B, D>(source: &D, axes: &[usize]) -> Result<TensorPromise<T, B>, OpError>
@@ -300,10 +284,10 @@ where
     D: Operand<T, B>,
 {
     let input = Box::new([source.to_node()]);
-    let layout = source.layout().transpose_axes(axes)?;
+    let layout = source.layout().transpose_axes(axes)?.with_offset(0);
 
     Ok(TensorPromise::with_layout(
-        OpKind::TransposeAxes(layout.clone()),
+        OpKind::TransposeAxes,
         input,
         layout,
     ))

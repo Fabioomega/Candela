@@ -43,7 +43,7 @@ fn execute_output<T: NumberLike + ComputeFor<B>, B: Backend>(
     resolved_inputs: &[usize],
     computation_cache: &mut HashMap<usize, TensorData<T>>,
 ) -> TensorData<T> {
-    match output {
+    let result = match output {
         OutputKind::Allocate(len) => {
             let output_buffer = alloc_vec(*len);
             let inputs = build_inputs(computation_cache, resolved_inputs);
@@ -80,7 +80,20 @@ fn execute_output<T: NumberLike + ComputeFor<B>, B: Backend>(
 
             B::compute_inplace(op, layout, inputs, *idx)
         }
-    }
+    };
+
+    #[cfg(feature = "tracing")]
+    tracing::trace!(
+        op = op.as_str(),
+        output = ?output,
+        inputs = ?resolved_inputs,
+        out_shape = ?result.layout().shape(),
+        out_stride = ?result.layout().stride(),
+        out_offset = result.layout().offset(),
+        "step executed",
+    );
+
+    result
 }
 
 /// A borrowing view of a single plan step, the unit the executor consumes.
@@ -326,5 +339,16 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
 
     // TODO: The plan always ends with the root computed and inserted into the cache, so
     // this is always Some. Can use unwrap_unchecked once the executor contract is verified.
-    computation_cache.remove(&root_id).unwrap()
+    let root = computation_cache.remove(&root_id).unwrap();
+
+    #[cfg(feature = "tracing")]
+    tracing::debug!(
+        root_id,
+        shape = ?root.layout().shape(),
+        stride = ?root.layout().stride(),
+        offset = root.layout().offset(),
+        "plan finished",
+    );
+
+    root
 }

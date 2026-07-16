@@ -1,5 +1,3 @@
-use crate::tensor::mem_formats::layout::Layout;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Sign {
     Plus,
@@ -26,11 +24,11 @@ pub enum OpKind<T> {
     NoOp,
     ScalarOp(OpKindScalar<T>),
     FusedScalar(Box<[OpKindScalar<T>]>),
-    View(Layout),
-    Slice(Layout),
+    View,
+    Slice,
     Transpose,
-    TransposeAxes(Layout),
-    Broadcast(Layout),
+    TransposeAxes,
+    Broadcast,
     MatMul(T),             // a*(A @ B)
     MatMulSum(T, T, Sign), // a*(A @ B) +/- b * C
     AsContiguous,
@@ -46,17 +44,17 @@ pub enum OpKind<T> {
     MaxAxis(isize, bool),
 }
 
-impl<T: Copy> OpKind<T> {
+impl<T> OpKind<T> {
     pub fn as_str(&self) -> &'static str {
         match self {
             OpKind::NoOp => "NoOp",
             OpKind::ScalarOp(_) => "ScalarOp",
             OpKind::FusedScalar(_) => "FusedScalar",
-            OpKind::View(_) => "View",
-            OpKind::Slice(_) => "Slice",
+            OpKind::View => "View",
+            OpKind::Slice => "Slice",
             OpKind::Transpose => "Transpose",
-            OpKind::TransposeAxes(_) => "TransposeAxes",
-            OpKind::Broadcast(_) => "Broadcast",
+            OpKind::TransposeAxes => "TransposeAxes",
+            OpKind::Broadcast => "Broadcast",
             OpKind::MatMul(_) => "MatMul",
             OpKind::MatMulSum(_, _, _) => "MatMulSum",
             OpKind::AsContiguous => "AsContiguous",

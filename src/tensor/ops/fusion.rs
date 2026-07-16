@@ -250,7 +250,7 @@ where
         | (OpKind::FusedScalar(_), OpKind::FusedScalar(_)) => {
             Some(fuse_scalar_ops(op1, inputs1, op2))
         }
-        (OpKind::View(_), OpKind::AsContiguous) => Some(Fusion {
+        (OpKind::View, OpKind::AsContiguous) => Some(Fusion {
             op: op1.clone(),
             inputs: inputs1.into(),
         }),

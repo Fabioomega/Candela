@@ -6,13 +6,15 @@ use crate::tensor::ops::def_op::OpKind;
 pub fn compute_layout<T: Copy>(op: &OpKind<T>, inputs: &[&Layout]) -> Result<Layout, OpError> {
     match op {
         OpKind::ScalarOp(_) | OpKind::FusedScalar(_) => Ok(Layout::new(inputs[0].shape())),
-        OpKind::NoOp => Ok(inputs[0].clone()),
-        OpKind::View(new_layout)
-        | OpKind::Slice(new_layout)
-        | OpKind::TransposeAxes(new_layout)
-        | OpKind::Broadcast(new_layout) => Ok(new_layout.clone()),
+        OpKind::NoOp => Ok(Layout::new(inputs[0].shape())),
+        OpKind::View
+        | OpKind::Slice
+        | OpKind::TransposeAxes
+        | OpKind::Broadcast
+        | OpKind::Transpose => {
+            unreachable!("use ::with_layout to create these instead of using ::new")
+        }
         OpKind::AsContiguous => Ok(Layout::new(inputs[0].shape())),
-        OpKind::Transpose => Ok(inputs[0].transpose()),
         OpKind::MatMul(_) => {
             // Assumes that the tensor is ALREADY BROADCASTED!
             let a_shape = inputs[0].shape_as_3d();
@@ -23,7 +25,7 @@ pub fn compute_layout<T: Copy>(op: &OpKind<T>, inputs: &[&Layout]) -> Result<Lay
             };
 
             if a_shape[0] == 1 && b_shape[0] == 1 {
-                return Ok(Layout::new(&[a_shape[1], b_shape[2]]));
+                return Ok(Layout::new((a_shape[1], b_shape[2])));
             }
 
             let mut new_shape = inputs[0].shape().to_vec();
@@ -42,7 +44,7 @@ pub fn compute_layout<T: Copy>(op: &OpKind<T>, inputs: &[&Layout]) -> Result<Lay
             };
 
             if a_shape[0] == 1 && b_shape[0] == 1 {
-                let output_layout = Layout::new(&[a_shape[1], b_shape[2]]);
+                let output_layout = Layout::new((a_shape[1], b_shape[2]));
                 if inputs[2].shape() != output_layout.shape() {
                     return Err(OpError::NotSameShape(
                         output_layout.shape().into(),
@@ -69,7 +71,7 @@ pub fn compute_layout<T: Copy>(op: &OpKind<T>, inputs: &[&Layout]) -> Result<Lay
         }
         OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Div => {
             if inputs[0].shape() == inputs[1].shape() {
-                Ok(inputs[0].clone())
+                Ok(Layout::new(inputs[0].shape()))
             } else {
                 Err(OpError::NotSameShape(
                     inputs[0].shape().into(),
@@ -77,7 +79,7 @@ pub fn compute_layout<T: Copy>(op: &OpKind<T>, inputs: &[&Layout]) -> Result<Lay
                 ))
             }
         }
-        OpKind::Sum | OpKind::Max | OpKind::Mean => Ok(Layout::new(&[1])),
+        OpKind::Sum | OpKind::Max | OpKind::Mean => Ok(Layout::new(1)),
         OpKind::SumAxis(axis, keepdims)
         | OpKind::MaxAxis(axis, keepdims)
         | OpKind::MeanAxis(axis, keepdims) => {
