@@ -36,12 +36,6 @@ fn find_slot(slots: &[Slot], op_start: usize, len: usize) -> Option<usize> {
     None
 }
 
-#[inline]
-fn slot_is_free(slot: &Slot, op_location: usize, required_len: usize) -> bool {
-    slot.end
-        .is_some_and(|e| e < op_location && slot.len == required_len)
-}
-
 /// Whether the op at `op_location` is the last reader of `slot`.
 /// This is the condition for overwriting an input in place: the op reads the buffer
 /// and nothing reads it afterwards.
@@ -65,8 +59,8 @@ pub(crate) enum ExecKind {
     /// Reclaim a previously freed, same-size buffer - the one currently owned by
     /// `slots[slot_idx]`.
     UseSlot { slot_idx: usize },
-    /// Overwrite the input at `input_idx` in place; its buffer (`slots[slot_idx]`)
-    /// is free at this point and the right size.
+    /// Overwrite the input at `input_idx` in place: this op is the last reader of
+    /// its buffer (`slots[slot_idx]`), which is the right size.
     InPlace { slot_idx: usize, input_idx: usize },
     /// Alias the input at `input_idx` with this node's layout, performing no
     /// computation. Used when the input is an edge or cache buffer the planner
@@ -136,16 +130,7 @@ pub(crate) fn classify<T, B: Backend>(
                         None => ExecKind::ReferenceEternal { input_idx: 0 },
                     }
                 } else {
-                    id_slot_map
-                        .get(&n.id)
-                        .filter(|&&s| slot_is_free(&slots[s], op_location, output_layout.len()))
-                        .copied()
-                        .map_or(assign_slot(slots, op_location, output_layout), |slot_idx| {
-                            ExecKind::InPlace {
-                                slot_idx,
-                                input_idx: 0,
-                            }
-                        })
+                    assign_slot(slots, op_location, output_layout)
                 }
             }
             NodeKind::Cache(c) => {
@@ -159,16 +144,7 @@ pub(crate) fn classify<T, B: Backend>(
                         None => ExecKind::ReferenceEternal { input_idx: 0 },
                     }
                 } else {
-                    id_slot_map
-                        .get(&n.id)
-                        .filter(|&&s| slot_is_free(&slots[s], op_location, output_layout.len()))
-                        .copied()
-                        .map_or(assign_slot(slots, op_location, output_layout), |slot_idx| {
-                            ExecKind::InPlace {
-                                slot_idx,
-                                input_idx: 0,
-                            }
-                        })
+                    assign_slot(slots, op_location, output_layout)
                 }
             }
             NodeKind::Baked(c) => {
@@ -181,16 +157,7 @@ pub(crate) fn classify<T, B: Backend>(
                         None => ExecKind::ReferenceEternal { input_idx: 0 },
                     }
                 } else {
-                    id_slot_map
-                        .get(&c.id)
-                        .filter(|&&s| slot_is_free(&slots[s], op_location, output_layout.len()))
-                        .copied()
-                        .map_or(assign_slot(slots, op_location, output_layout), |slot_idx| {
-                            ExecKind::InPlace {
-                                slot_idx,
-                                input_idx: 0,
-                            }
-                        })
+                    assign_slot(slots, op_location, output_layout)
                 }
             }
             NodeKind::Edge(e) => {
