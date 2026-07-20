@@ -9,7 +9,7 @@ use std::iter::FusedIterator;
 use std::iter::successors;
 
 mod common;
-use common::{FillConfig, SizeSpec, Variant};
+use common::{FillConfig, ShapePolicy, SizeSpec, Variant};
 
 //////////////////////////////////////////////////////////////////
 
@@ -315,6 +315,14 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
                 pos = pos.wrapping_add_signed(next_chunk(&mut counter));
             }
+        } else if stride == 0 {
+            for _ in 0..left_over {
+                for _ in 0..n {
+                    acc = f(acc, &self.data[pos]);
+                }
+
+                pos = pos.wrapping_add_signed(next_chunk(&mut counter));
+            }
         } else {
             for _ in 0..left_over {
                 let mut pos_inner = pos;
@@ -362,8 +370,37 @@ fn copy_kernel(a: &[f32], layout: &Layout, out: &mut [f32]) {
         out.copy_from_slice(&a[..out.len()]);
     } else if layout.shape().len() == 1 && layout.stride()[0] > 1 {
         let step = layout.stride()[0] as usize;
-        for (o, x) in out.iter_mut().zip(a.iter().step_by(step)) {
-            *o = *x;
+        let mut i = 0usize;
+        for o in out.iter_mut() {
+            debug_assert!(i < a.len());
+            // SAFETY: the buffer is sized to hold the layout's last position,
+            // so every index this walk produces is in bounds. `step_by` would
+            // be the safe spelling, but it optimizes poorly enough to make this
+            // kernel slower than the iterator it is supposed to be the ceiling
+            // for.
+            *o = unsafe { *a.get_unchecked(i) };
+            i += step;
+        }
+    } else if layout.shape().len() == 2 && layout.stride()[1] == 0 {
+        let cols = layout.shape()[1];
+        let pitch = layout.stride()[0] as usize;
+        for (r, row_out) in out.chunks_exact_mut(cols).enumerate() {
+            row_out.fill(a[r * pitch]);
+        }
+    } else if layout.shape().len() == 2 && layout.stride()[0] == 0 {
+        // outer-broadcast: one source row reused across every output row.
+        let cols = layout.shape()[1];
+        let inner = layout.stride()[1] as usize;
+        if inner == 1 {
+            for row_out in out.chunks_exact_mut(cols) {
+                row_out.copy_from_slice(&a[..cols]);
+            }
+        } else {
+            for row_out in out.chunks_exact_mut(cols) {
+                for (j, o) in row_out.iter_mut().enumerate() {
+                    *o = a[j * inner];
+                }
+            }
         }
     } else if layout.shape().len() == 2 && layout.stride()[1] == 1 {
         let cols = layout.shape()[1];
@@ -396,8 +433,29 @@ fn mul_kernel(a: &[f32], layout: &Layout, out: &mut [f32]) {
         }
     } else if layout.shape().len() == 1 && layout.stride()[0] > 1 {
         let step = layout.stride()[0] as usize;
-        for (o, x) in out.iter_mut().zip(a.iter().step_by(step)) {
-            *o = *x * 2.0;
+        let mut i = 0usize;
+        for o in out.iter_mut() {
+            debug_assert!(i < a.len());
+            // SAFETY: see `copy_kernel` - the buffer holds the layout's last
+            // position, so every index this walk produces is in bounds.
+            *o = unsafe { *a.get_unchecked(i) } * 2.0;
+            i += step;
+        }
+    } else if layout.shape().len() == 2 && layout.stride()[1] == 0 {
+        let cols = layout.shape()[1];
+        let pitch = layout.stride()[0] as usize;
+        for (r, row_out) in out.chunks_exact_mut(cols).enumerate() {
+            row_out.fill(a[r * pitch] * 2.0);
+        }
+    } else if layout.shape().len() == 2 && layout.stride()[0] == 0 {
+        let cols = layout.shape()[1];
+        let inner = layout.stride()[1] as usize;
+        let (first, rest) = out.split_at_mut(cols);
+        for (j, o) in first.iter_mut().enumerate() {
+            *o = a[j * inner] * 2.0;
+        }
+        for row_out in rest.chunks_exact_mut(cols) {
+            row_out.copy_from_slice(first);
         }
     } else if layout.shape().len() == 2 && layout.stride()[1] == 1 {
         let cols = layout.shape()[1];
@@ -670,5 +728,81 @@ fn multiplication(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, iteration, multiplication);
+fn broadcasting(c: &mut Criterion) {
+    let plot_config = PlotConfiguration::default().summary_scale(AxisScale::Logarithmic);
+
+    let mut group = c.benchmark_group("broadcasting");
+    group.plot_config(plot_config);
+
+    let sizes = &[SizeSpec::L1, SizeSpec::L2, SizeSpec::L3, SizeSpec::Dram];
+
+    for &inner in &[64usize, 1024usize] {
+        let cfg = FillConfig::new(1)
+            .shape(ShapePolicy::Rows { inner })
+            .variants(&[Variant::BcastInner, Variant::BcastOuter])
+            .sizes(sizes)
+            .variant_sizes(sizes);
+
+        for case in common::fill_cases(&cfg, scalar_add::<CpuPure>) {
+            group.throughput(case.throughput);
+
+            let input = &case.inputs[0];
+            let data = input.data();
+            let layout = input.layout();
+            let n = case.skeleton.len();
+
+            let mut expected = vec![0.0f32; n];
+            mul_kernel(data, layout, &mut expected);
+
+            let from_fold: Vec<f32> = {
+                let mut v = vec![0.0f32; n];
+                Iter::new(data, layout)
+                    .enumerate()
+                    .for_each(|(i, x)| v[i] = *x * 2.0);
+                v
+            };
+            assert_eq!(
+                from_fold, expected,
+                "broadcast *2.0 wrong at n{inner} {}",
+                case.label
+            );
+
+            let mut out = vec![0.0f32; n];
+            let tag = format!("n{inner}");
+
+            group.bench_function(BenchmarkId::new(format!("best_{tag}"), &case.label), |b| {
+                b.iter(|| {
+                    mul_kernel(black_box(data), black_box(layout), &mut out);
+                    black_box(&out);
+                });
+            });
+
+            group.bench_function(BenchmarkId::new(format!("iter_{tag}"), &case.label), |b| {
+                b.iter(|| {
+                    let it = black_box(Iter::new(data, layout));
+                    for (o, x) in out.iter_mut().zip(it) {
+                        *o = *x * 2.0;
+                    }
+                    black_box(&out);
+                });
+            });
+
+            group.bench_function(BenchmarkId::new(format!("fold_{tag}"), &case.label), |b| {
+                b.iter(|| {
+                    let it = black_box(Iter::new(data, layout));
+                    let mut i = 0usize;
+                    it.for_each(|x| {
+                        out[i] = *x * 2.0;
+                        i += 1;
+                    });
+                    black_box(&out);
+                });
+            });
+        }
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, iteration, multiplication, broadcasting);
 criterion_main!(benches);

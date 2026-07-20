@@ -84,9 +84,15 @@ pub enum Variant {
     /// Under [`ShapePolicy::Flat`] the shape becomes a square to have an
     /// outer axis to gap.
     Padded,
-    /// The outermost axis has stride 0 (under `Flat`, the whole tensor reads
-    /// one element).
-    Broadcast,
+    /// The outermost axis has stride 0: one row of data reused across every
+    /// outer index - a `(1, n)` operand broadcast up to `(m, n)`. The inner
+    /// run stays contiguous, so each output row re-reads the same source
+    /// slice. Under [`ShapePolicy::Flat`] the whole tensor reads one element.
+    BcastOuter,
+    /// The innermost axis has stride 0: one value per outer index, splatted
+    /// across the row - an `(m, 1)` operand broadcast up to `(m, n)`. Under
+    /// [`ShapePolicy::Flat`] the whole tensor reads one element.
+    BcastInner,
 }
 
 impl Variant {
@@ -96,7 +102,8 @@ impl Variant {
             Variant::Transposed => "transposed",
             Variant::Step => "step",
             Variant::Padded => "padded",
-            Variant::Broadcast => "broadcast",
+            Variant::BcastOuter => "bcast_outer",
+            Variant::BcastInner => "bcast_inner",
         }
     }
 }
@@ -161,7 +168,11 @@ const DEFAULT_VARIANT_SIZES: &[SizeSpec] = &[SizeSpec::L2, SizeSpec::Dram];
 /// budgets, layout variants applied uniformly.
 pub struct FillConfig {
     n_inputs: usize,
-    variants: Vec<Variant>,
+    /// One entry per case; each entry is one variant per input. A uniform
+    /// sweep is just combos of the shape `[v; n_inputs]` - see
+    /// [`variants`](Self::variants) - and mixed cases (broadcast pairs) are
+    /// built with [`variant_combos`](Self::variant_combos).
+    combos: Vec<Vec<Variant>>,
     sizes: Vec<SizeSpec>,
     variant_sizes: Vec<SizeSpec>,
     shape: ShapePolicy,
@@ -172,17 +183,35 @@ impl FillConfig {
         assert!(n_inputs > 0, "a skeleton needs at least one input");
         Self {
             n_inputs,
-            variants: vec![Variant::Contig],
+            combos: vec![vec![Variant::Contig; n_inputs]],
             sizes: DEFAULT_SIZES.to_vec(),
             variant_sizes: DEFAULT_VARIANT_SIZES.to_vec(),
             shape: ShapePolicy::Flat,
         }
     }
 
-    /// Which layout variants to run. `Contig` uses [`sizes`](Self::sizes);
-    /// everything else uses [`variant_sizes`](Self::variant_sizes).
+    /// Which layout variants to run, applied uniformly to every input. The
+    /// all-`Contig` case uses [`sizes`](Self::sizes); every other uses
+    /// [`variant_sizes`](Self::variant_sizes).
     pub fn variants(mut self, variants: &[Variant]) -> Self {
-        self.variants = variants.to_vec();
+        self.combos = variants.iter().map(|&v| vec![v; self.n_inputs]).collect();
+        self
+    }
+
+    /// Per-input layout variants: one inner slice per case, each of length
+    /// `n_inputs`. Unlike [`variants`](Self::variants) - which lays every input
+    /// out the same way - this builds mixed-layout cases, e.g. a contiguous
+    /// operand against a broadcast one. A case uses [`sizes`](Self::sizes) only
+    /// when every input in its combo is `Contig`, else [`variant_sizes`](Self::variant_sizes).
+    pub fn variant_combos(mut self, combos: &[&[Variant]]) -> Self {
+        for combo in combos {
+            assert_eq!(
+                combo.len(),
+                self.n_inputs,
+                "each variant combo must have one entry per input"
+            );
+        }
+        self.combos = combos.iter().map(|c| c.to_vec()).collect();
         self
     }
 
@@ -201,8 +230,8 @@ impl FillConfig {
         self
     }
 
-    fn sizes_for(&self, variant: Variant) -> &[SizeSpec] {
-        if variant == Variant::Contig {
+    fn sizes_for(&self, combo: &[Variant]) -> &[SizeSpec] {
+        if combo.iter().all(|&v| v == Variant::Contig) {
             &self.sizes
         } else {
             &self.variant_sizes
@@ -241,13 +270,46 @@ fn normalize_fill(policy: ShapePolicy, variant: Variant, n: usize) -> usize {
     }
 }
 
+/// Realized fill for a whole combo. Every input's variant must round the
+/// requested count to the same value; otherwise the operands would carry
+/// different logical shapes and could not form an element-wise case (pairing
+/// `Contig` with `Transposed` under `Flat`, say, which squares the count).
+/// Uniform combos and broadcast pairs under `Rows` agree trivially.
+fn normalize_fill_combo(policy: ShapePolicy, combo: &[Variant], n: usize) -> usize {
+    let mut agreed: Option<usize> = None;
+    for &v in combo {
+        let f = normalize_fill(policy, v, n);
+        match agreed {
+            None => agreed = Some(f),
+            Some(a) => assert_eq!(
+                a, f,
+                "variant combo normalizes to inconsistent fills; operands would desync shape"
+            ),
+        }
+    }
+    agreed.expect("a combo has at least one input")
+}
+
+/// Case label for a combo: the bare variant name when every input shares it
+/// (so uniform sweeps keep their old labels), else the per-input names joined
+/// with `+`.
+fn combo_label(combo: &[Variant]) -> String {
+    if combo.iter().all(|&v| v == combo[0]) {
+        combo[0].label().to_string()
+    } else {
+        combo.iter().map(|v| v.label()).collect::<Vec<_>>().join("+")
+    }
+}
+
 /// The target layout for one input at a (normalized) fill size.
 fn make_layout<T>(policy: ShapePolicy, variant: Variant, fill: usize) -> Layout {
     let step = step_elems::<T>() as i32;
     match (policy, variant) {
         (ShapePolicy::Flat, Variant::Contig) => Layout::new([fill]),
         (ShapePolicy::Flat, Variant::Step) => Layout::from_strided(&[fill], &[step], 0),
-        (ShapePolicy::Flat, Variant::Broadcast) => Layout::from_strided(&[fill], &[0], 0),
+        (ShapePolicy::Flat, Variant::BcastOuter | Variant::BcastInner) => {
+            Layout::from_strided(&[fill], &[0], 0)
+        }
         (ShapePolicy::Flat, Variant::Transposed) => {
             let side = fill.isqrt();
             Layout::from_strided(&[side, side], &[1, side as i32], 0)
@@ -263,8 +325,11 @@ fn make_layout<T>(policy: ShapePolicy, variant: Variant, fill: usize) -> Layout 
         (ShapePolicy::Rows { inner }, Variant::Padded) => {
             Layout::from_strided(&[fill / inner, inner], &[(PAD_FACTOR * inner) as i32, 1], 0)
         }
-        (ShapePolicy::Rows { inner }, Variant::Broadcast) => {
+        (ShapePolicy::Rows { inner }, Variant::BcastOuter) => {
             Layout::from_strided(&[fill / inner, inner], &[0, 1], 0)
+        }
+        (ShapePolicy::Rows { inner }, Variant::BcastInner) => {
+            Layout::from_strided(&[fill / inner, inner], &[1, 0], 0)
         }
         (ShapePolicy::Rows { inner }, Variant::Transposed) => {
             let rows = fill / inner;
@@ -289,14 +354,15 @@ fn distinct_elems(layout: &Layout) -> usize {
 
 /// Physical working set of one case in bytes: all input allocations plus the
 /// output, which is what must fit in a cache for the rung label to be honest.
-fn footprint_bytes<T, B, F>(cfg: &FillConfig, builder: &F, variant: Variant, fill: usize) -> usize
+fn footprint_bytes<T, B, F>(cfg: &FillConfig, builder: &F, combo: &[Variant], fill: usize) -> usize
 where
     B: Backend,
     T: Clone + PartialEq + ComputeFor<B>,
     F: Fn(&[Layout]) -> Skeleton<T, B>,
 {
-    let layouts: Vec<Layout> = (0..cfg.n_inputs)
-        .map(|_| make_layout::<T>(cfg.shape, variant, fill))
+    let layouts: Vec<Layout> = combo
+        .iter()
+        .map(|&v| make_layout::<T>(cfg.shape, v, fill))
         .collect();
 
     let skeleton = builder(&layouts);
@@ -310,18 +376,18 @@ where
 /// pin the line exactly; compiling the skeleton at the probe sizes is what
 /// picks up the output's contribution (reductions shrink it, and only the
 /// plan knows by how much).
-fn solve_fill<T, B, F>(cfg: &FillConfig, builder: &F, variant: Variant, budget: usize) -> usize
+fn solve_fill<T, B, F>(cfg: &FillConfig, builder: &F, combo: &[Variant], budget: usize) -> usize
 where
     B: Backend,
     T: Clone + PartialEq + ComputeFor<B>,
     F: Fn(&[Layout]) -> Skeleton<T, B>,
 {
-    let n1 = normalize_fill(cfg.shape, variant, min_fill(cfg.shape) * 8);
-    let n2 = normalize_fill(cfg.shape, variant, n1 * 4);
+    let n1 = normalize_fill_combo(cfg.shape, combo, min_fill(cfg.shape) * 8);
+    let n2 = normalize_fill_combo(cfg.shape, combo, n1 * 4);
     assert!(n2 > n1, "probe fills collapsed; ShapePolicy too coarse");
 
-    let f1 = footprint_bytes::<T, B, F>(cfg, builder, variant, n1) as f64;
-    let f2 = footprint_bytes::<T, B, F>(cfg, builder, variant, n2) as f64;
+    let f1 = footprint_bytes::<T, B, F>(cfg, builder, combo, n1) as f64;
+    let f2 = footprint_bytes::<T, B, F>(cfg, builder, combo, n2) as f64;
 
     let slope = (f2 - f1) / (n2 - n1) as f64;
     assert!(
@@ -331,7 +397,7 @@ where
     let intercept = f1 - slope * n1 as f64;
 
     let target = ((budget as f64 - intercept) / slope).max(0.0) as usize;
-    normalize_fill(cfg.shape, variant, target.max(min_fill(cfg.shape)))
+    normalize_fill_combo(cfg.shape, combo, target.max(min_fill(cfg.shape)))
 }
 
 fn tensor_from_layout<T, B>(layout: &Layout, rng: &mut StdRng) -> Tensor<T, B>
@@ -357,18 +423,19 @@ where
     let mut rng = StdRng::seed_from_u64(SEED);
     let mut cases = Vec::new();
 
-    for &variant in &cfg.variants {
-        for &size in cfg.sizes_for(variant) {
+    for combo in &cfg.combos {
+        for &size in cfg.sizes_for(combo) {
             let fill: usize = match size.budget_bytes() {
-                Some(budget) => solve_fill::<T, B, F>(cfg, &builder, variant, budget),
+                Some(budget) => solve_fill::<T, B, F>(cfg, &builder, combo, budget),
                 None => match size {
-                    SizeSpec::Elems(n) => normalize_fill(cfg.shape, variant, n),
+                    SizeSpec::Elems(n) => normalize_fill_combo(cfg.shape, combo, n),
                     _ => unreachable!(),
                 },
             };
 
-            let layouts: Vec<Layout> = (0..cfg.n_inputs)
-                .map(|_| make_layout::<T>(cfg.shape, variant, fill))
+            let layouts: Vec<Layout> = combo
+                .iter()
+                .map(|&v| make_layout::<T>(cfg.shape, v, fill))
                 .collect();
 
             let skeleton = builder(&layouts);
@@ -380,7 +447,7 @@ where
                 .collect();
 
             cases.push(Case {
-                label: format!("{}/{}", size.label(), variant.label()),
+                label: format!("{}/{}", size.label(), combo_label(combo)),
                 skeleton,
                 inputs,
                 throughput: Throughput::Bytes((touched * size_of::<T>()) as u64),
