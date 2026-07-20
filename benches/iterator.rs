@@ -285,17 +285,22 @@ impl<'a, T> Iterator for Iter<'a, T> {
         let last = rank - 1;
         let mut counter: [usize; MAX_DIMS] = [0; MAX_DIMS];
         let mut pos = self.layout.offset();
-        let left_over: usize = shape[0..last].iter().product();
+        let mut left_over: usize = shape[0..last - 1].iter().product();
+        left_over = left_over.max(1);
 
-        let n = shape[last];
+        let chunk_size = shape[last];
+        let n_chunks = shape[last - 1];
         let step = adj_stride[last] as isize * (shape[last] - 1) as isize;
         let stride = adj_stride[last] as isize;
+        let chunk_stride = adj_stride[last - 1] as isize + step;
 
-        let next_chunk = |counter: &mut [usize; MAX_DIMS]| -> isize {
-            let last_counter = last - 1;
+        let baked_stride: [isize; MAX_DIMS] = adj_stride.map(|x| x as isize + step - chunk_stride);
+
+        let next_chunk = |counter: &mut [usize; MAX_DIMS]| -> usize {
+            let last_counter = last - 2;
             counter[last_counter] += 1;
             let mut step_dim = last_counter;
-            for dim in (1..last).rev() {
+            for dim in (1..last - 1).rev() {
                 if counter[dim] == shape[dim] {
                     counter[dim] = 0;
                     counter[dim - 1] += 1;
@@ -304,40 +309,57 @@ impl<'a, T> Iterator for Iter<'a, T> {
                 }
                 break;
             }
-            adj_stride[step_dim] as isize + step
+
+            step_dim
         };
 
         if stride == 1 {
             for _ in 0..left_over {
-                for el in self.data[pos..pos + n].iter() {
-                    acc = f(acc, el);
+                for _ in 0..n_chunks {
+                    for el in self.data[pos..pos + chunk_size].iter() {
+                        acc = f(acc, el);
+                    }
+
+                    pos = pos.wrapping_add_signed(chunk_stride);
                 }
 
-                pos = pos.wrapping_add_signed(next_chunk(&mut counter));
+                let step_dim = next_chunk(&mut counter);
+                pos = pos.wrapping_add_signed(baked_stride[step_dim]);
             }
         } else if stride == 0 {
             for _ in 0..left_over {
-                for _ in 0..n {
-                    acc = f(acc, &self.data[pos]);
+                for _ in 0..n_chunks {
+                    for _ in 0..chunk_size {
+                        acc = f(acc, &self.data[pos]);
+                    }
+
+                    pos = pos.wrapping_add_signed(chunk_stride);
                 }
 
-                pos = pos.wrapping_add_signed(next_chunk(&mut counter));
+                let step_dim = next_chunk(&mut counter);
+                pos = pos.wrapping_add_signed(baked_stride[step_dim]);
             }
         } else {
             for _ in 0..left_over {
-                let mut pos_inner = pos;
-                for _ in 0..n {
-                    debug_assert!(pos_inner < self.data.len());
-                    // SAFETY: a well-formed layout only ever visits in-bounds
-                    // positions of its own buffer, so `pos_inner` is a valid
-                    // index. Dropping the bounds check keeps the strided read
-                    // from stalling memory-level parallelism on gather-heavy
-                    // layouts (e.g. transposed).
-                    acc = f(acc, unsafe { self.data.get_unchecked(pos_inner) });
+                for _ in 0..n_chunks {
+                    let mut pos_inner = pos;
+                    for _ in 0..chunk_size {
+                        debug_assert!(pos_inner < self.data.len());
+                        // SAFETY: a well-formed layout only ever visits in-bounds
+                        // positions of its own buffer, so `pos_inner` is a valid
+                        // index. Dropping the bounds check keeps the strided read
+                        // from stalling memory-level parallelism on gather-heavy
+                        // layouts (e.g. transposed).
+                        acc = f(acc, unsafe { self.data.get_unchecked(pos_inner) });
 
-                    pos_inner = pos_inner.wrapping_add_signed(stride);
+                        pos_inner = pos_inner.wrapping_add_signed(stride);
+                    }
+
+                    pos = pos.wrapping_add_signed(chunk_stride);
                 }
-                pos = pos.wrapping_add_signed(next_chunk(&mut counter));
+
+                let step_dim = next_chunk(&mut counter);
+                pos = pos.wrapping_add_signed(baked_stride[step_dim]);
             }
         }
 
