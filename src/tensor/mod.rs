@@ -1,6 +1,8 @@
 #[macro_use]
 mod convenience;
 
+pub(crate) const MAX_DIMS: usize = 8;
+
 pub(crate) mod backend;
 pub(crate) mod definitions;
 pub mod errors;
@@ -21,7 +23,7 @@ pub mod promise;
 pub mod tensor_interface;
 pub use convenience::*;
 
-pub use iter::{ChunkIter, ChunkKind, InformedIter, Iter, StepInfo};
+pub use iter::{InformedIter, Iter, MutIter, StepInfo};
 pub use mem_formats::layout::Layout;
 pub use mem_formats::slice::SliceRange;
 pub use promise::{CachedTensorPromise, TensorPromise};

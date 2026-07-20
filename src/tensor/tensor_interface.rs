@@ -70,10 +70,11 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
     /// [`Tensor`] for the `_in` convention.
     #[inline]
     pub fn from_scalar_in(scalar: T, shape: impl IntoShape) -> Self {
+        let (rank, shape) = shape.into_shape();
         Self {
             graph: Arc::new(TensorGraphEdge::from_tensor_data(TensorData::from_scalar(
                 scalar,
-                &shape.into_shape(),
+                &shape[..rank],
             ))),
         }
     }
@@ -86,10 +87,11 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
     /// Panics if `vector` length does not equal the product of `shape`.
     #[inline]
     pub fn from_vec_in(vector: Vec<T>, shape: impl IntoShape) -> Self {
+        let (rank, shape) = shape.into_shape();
         Self {
             graph: Arc::new(TensorGraphEdge::from_tensor_data(TensorData::from_vec(
                 vector,
-                &shape.into_shape(),
+                &shape[..rank],
                 0,
             ))),
         }
@@ -138,11 +140,11 @@ impl<T: ComputeFor<B>, B: Backend> Tensor<T, B> {
     where
         I: IntoIterator<Item = T>,
     {
-        let shape = shape.into_shape();
-        let size: usize = shape.iter().product();
+        let (rank, shape) = shape.into_shape();
+        let size: usize = shape[..rank].iter().product();
 
         let vector: Vec<T> = std::vec::Vec::from_iter(iter.into_iter().take(size));
-        Self::from_vec_in(vector, shape)
+        Self::from_vec_in(vector, &shape[..rank])
     }
 
     /// Like [`Tensor::eye`], but on an explicit backend `B`. See [`Tensor`] for

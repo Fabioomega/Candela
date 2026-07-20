@@ -1,5 +1,6 @@
-use std::collections::HashMap;
 use std::sync::Arc;
+
+use fx_hash::FxHashMap;
 
 use crate::Layout;
 use crate::tensor::backend::{Backend, ComputeFor};
@@ -21,14 +22,14 @@ fn strip_tensor<T: Copy>(tensor: TensorData<T>) -> Vec<T> {
 #[inline]
 fn alloc_vec<T: Default + Clone>(len: usize) -> Vec<T> {
     let mut output_buffer = Vec::with_capacity(len);
-    output_buffer.resize(len, T::default());
+    unsafe { output_buffer.set_len(len) };
 
     output_buffer
 }
 
 #[inline]
 fn build_inputs<T: Clone>(
-    computation_cache: &HashMap<usize, TensorData<T>>,
+    computation_cache: &FxHashMap<usize, TensorData<T>>,
     ids: &[usize],
 ) -> Vec<TensorData<T>> {
     ids.iter()
@@ -41,7 +42,7 @@ fn execute_output<T: NumberLike + ComputeFor<B>, B: Backend>(
     layout: &Layout,
     output: &OutputKind,
     resolved_inputs: &[usize],
-    computation_cache: &mut HashMap<usize, TensorData<T>>,
+    computation_cache: &mut FxHashMap<usize, TensorData<T>>,
 ) -> TensorData<T> {
     let result = match output {
         OutputKind::Allocate(len) => {
@@ -224,7 +225,7 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
     root_id: usize,
     external_inputs: Vec<(usize, TensorData<T>)>,
 ) -> TensorData<T> {
-    let mut computation_cache: HashMap<usize, TensorData<T>> = HashMap::new();
+    let mut computation_cache: FxHashMap<usize, TensorData<T>> = FxHashMap::default();
 
     for (id, input) in external_inputs.into_iter() {
         computation_cache.insert(id, input);

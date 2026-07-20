@@ -1,7 +1,7 @@
 use std::{hash::Hash, iter::zip};
 
 use crate::tensor::{
-    IntoShape,
+    IntoShape, MAX_DIMS,
     errors::OpError,
     internals::{calculate_adjacent_dim_stride, calculate_dim_stride},
     mem_formats::slice::{SliceInfo, SliceRange},
@@ -38,10 +38,11 @@ use crate::tensor::{
 /// ```
 #[derive(Clone, Debug)]
 pub struct Layout {
-    pub(crate) shape: Box<[usize]>,
-    pub(crate) stride: Box<[i32]>,
-    pub(crate) adj_stride: Box<[i32]>,
+    pub(crate) shape: [usize; MAX_DIMS],
+    pub(crate) stride: [i32; MAX_DIMS],
+    pub(crate) adj_stride: [i32; MAX_DIMS],
     pub(crate) offset: usize,
+    pub(crate) rank: usize,
     pub(crate) len: usize,
 }
 
@@ -70,19 +71,19 @@ impl Layout {
     /// assert_eq!(l.len(), 6);
     /// ```
     pub fn new(shape: impl IntoShape) -> Self {
-        let shape = shape.into_shape();
+        let (rank, shape) = shape.into_shape();
 
-        validate_shape(&shape).unwrap_or_else(|e| panic!("{}", e));
-        let len: usize = shape.iter().product();
-        let shape_len = shape.len();
+        validate_shape(&shape[..rank]).unwrap_or_else(|e| panic!("{}", e));
+        let len: usize = shape[..rank].iter().product();
 
-        let stride = calculate_dim_stride(&shape);
+        let stride = calculate_dim_stride(&shape[..rank]);
 
         Self {
             shape,
             stride,
-            adj_stride: vec![1; shape_len].into_boxed_slice(),
+            adj_stride: [1; MAX_DIMS],
             offset: 0,
+            rank,
             len,
         }
     }
@@ -97,10 +98,11 @@ impl Layout {
     /// ```
     pub fn empty() -> Self {
         Self {
-            shape: Box::new([0]),
-            stride: Box::new([0]),
-            adj_stride: Box::new([0]),
+            shape: [0; MAX_DIMS],
+            stride: [0; MAX_DIMS],
+            adj_stride: [0; MAX_DIMS],
             offset: 0,
+            rank: 1,
             len: 0,
         }
     }
@@ -116,28 +118,47 @@ impl Layout {
     /// ```
     /// use candela::Layout;
     /// // A hand-built 2x3 contiguous layout, equivalent to `Layout::new(&[2, 3])`.
-    /// let l = Layout::from_raw_parts(
-    ///     Box::from([2, 3]),
-    ///     Box::from([3, 1]),
-    ///     Box::from([1, 1]),
-    ///     0,
-    ///     6,
-    /// );
+    /// let l = Layout::from_raw_parts(&[2, 3], &[3, 1], &[1, 1], 0, 6);
     /// assert_eq!(l.shape(), &[2, 3]);
     /// assert_eq!(l.len(), 6);
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics (in debug builds) if `shape`, `stride`, and `adj_stride` do not all
+    /// have the same length, or if that length exceeds the maximum supported rank.
     pub fn from_raw_parts(
-        shape: Box<[usize]>,
-        stride: Box<[i32]>,
-        adj_stride: Box<[i32]>,
+        shape: &[usize],
+        stride: &[i32],
+        adj_stride: &[i32],
         offset: usize,
         len: usize,
     ) -> Self {
+        let rank = shape.len();
+        debug_assert!(
+            rank == stride.len() && rank == adj_stride.len(),
+            "shape, stride, and adj_stride must share the same rank"
+        );
+        debug_assert!(
+            rank <= MAX_DIMS,
+            "only tensors upto {} dims are supported",
+            MAX_DIMS
+        );
+
+        let mut shape_arr = [0usize; MAX_DIMS];
+        let mut stride_arr = [0i32; MAX_DIMS];
+        let mut adj_stride_arr = [0i32; MAX_DIMS];
+
+        shape_arr[..rank].copy_from_slice(shape);
+        stride_arr[..rank].copy_from_slice(stride);
+        adj_stride_arr[..rank].copy_from_slice(adj_stride);
+
         Self {
-            shape,
-            stride,
-            adj_stride,
+            shape: shape_arr,
+            stride: stride_arr,
+            adj_stride: adj_stride_arr,
             offset,
+            rank,
             len,
         }
     }
@@ -161,13 +182,20 @@ impl Layout {
         validate_shape(shape).unwrap_or_else(|e| panic!("{}", e));
         debug_assert!(shape.len() == stride.len());
 
+        let rank = shape.len();
         let len: usize = shape.iter().product();
 
+        let mut shape_arr = [0usize; MAX_DIMS];
+        let mut stride_arr = [0i32; MAX_DIMS];
+        shape_arr[..rank].copy_from_slice(shape);
+        stride_arr[..rank].copy_from_slice(stride);
+
         Self {
-            shape: shape.into(),
-            stride: stride.into(),
+            shape: shape_arr,
+            stride: stride_arr,
             adj_stride: calculate_adjacent_dim_stride(stride, shape),
             offset,
+            rank,
             len,
         }
     }
@@ -207,15 +235,15 @@ impl Layout {
     /// # Ok::<(), candela::OpError>(())
     /// ```
     pub fn view(&self, shape: impl IntoShape) -> Result<Self, OpError> {
-        let shape = shape.into_shape();
+        let (rank, shape) = shape.into_shape();
 
-        if shape.iter().product::<usize>() != self.len() {
+        if shape[..rank].iter().product::<usize>() != self.len() {
             return Err(OpError::InvalidViewShape);
         }
         if !self.is_contiguous() {
             return Err(OpError::NonContiguousView);
         }
-        Ok(Layout::new(shape).with_offset(self.offset))
+        Ok(Layout::new(&shape[..rank]).with_offset(self.offset))
     }
 
     /// Derive the layout of a sub-region, one [`SliceRange`] per leading axis.
@@ -239,13 +267,14 @@ impl Layout {
     /// ```
     pub fn slice(&self, range: &[SliceRange]) -> Result<Self, OpError> {
         let info = SliceInfo::from_range(self, range)?;
-        let len: usize = info.shape.iter().product();
+        let len: usize = info.shape[..self.rank].iter().product();
 
         Ok(Self {
             shape: info.shape,
-            stride: self.stride.clone(),
+            stride: self.stride,
             adj_stride: info.adj_stride,
             offset: info.offset,
+            rank: self.rank,
             len,
         })
     }
@@ -262,28 +291,25 @@ impl Layout {
     /// assert_eq!(t.stride(), &[1, 3]);
     /// ```
     pub fn transpose(&self) -> Self {
-        let mut stride = self.stride.clone();
-        let mut shape = self.shape.clone();
+        let rank = self.rank;
+        let mut stride = self.stride;
+        let mut shape = self.shape;
 
-        for i in 0..stride.len() / 2 {
-            let last = stride.len() - i - 1;
+        for i in 0..rank / 2 {
+            let last = rank - i - 1;
 
-            let temp = stride[last];
-            stride[last] = stride[i];
-            stride[i] = temp;
-
-            let temp = shape[last];
-            shape[last] = shape[i];
-            shape[i] = temp;
+            stride.swap(i, last);
+            shape.swap(i, last);
         }
 
-        let adj_stride: Box<[i32]> = calculate_adjacent_dim_stride(&stride, &shape);
+        let adj_stride = calculate_adjacent_dim_stride(&stride[..rank], &shape[..rank]);
 
         Self {
             shape,
             stride,
             adj_stride,
             offset: self.offset,
+            rank,
             len: self.len,
         }
     }
@@ -311,39 +337,41 @@ impl Layout {
     /// axis, or [`OpError::AxesOutOfBounds`] if an index is out of range or
     /// repeated (so the list isn't a valid permutation).
     pub fn transpose_axes(&self, axes: impl IntoShape) -> Result<Self, OpError> {
-        let axes = axes.into_shape();
+        let (axes_rank, axes) = axes.into_shape();
+        let rank = self.rank;
 
-        if axes.len() != self.stride.len() {
-            return Err(OpError::NotEnoughAxes(self.stride.len(), axes.len()));
+        if axes_rank != rank {
+            return Err(OpError::NotEnoughAxes(rank, axes_rank));
         }
 
-        for (i, axis) in axes.iter().enumerate() {
-            for axis_other in axes.iter().skip(i + 1) {
+        for (i, axis) in axes[..axes_rank].iter().enumerate() {
+            for axis_other in axes[..axes_rank].iter().skip(i + 1) {
                 if axis == axis_other {
                     return Err(OpError::AxesOutOfBounds);
                 }
             }
         }
 
-        let mut stride: Vec<i32> = Vec::with_capacity(self.stride.len());
-        let mut shape: Vec<usize> = Vec::with_capacity(self.stride.len());
+        let mut stride = [0i32; MAX_DIMS];
+        let mut shape = [0usize; MAX_DIMS];
 
-        for &axis in axes.iter() {
-            if axis >= self.stride.len() {
+        for (new_axis, &axis) in axes[..axes_rank].iter().enumerate() {
+            if axis >= rank {
                 return Err(OpError::AxesOutOfBounds);
             }
 
-            stride.push(self.stride[axis]);
-            shape.push(self.shape[axis]);
+            stride[new_axis] = self.stride[axis];
+            shape[new_axis] = self.shape[axis];
         }
 
-        let adj_stride = calculate_adjacent_dim_stride(&stride, &shape);
+        let adj_stride = calculate_adjacent_dim_stride(&stride[..rank], &shape[..rank]);
 
         Ok(Self {
-            shape: shape.into_boxed_slice(),
-            stride: stride.into_boxed_slice(),
+            shape,
+            stride,
             adj_stride,
             offset: self.offset,
+            rank,
             len: self.len,
         })
     }
@@ -371,41 +399,43 @@ impl Layout {
     /// than the source, or an axis is neither equal to the source nor expandable
     /// from 1.
     pub fn broadcast(&self, shape: impl IntoShape) -> Result<Self, OpError> {
-        let shape = shape.into_shape();
+        let (rank, shape) = shape.into_shape();
+        let src_rank = self.rank;
 
-        if shape.len() < self.shape.len() {
+        if rank < src_rank {
             return Err(OpError::CannotBroadcast);
         }
 
-        for (s1, s2) in zip(shape.iter().rev(), self.shape.iter().rev()) {
+        for (s1, s2) in zip(
+            shape[..rank].iter().rev(),
+            self.shape[..src_rank].iter().rev(),
+        ) {
             if *s2 != 1 && *s1 != *s2 {
                 return Err(OpError::CannotBroadcast);
             }
         }
 
-        let mut new_stride: Vec<i32> = Vec::with_capacity(shape.len());
-        new_stride.extend(
-            (self.shape.len()..shape.len())
-                .map(|_| 0)
-                .chain(self.stride.iter().cloned()),
-        );
+        // Right-align the source strides under the target shape: the extra leading
+        // axes keep their zero stride, the rest copy the source stride.
+        let mut new_stride = [0i32; MAX_DIMS];
+        let lead = rank - src_rank;
+        new_stride[lead..rank].copy_from_slice(&self.stride[..src_rank]);
 
-        let len = new_stride.len();
-
-        for (dim, s) in self.shape.iter().rev().enumerate() {
+        for (dim, s) in self.shape[..src_rank].iter().rev().enumerate() {
             if *s == 1 {
-                new_stride[len - dim - 1] = 0;
+                new_stride[rank - dim - 1] = 0;
             }
         }
 
-        let adj_stride = calculate_adjacent_dim_stride(&new_stride, &shape);
-        let len: usize = shape.iter().product();
+        let adj_stride = calculate_adjacent_dim_stride(&new_stride[..rank], &shape[..rank]);
+        let len: usize = shape[..rank].iter().product();
 
         Ok(Self {
             shape,
-            stride: new_stride.into_boxed_slice(),
+            stride: new_stride,
             adj_stride,
             offset: self.offset,
+            rank,
             len,
         })
     }
@@ -427,13 +457,13 @@ impl Layout {
     /// ```
     #[inline]
     pub fn shape_as_3d(&self) -> [usize; 3] {
-        debug_assert!(!self.shape.is_empty(), "shape_as_3d requires rank >= 1");
-        if self.shape.len() == 1 {
+        debug_assert!(self.rank >= 1, "shape_as_3d requires rank >= 1");
+        if self.rank == 1 {
             [1, 1, self.shape[0]]
-        } else if self.shape.len() == 2 {
+        } else if self.rank == 2 {
             [1, self.shape[0], self.shape[1]]
         } else {
-            let len = self.shape.len();
+            let len = self.rank;
 
             let mut acc: usize = 1;
             for i in 0..len - 2 {
@@ -506,11 +536,11 @@ impl Layout {
     /// ```
     #[inline]
     pub fn is_contiguous_at_axis(&self, axis: usize) -> bool {
-        if axis >= self.shape().len() {
+        if axis >= self.rank {
             return false;
         }
 
-        self.adj_stride[axis] == 1 && !self.stride[axis + 1..].contains(&0)
+        self.adj_stride[axis] == 1 && !self.stride[axis + 1..self.rank].contains(&0)
     }
 
     /// Returns `true` if any axis runs backwards relative to a contiguous layout -
@@ -526,7 +556,7 @@ impl Layout {
     /// ```
     #[inline]
     pub fn is_transposed(&self) -> bool {
-        for (i, &adj_stride) in self.adj_stride.iter().enumerate() {
+        for (i, &adj_stride) in self.adj_stride[..self.rank].iter().enumerate() {
             if adj_stride < 0 && self.stride[i] != 0 {
                 return true;
             }
@@ -549,7 +579,7 @@ impl Layout {
     /// ```
     #[inline]
     pub fn is_transposed_at_axis(&self, axis: usize) -> bool {
-        if axis >= self.shape().len() {
+        if axis >= self.rank {
             return false;
         }
 
@@ -572,12 +602,12 @@ impl Layout {
     // would silently feed an incoherent batch stride to GEMM.
     #[inline]
     pub fn is_last_axes_transposed(&self) -> bool {
-        if self.shape.len() != 2 {
+        if self.rank != 2 {
             return false;
         }
 
-        let rs = self.stride[self.stride.len() - 2];
-        let cs = self.stride[self.stride.len() - 1];
+        let rs = self.stride[self.rank - 2];
+        let cs = self.stride[self.rank - 1];
 
         // Gives false on broadcasting
         if rs == 0 || cs == 0 {
@@ -598,7 +628,7 @@ impl Layout {
     /// ```
     #[inline]
     pub fn shape(&self) -> &'_ [usize] {
-        &self.shape
+        &self.shape[..self.rank]
     }
 
     /// The per-axis stride: how many buffer elements to step to advance one
@@ -612,7 +642,7 @@ impl Layout {
     /// ```
     #[inline]
     pub fn stride(&self) -> &'_ [i32] {
-        &self.stride
+        &self.stride[..self.rank]
     }
 
     /// The adjacent stride: the per-axis step a flat iterator applies when it
@@ -627,7 +657,7 @@ impl Layout {
     /// ```
     #[inline]
     pub fn adj_stride(&self) -> &'_ [i32] {
-        &self.adj_stride
+        &self.adj_stride[..self.rank]
     }
 
     /// The starting index into the backing buffer.
@@ -677,7 +707,7 @@ impl Layout {
     pub fn last(&self) -> usize {
         let mut acc: usize = 0;
 
-        for (d, s) in zip(&self.shape, &self.stride) {
+        for (d, s) in zip(&self.shape[..self.rank], &self.stride[..self.rank]) {
             acc = acc.wrapping_add_signed((*d - 1) as isize * *s as isize);
         }
 
@@ -687,7 +717,7 @@ impl Layout {
 
 impl PartialEq for Layout {
     fn eq(&self, other: &Self) -> bool {
-        self.shape == other.shape && self.stride == other.stride
+        self.shape() == other.shape() && self.stride() == other.stride()
     }
 }
 
@@ -695,8 +725,8 @@ impl Eq for Layout {}
 
 impl Hash for Layout {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.shape.hash(state);
-        self.stride.hash(state);
+        self.shape().hash(state);
+        self.stride().hash(state);
     }
 }
 
@@ -709,7 +739,9 @@ impl std::fmt::Display for Layout {
         write!(
             f,
             "Layout {{ shape: {:?}, stride: {:?}, offset: {} }}",
-            self.shape, self.stride, self.offset
+            self.shape(),
+            self.stride(),
+            self.offset
         )
     }
 }

@@ -3,6 +3,7 @@ use std::iter::zip;
 use std::ops::Index;
 use std::sync::Arc;
 
+use crate::tensor::MutIter;
 use crate::tensor::definitions::ChunkedIter;
 use crate::tensor::iter::{
     ChunkedContiguousIter, ChunkedSliceIter, ContiguousIter, InformedIter, Iter, MutSliceIter,
@@ -56,6 +57,11 @@ impl<T: Clone> Storage<T> {
     #[inline]
     pub fn data(&self) -> &[T] {
         &self.buffer
+    }
+
+    #[inline]
+    pub fn mut_data(&mut self) -> Option<&mut [T]> {
+        Arc::get_mut(&mut self.buffer).map(|buffer| buffer.as_mut_slice())
     }
 
     #[inline]
@@ -181,6 +187,11 @@ impl<T: Clone> TensorData<T> {
     }
 
     #[inline]
+    pub fn mut_data(&mut self) -> Option<&mut [T]> {
+        self.storage.mut_data()
+    }
+
+    #[inline]
     pub fn as_ptr(&self) -> *const T {
         self.storage.as_ptr().wrapping_add(self.offset())
     }
@@ -198,9 +209,18 @@ impl<T: Clone> TensorData<T> {
     }
 
     #[inline]
-    pub fn iter_mut(&mut self) -> Option<MutSliceIter<'_, T>> {
+    pub fn iter_slice_mut(&mut self) -> Option<MutSliceIter<'_, T>> {
         if let Some(data) = Arc::get_mut(&mut self.storage.buffer) {
             Some(MutSliceIter::new(data, self.layout.len, &self.layout))
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn iter_mut(&mut self) -> Option<MutIter<'_, T>> {
+        if let Some(data) = Arc::get_mut(&mut self.storage.buffer) {
+            Some(MutIter::new(data, &self.layout))
         } else {
             None
         }
@@ -260,13 +280,13 @@ impl<T: Clone> TensorData<T> {
 
     #[inline]
     pub fn get(&self, index: &[usize]) -> Result<&T, OpError> {
-        if self.layout.shape.len() != index.len() {
-            return Err(OpError::NotEnoughAxes(self.layout.shape.len(), index.len()));
+        if self.layout.shape().len() != index.len() {
+            return Err(OpError::NotEnoughAxes(self.layout.shape().len(), index.len()));
         }
 
         let mut pos: i64 = 0;
 
-        for (i, (&stride, &step)) in zip(&self.layout.stride, index).enumerate() {
+        for (i, (&stride, &step)) in zip(self.layout.stride(), index).enumerate() {
             if step >= self.shape()[i] {
                 return Err(OpError::IndexOutOfBounds);
             }

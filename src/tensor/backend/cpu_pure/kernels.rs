@@ -85,7 +85,7 @@ pub fn compute_scalar_inplace<T: Numeric>(
     blas: CommonBLASOps<T>,
 ) -> TensorData<T> {
     let mut input = inputs.pop().unwrap();
-    for o_el in input.iter_mut().unwrap() {
+    for o_el in input.iter_slice_mut().unwrap() {
         for op in ops {
             match op {
                 OpKindScalar::AxBy(a, b) => *o_el = (blas.fma)(*o_el, *a, *b),
@@ -122,7 +122,7 @@ pub fn compute_elementwise_tensor_tensor_inplace<T: Numeric, F: Fn(T, T) -> T>(
     other: TensorData<T>,
     op: F,
 ) -> TensorData<T> {
-    for (o_el, x_el) in zip(output.iter_mut().unwrap(), other.iter()) {
+    for (o_el, x_el) in zip(output.iter_slice_mut().unwrap(), other.iter()) {
         *o_el = op(*o_el, *x_el);
     }
 

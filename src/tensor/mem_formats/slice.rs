@@ -1,5 +1,6 @@
 use std::ops::{Range, RangeFrom, RangeFull, RangeTo};
 
+use crate::tensor::MAX_DIMS;
 use crate::tensor::mem_formats::layout::Layout;
 
 use crate::tensor::errors::OpError;
@@ -123,18 +124,21 @@ impl From<Range<i32>> for SliceRange {
 #[derive(Debug)]
 pub struct SliceInfo {
     pub(crate) offset: usize,
-    pub(crate) shape: Box<[usize]>,
-    pub(crate) adj_stride: Box<[i32]>,
+    pub(crate) shape: [usize; MAX_DIMS],
+    pub(crate) adj_stride: [i32; MAX_DIMS],
 }
 
 impl SliceInfo {
     pub(crate) fn from_range(layout: &Layout, range: &[SliceRange]) -> Result<Self, OpError> {
-        if range.len() > layout.shape().len() {
+        let rank = layout.shape().len();
+
+        if range.len() > rank {
             return Err(OpError::AxesOutOfBounds);
         }
 
         let mut offset: i64 = layout.offset() as i64;
-        let mut new_shape: Vec<usize> = layout.shape().into();
+        let mut new_shape = [0usize; MAX_DIMS];
+        new_shape[..rank].copy_from_slice(layout.shape());
 
         for (dim, r) in range.iter().enumerate() {
             let start = match r.start {
@@ -167,16 +171,16 @@ impl SliceInfo {
             new_shape[dim] = end - start;
         }
 
-        let len: usize = new_shape.iter().product();
+        let len: usize = new_shape[..rank].iter().product();
         if len + (offset as usize) > layout.len() {
             return Err(OpError::InvalidSliceShape(layout.len(), len));
         }
 
-        let adj_stride = calculate_adjacent_dim_stride(layout.stride(), &new_shape);
+        let adj_stride = calculate_adjacent_dim_stride(layout.stride(), &new_shape[..rank]);
 
         Ok(Self {
             offset: offset as usize,
-            shape: new_shape.into_boxed_slice(),
+            shape: new_shape,
             adj_stride,
         })
     }

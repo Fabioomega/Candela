@@ -758,7 +758,8 @@ macro_rules! impl_view {
                 &self,
                 shape: impl IntoShape,
             ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
-                view_impl(self, &shape.into_shape()).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
+                let (rank, shape) = shape.into_shape();
+                view_impl(self, &shape[..rank]).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
 
             /// Reinterprets the tensor's data as having shape `shape`,
@@ -790,7 +791,8 @@ macro_rules! impl_view {
                 &self,
                 shape: impl IntoShape,
             ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
-                reshape_impl(self, &shape.into_shape()).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
+                let (rank, shape) = shape.into_shape();
+                reshape_impl(self, &shape[..rank]).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }
     };
@@ -907,7 +909,8 @@ macro_rules! impl_transpose_axes {
                 &self,
                 axes: impl IntoShape,
             ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
-                transpose_axes_impl(self, &axes.into_shape())
+                let (rank, axes) = axes.into_shape();
+                transpose_axes_impl(self, &axes[..rank])
                     .map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }
@@ -988,7 +991,8 @@ macro_rules! impl_broadcast {
                 &self,
                 shape: impl IntoShape,
             ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
-                broadcast_impl(self, &shape.into_shape())
+                let (rank, shape) = shape.into_shape();
+                broadcast_impl(self, &shape[..rank])
                     .map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }

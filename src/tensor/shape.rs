@@ -1,11 +1,16 @@
 //! Shape arguments accepted by tensor constructors.
 //!
 //! [`IntoShape`] converts arrays, tuples, slices, a `Vec`, a bare `usize`, or an
-//! existing `Box<[usize]>` into the `Box<[usize]>` a [`Layout`] is built from.
+//! existing `Box<[usize]>` into the `(rank, [usize; MAX_DIMS])` pair a [`Layout`]
+//! is built from - a stack-allocated, fixed-capacity buffer plus the number of
+//! axes actually in use.
 //!
 //! [`Layout`]: crate::Layout
 
-/// Conversion into the `Box<[usize]>` shape buffer a [`Layout`] is built from.
+use crate::tensor::MAX_DIMS;
+
+/// Conversion into the `(rank, [usize; MAX_DIMS])` shape buffer a [`Layout`] is
+/// built from.
 ///
 /// Implemented for `[usize; N]`, tuples up to arity 8, `&[usize]`, `Vec<usize>`,
 /// a bare `usize` (read as a rank-1 shape), and `Box<[usize]>` itself. Tensor
@@ -39,56 +44,139 @@
 /// ```
 pub trait IntoShape {
     /// Materialize this value as a shape buffer.
-    fn into_shape(self) -> Box<[usize]>;
+    fn into_shape(self) -> (usize, [usize; MAX_DIMS]);
 }
 
 impl IntoShape for usize {
     #[inline]
-    fn into_shape(self) -> Box<[usize]> {
-        Box::new([self])
+    fn into_shape(self) -> (usize, [usize; MAX_DIMS]) {
+        (1, [self, 0, 0, 0, 0, 0, 0, 0])
     }
 }
 
 impl<const N: usize> IntoShape for [usize; N] {
     #[inline]
-    fn into_shape(self) -> Box<[usize]> {
-        Box::new(self)
+    fn into_shape(self) -> (usize, [usize; MAX_DIMS]) {
+        let size: usize = N;
+
+        debug_assert!(
+            size <= MAX_DIMS,
+            "only tensors upto {} dims are supported",
+            MAX_DIMS
+        );
+
+        let mut output: [usize; MAX_DIMS] = [0; MAX_DIMS];
+
+        for i in 0..N {
+            output[i] = self[i];
+        }
+
+        (N, output)
     }
 }
 
 impl<const N: usize> IntoShape for &[usize; N] {
     #[inline]
-    fn into_shape(self) -> Box<[usize]> {
-        (*self).into_shape()
+    fn into_shape(self) -> (usize, [usize; MAX_DIMS]) {
+        let size: usize = N;
+
+        debug_assert!(
+            size <= MAX_DIMS,
+            "only tensors upto {} dims are supported",
+            MAX_DIMS
+        );
+
+        let mut output: [usize; MAX_DIMS] = [0; MAX_DIMS];
+
+        for i in 0..N {
+            output[i] = self[i];
+        }
+
+        (N, output)
     }
 }
 
 impl IntoShape for &[usize] {
     #[inline]
-    fn into_shape(self) -> Box<[usize]> {
-        self.into()
+    fn into_shape(self) -> (usize, [usize; MAX_DIMS]) {
+        let size: usize = self.len();
+
+        debug_assert!(
+            size <= MAX_DIMS,
+            "only tensors upto {} dims are supported",
+            MAX_DIMS
+        );
+
+        let mut output: [usize; MAX_DIMS] = [0; MAX_DIMS];
+
+        for i in 0..size {
+            output[i] = self[i];
+        }
+
+        (size, output)
     }
 }
 
 impl IntoShape for Vec<usize> {
     #[inline]
-    fn into_shape(self) -> Box<[usize]> {
-        self.into_boxed_slice()
+    fn into_shape(self) -> (usize, [usize; MAX_DIMS]) {
+        let size: usize = self.len();
+
+        debug_assert!(
+            size <= MAX_DIMS,
+            "only tensors upto {} dims are supported",
+            MAX_DIMS
+        );
+
+        let mut output: [usize; MAX_DIMS] = [0; MAX_DIMS];
+
+        for i in 0..size {
+            output[i] = self[i];
+        }
+
+        (size, output)
     }
 }
 
 impl IntoShape for &Vec<usize> {
     #[inline]
-    fn into_shape(self) -> Box<[usize]> {
-        self.as_slice().into()
+    fn into_shape(self) -> (usize, [usize; MAX_DIMS]) {
+        let size: usize = self.len();
+
+        debug_assert!(
+            size <= MAX_DIMS,
+            "only tensors upto {} dims are supported",
+            MAX_DIMS
+        );
+
+        let mut output: [usize; MAX_DIMS] = [0; MAX_DIMS];
+
+        for i in 0..size {
+            output[i] = self[i];
+        }
+
+        (size, output)
     }
 }
 
-// A shape already in its final form is moved through untouched.
 impl IntoShape for Box<[usize]> {
     #[inline]
-    fn into_shape(self) -> Box<[usize]> {
-        self
+    fn into_shape(self) -> (usize, [usize; MAX_DIMS]) {
+        let size: usize = self.len();
+
+        debug_assert!(
+            size <= MAX_DIMS,
+            "only tensors upto {} dims are supported",
+            MAX_DIMS
+        );
+
+        let mut output: [usize; MAX_DIMS] = [0; MAX_DIMS];
+
+        for i in 0..size {
+            output[i] = self[i];
+        }
+
+        (size, output)
     }
 }
 
@@ -103,12 +191,20 @@ macro_rules! replace_usize {
 // Implements `IntoShape` for one tuple arity. Each argument names a field
 // binding; every element type is `usize`.
 macro_rules! impl_into_shape_for_tuple {
-    ( $( $field:ident ),+ ) => {
+    ($( $field:ident ),+ ) => {
         impl IntoShape for ( $( replace_usize!($field), )+ ) {
             #[inline]
-            fn into_shape(self) -> Box<[usize]> {
+            fn into_shape(self) -> (usize, [usize; MAX_DIMS]) {
                 let ( $( $field, )+ ) = self;
-                Box::new([ $( $field ),+ ])
+
+                let mut output: [usize; MAX_DIMS] = [0; MAX_DIMS];
+                let mut rank = 0;
+                $(
+                    output[rank] = $field;
+                    rank += 1;
+                )+
+
+                (rank, output)
             }
         }
     };
@@ -129,7 +225,7 @@ mod tests {
 
     #[test]
     fn into_shape_accepted_forms() {
-        let expected: Box<[usize]> = Box::new([2, 3, 4]);
+        let expected = (3, [2, 3, 4, 0, 0, 0, 0, 0]);
 
         assert_eq!([2usize, 3, 4].into_shape(), expected);
         assert_eq!((&[2usize, 3, 4]).into_shape(), expected);
@@ -141,14 +237,14 @@ mod tests {
 
     #[test]
     fn into_shape_bare_usize() {
-        let expected: Box<[usize]> = Box::new([5]);
+        let expected = (1, [5, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(5usize.into_shape(), expected);
     }
 
     #[test]
     fn into_shape_box() {
         let b: Box<[usize]> = Box::new([7, 8]);
-        let expected: Box<[usize]> = Box::new([7, 8]);
+        let expected = (2, [7, 8, 0, 0, 0, 0, 0, 0]);
         assert_eq!(b.into_shape(), expected);
     }
 }
