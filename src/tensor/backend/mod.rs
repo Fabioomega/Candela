@@ -1,5 +1,6 @@
 mod common;
 mod common_kernels;
+mod cpu_experimental;
 #[cfg(feature = "mkl")]
 mod cpu_mkl;
 mod cpu_pure;
@@ -126,6 +127,7 @@ pub type DefaultBackend = cpu_mkl::CpuMkl;
 pub type DefaultBackend = cpu_pure::CpuPure;
 
 pub mod implementation {
+    pub use crate::tensor::backend::cpu_experimental::CpuExperimental;
     #[cfg(feature = "mkl")]
     pub use crate::tensor::backend::cpu_mkl::CpuMkl;
     pub use crate::tensor::backend::cpu_pure::CpuPure;
