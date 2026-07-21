@@ -1,11 +1,12 @@
 use std::iter::zip;
 
+use crate::Dimension;
 use crate::tensor::backend::common::clone_to_buffer;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKindScalar;
 use crate::tensor::storage::TensorData;
 use crate::tensor::traits::Numeric;
-use crate::{Dimension, branch_duo_fast_iter};
+use crate::tensor::walker::zip2;
 
 type MatMulFn<T> = unsafe fn(
     m: usize,
@@ -34,7 +35,6 @@ pub(crate) struct CommonBLASOps<T> {
     pub matmul: MatMulFn<T>,
 }
 
-//
 #[inline]
 pub fn compute_scalar<T: Numeric, F: Fn(&[T], &mut [T], &Layout, &[OpKindScalar<T>])>(
     ops: &[OpKindScalar<T>],
@@ -54,11 +54,17 @@ pub fn compute_scalar_inplace<T: Numeric, F: Fn(&mut [T], &Layout, &[OpKindScala
     apply: F,
 ) -> TensorData<T> {
     let mut input = inputs.pop().unwrap();
+    // The output must be contiguous
+    debug_assert!(input.is_contiguous());
     let layout = input.layout().clone();
 
     apply(input.storage.mut_data().unwrap(), &layout, ops);
 
-    input.into_layout(output_layout.clone())
+    let lay = output_layout
+        .clone()
+        .with_offset(input.offset() + output_layout.offset());
+
+    input.into_layout(lay)
 }
 
 pub fn compute_elementwise_tensor_tensor<T: Numeric, F: Fn(T, T) -> T>(
@@ -69,11 +75,14 @@ pub fn compute_elementwise_tensor_tensor<T: Numeric, F: Fn(T, T) -> T>(
     let a = &inputs[0];
     let b = &inputs[1];
 
-    branch_duo_fast_iter!(a.fast_iter() => a_it, b.fast_iter() => b_it, {
-        for ((a_el, b_el), o_el) in zip(zip(a_it, b_it), output_buffer.iter_mut()) {
-            *o_el = op(*a_el, *b_el);
-        }
-    });
+    zip2(
+        a.data(),
+        a.layout(),
+        b.data(),
+        b.layout(),
+        output_buffer,
+        op,
+    );
 }
 
 pub fn compute_elementwise_tensor_tensor_inplace<T: Numeric, F: Fn(T, T) -> T>(
@@ -81,6 +90,9 @@ pub fn compute_elementwise_tensor_tensor_inplace<T: Numeric, F: Fn(T, T) -> T>(
     other: TensorData<T>,
     op: F,
 ) -> TensorData<T> {
+    // The output must be contiguous
+    debug_assert!(output.is_contiguous());
+
     for (o_el, x_el) in zip(output.iter_slice_mut().unwrap(), other.iter()) {
         *o_el = op(*o_el, *x_el);
     }

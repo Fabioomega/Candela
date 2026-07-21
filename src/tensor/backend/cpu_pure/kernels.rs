@@ -85,6 +85,9 @@ pub fn compute_scalar_inplace<T: Numeric>(
     blas: CommonBLASOps<T>,
 ) -> TensorData<T> {
     let mut input = inputs.pop().unwrap();
+    // The input must be contiguous
+    debug_assert!(input.is_contiguous());
+
     for o_el in input.iter_slice_mut().unwrap() {
         for op in ops {
             match op {
@@ -99,7 +102,11 @@ pub fn compute_scalar_inplace<T: Numeric>(
         }
     }
 
-    input.into_layout(output_layout.clone())
+    let lay = output_layout
+        .clone()
+        .with_offset(input.offset() + output_layout.offset());
+
+    input.into_layout(lay)
 }
 
 pub fn compute_elementwise_tensor_tensor<T: Numeric, F: Fn(T, T) -> T>(
@@ -122,6 +129,9 @@ pub fn compute_elementwise_tensor_tensor_inplace<T: Numeric, F: Fn(T, T) -> T>(
     other: TensorData<T>,
     op: F,
 ) -> TensorData<T> {
+    // The output must be contiguous
+    debug_assert!(output.is_contiguous());
+
     for (o_el, x_el) in zip(output.iter_slice_mut().unwrap(), other.iter()) {
         *o_el = op(*o_el, *x_el);
     }

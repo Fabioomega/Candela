@@ -199,6 +199,8 @@ pub(crate) fn compute_scalar_inplace<T: NumberLike, F: Fn(T, T) -> T>(
 ) -> TensorData<T> {
     // TODO: If the planner is sound this should be safe to unwrap unchecked.
     let mut tensor = inputs.pop().unwrap();
+    // The output must be contiguous
+    debug_assert!(tensor.is_contiguous());
     let ptr = tensor.as_mut_ptr().unwrap();
 
     if tensor.is_contiguous() {
@@ -357,11 +359,13 @@ pub(crate) fn compute_elementwise_tensor_tensor_inplace<T: Copy + Default>(
     inputs.swap(reuse_index, last_idx);
     // TODO: unwrap can be removed after checking that the plan is sound
     let mut output = inputs.pop().unwrap();
+    // The output must be contiguous
+    debug_assert!(output.is_contiguous());
     let output_ptr = output.as_mut_ptr().unwrap();
     let other_is_left = reuse_index != 0;
 
     if inputs[0].is_contiguous() {
-        let n = output.storage.buffer.len() as i32;
+        let n = output.layout().len() as i32;
         let other_ptr = inputs[0].as_ptr();
         if other_is_left {
             unsafe { operation(n, other_ptr, output_ptr as *const T, output_ptr) };

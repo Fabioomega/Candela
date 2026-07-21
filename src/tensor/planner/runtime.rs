@@ -12,7 +12,7 @@ use crate::Layout;
 use crate::tensor::backend::Backend;
 use crate::tensor::graph::NodeKind;
 use crate::tensor::ops::def_op::OpKind;
-use crate::tensor::planner::get_id;
+use crate::tensor::planner::{get_id, get_layout};
 
 /// A live buffer tracked during planning.
 ///
@@ -195,7 +195,10 @@ pub(crate) fn classify<T, B: Backend>(
 
             id_slot_map
                 .get(&id)
-                .filter(|&&s| slot_is_last_read(&slots[s], op_location, output_layout.len()))
+                .filter(|&&s| {
+                    slot_is_last_read(&slots[s], op_location, output_layout.len())
+                        && get_layout(inputs[0]).is_contiguous()
+                })
                 .copied()
                 .map_or(assign_slot(slots, op_location, output_layout), |slot_idx| {
                     ExecKind::InPlace {
@@ -206,6 +209,10 @@ pub(crate) fn classify<T, B: Backend>(
         }
         OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Div => {
             for (i, inp) in inputs.iter().enumerate() {
+                if !get_layout(*inp).is_contiguous() {
+                    continue;
+                }
+
                 let id = get_id(inp);
 
                 // Guards against same node in 2 inputs (i. e. t + t).
