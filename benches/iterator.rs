@@ -277,7 +277,27 @@ impl<'a, T> Iterator for Iter<'a, T> {
             shape[1] = shape[0];
             shape[0] = 1;
 
+            // rank 2 promotion
+            shape[2] = shape[1];
+            shape[1] = shape[0];
+            shape[0] = 1;
+
             adj_stride[1] = adj_stride[0];
+
+            // rank 2 promotion
+            adj_stride[2] = adj_stride[1];
+            adj_stride[1] = adj_stride[0];
+            adj_stride[0] = adj_stride[1];
+
+            rank += 2;
+        } else if rank == 2 {
+            shape[2] = shape[1];
+            shape[1] = shape[0];
+            shape[0] = 1;
+
+            adj_stride[2] = adj_stride[1];
+            adj_stride[1] = adj_stride[0];
+            adj_stride[0] = adj_stride[1];
 
             rank += 1;
         }

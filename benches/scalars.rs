@@ -2,6 +2,7 @@ use candela::{
     Dimension, Layout,
     backend::{Backend, ComputeFor, CpuExperimental, CpuPure},
     skeleton::{Skeleton, SkeletonSlot},
+    walker::map_chunk,
 };
 use criterion::measurement::WallTime;
 use criterion::{
@@ -149,10 +150,42 @@ fn bench_handrolled_fresh(group: &mut BenchmarkGroup<'_, WallTime>, label: &str,
     }
 }
 
-fn scalars(c: &mut Criterion) {
+fn bench_walker_direct(group: &mut BenchmarkGroup<'_, WallTime>, label: &str, cfg: &FillConfig) {
+    for case in fill_cases::<f32, CpuExperimental, _>(cfg, build_scalar_alloc::<CpuExperimental>) {
+        let out_len = case.skeleton.len();
+        group.throughput(case.throughput);
+
+        let input = &case.inputs[0];
+        let data = input.data();
+        let layout = input.layout().clone();
+
+        group.bench_function(BenchmarkId::new(label, &case.label), |b| {
+            b.iter(|| {
+                let mut out: Vec<f32> = Vec::with_capacity(out_len);
+                // SAFETY: the walk writes all `out_len` elements before the
+                // black_box reads them - same contract as `run`'s output.
+                unsafe { out.set_len(out_len) };
+                map_chunk(
+                    black_box(data),
+                    black_box(&layout),
+                    black_box(&mut out),
+                    |src: &[f32], dst: &mut [f32]| {
+                        for (o, x) in dst.iter_mut().zip(src) {
+                            *o = 2.0 * *x + 1.0;
+                        }
+                    },
+                    |x: f32| 2.0 * x + 1.0,
+                );
+                black_box(&out);
+            });
+        });
+    }
+}
+
+fn alloc(c: &mut Criterion) {
     let plot_config = PlotConfiguration::default().summary_scale(AxisScale::Logarithmic);
 
-    let mut group = c.benchmark_group("scalar");
+    let mut group = c.benchmark_group("scalar_alloc");
     group.plot_config(plot_config);
 
     let sizes = &[
@@ -189,6 +222,25 @@ fn scalars(c: &mut Criterion) {
     );
     bench_handrolled(&mut group, "alloc_handrolled", &alloc);
     bench_handrolled_fresh(&mut group, "alloc_handrolled_fresh", &alloc);
+    bench_walker_direct(&mut group, "alloc_walker_direct", &alloc);
+
+    group.finish();
+}
+
+fn inplace(c: &mut Criterion) {
+    let plot_config = PlotConfiguration::default().summary_scale(AxisScale::Logarithmic);
+
+    let mut group = c.benchmark_group("scalar_inplace");
+    group.plot_config(plot_config);
+
+    let sizes = &[
+        SizeSpec::Elems(64),
+        SizeSpec::Elems(1024),
+        SizeSpec::L1,
+        SizeSpec::L2,
+        SizeSpec::L3,
+        SizeSpec::Dram,
+    ];
 
     let pair = FillConfig::new(2).variants(&[Variant::Contig]).sizes(sizes);
 
@@ -204,6 +256,27 @@ fn scalars(c: &mut Criterion) {
         &pair,
         build_scalar_inplace::<CpuPure>,
     );
+
+    group.finish();
+}
+
+fn add(c: &mut Criterion) {
+    let plot_config = PlotConfiguration::default().summary_scale(AxisScale::Logarithmic);
+
+    let mut group = c.benchmark_group("scalar_add");
+    group.plot_config(plot_config);
+
+    let sizes = &[
+        SizeSpec::Elems(64),
+        SizeSpec::Elems(1024),
+        SizeSpec::L1,
+        SizeSpec::L2,
+        SizeSpec::L3,
+        SizeSpec::Dram,
+    ];
+
+    let pair = FillConfig::new(2).variants(&[Variant::Contig]).sizes(sizes);
+
     bench_fill(
         &mut group,
         "add_new",
@@ -215,5 +288,5 @@ fn scalars(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, scalars);
+criterion_group!(benches, alloc, inplace, add);
 criterion_main!(benches);
