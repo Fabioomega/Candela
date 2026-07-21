@@ -85,6 +85,22 @@ static L3_BYTES: LazyLock<usize> =
 // count - copied verbatim from addressing.rs (adjusted-stride flat walk with a
 // register countdown), so the two contenders share an identical baseline.
 
+fn calculate_adjacent_dim_stride(stride: &[i32], slice_shape: &[usize]) -> [i32; MAX_DIMS] {
+    let rank = stride.len();
+    debug_assert!(rank >= 1, "stride must have rank >= 1");
+
+    let mut v = [0i32; MAX_DIMS];
+    v[..rank].copy_from_slice(stride);
+
+    let mut accum: i32 = 0;
+    for i in (0..rank - 1).rev() {
+        accum += stride[i + 1] * (slice_shape[i + 1] as i32 - 1);
+        v[i] -= accum;
+    }
+
+    v
+}
+
 fn simplify_duo_layout(
     layout_a: &Layout,
     layout_b: &Layout,
@@ -96,19 +112,22 @@ fn simplify_duo_layout(
 
     let mut w: usize = 0;
 
+    let before_adj_stride_a = calculate_adjacent_dim_stride(layout_a.stride(), layout_a.shape());
+    let before_adj_stride_b = calculate_adjacent_dim_stride(layout_b.stride(), layout_b.shape());
+
     shape[0] = layout_a.shape()[0];
-    adj_stride_a[0] = layout_a.adj_stride()[0];
-    adj_stride_b[0] = layout_b.adj_stride()[0];
+    adj_stride_a[0] = before_adj_stride_a[0];
+    adj_stride_b[0] = before_adj_stride_b[0];
     for i in 1..rank {
-        if layout_a.adj_stride()[i] == layout_a.adj_stride()[i - 1]
-            && layout_b.adj_stride()[i] == layout_b.adj_stride()[i - 1]
+        if before_adj_stride_a[i] == before_adj_stride_a[i - 1]
+            && before_adj_stride_b[i] == before_adj_stride_b[i - 1]
         {
             shape[w] *= layout_a.shape()[i];
         } else {
             w += 1;
             shape[w] = layout_a.shape()[i];
-            adj_stride_a[w] = layout_a.adj_stride()[i];
-            adj_stride_b[w] = layout_b.adj_stride()[i];
+            adj_stride_a[w] = before_adj_stride_a[i];
+            adj_stride_b[w] = before_adj_stride_b[i];
         }
     }
 
@@ -297,22 +316,6 @@ fn apply_count(
 
 //////////////////////////////////////////////////////////////////
 // DimWalker - the reusable N-operand walk.
-
-fn calculate_adjacent_dim_stride(stride: &[i32], slice_shape: &[usize]) -> [i32; MAX_DIMS] {
-    let rank = stride.len();
-    debug_assert!(rank >= 1, "stride must have rank >= 1");
-
-    let mut v = [0i32; MAX_DIMS];
-    v[..rank].copy_from_slice(stride);
-
-    let mut accum: i32 = 0;
-    for i in (0..rank - 1).rev() {
-        accum += stride[i + 1] * (slice_shape[i + 1] as i32 - 1);
-        v[i] -= accum;
-    }
-
-    v
-}
 
 /// Collapse the shared shape, merging any run of dims that every operand walks
 /// with the same adjacent stride. A dim boundary survives only where at least

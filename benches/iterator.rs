@@ -42,22 +42,44 @@ enum ChunkKind<'a, T> {
     },
 }
 
+/// Adjacent (rewind-baked) stride: `adj_stride[i]` is the buffer step to take
+/// when advancing axis `i` by one *and* rewinding all inner axes back to zero,
+/// which is exactly what an accumulating odometer walk needs. This used to live
+/// on `Layout`; now it's derived on demand from the raw stride and shape.
+fn calculate_adjacent_dim_stride(stride: &[i32], slice_shape: &[usize]) -> [i32; MAX_DIMS] {
+    let rank = stride.len();
+    debug_assert!(rank >= 1, "stride must have rank >= 1");
+
+    let mut v = [0i32; MAX_DIMS];
+    v[..rank].copy_from_slice(stride);
+
+    let mut accum: i32 = 0;
+    for i in (0..rank - 1).rev() {
+        accum += stride[i + 1] * (slice_shape[i + 1] as i32 - 1);
+        v[i] -= accum;
+    }
+
+    v
+}
+
 fn simplify_layout(layout: &Layout) -> (usize, [usize; MAX_DIMS], [i32; MAX_DIMS]) {
     let rank: usize = layout.shape().len();
     let mut shape = [0usize; MAX_DIMS];
     let mut adj_stride = [0i32; MAX_DIMS];
 
+    let src_adj_stride = calculate_adjacent_dim_stride(layout.stride(), layout.shape());
+
     let mut w: usize = 0;
 
     shape[0] = layout.shape()[0];
-    adj_stride[0] = layout.adj_stride()[0];
+    adj_stride[0] = src_adj_stride[0];
     for i in 1..rank {
-        if layout.adj_stride()[i] == layout.adj_stride()[i - 1] {
+        if src_adj_stride[i] == src_adj_stride[i - 1] {
             shape[w] *= layout.shape()[i];
         } else {
             w += 1;
             shape[w] = layout.shape()[i];
-            adj_stride[w] = layout.adj_stride()[i];
+            adj_stride[w] = src_adj_stride[i];
         }
     }
 
@@ -192,6 +214,7 @@ pub struct Iter<'a, T> {
     pos: usize,
     counter: [usize; MAX_DIMS],
     layout: &'a Layout,
+    adj_stride: [i32; MAX_DIMS],
     left_over: usize,
 }
 
@@ -206,6 +229,7 @@ impl<'a, T> Iter<'a, T> {
             data,
             pos: layout.offset(),
             layout,
+            adj_stride: calculate_adjacent_dim_stride(layout.stride(), layout.shape()),
             counter: [0; MAX_DIMS],
             left_over: layout.len(),
         }
@@ -242,7 +266,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
         self.pos = self
             .pos
-            .wrapping_add_signed(self.layout.adj_stride()[step_dim] as isize);
+            .wrapping_add_signed(self.adj_stride[step_dim] as isize);
 
         self.left_over -= 1;
 

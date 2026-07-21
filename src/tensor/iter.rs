@@ -1,7 +1,7 @@
 use std::iter::{FusedIterator, zip};
 
-use crate::OpError;
 use crate::tensor::MAX_DIMS;
+use crate::tensor::internals::calculate_adjacent_dim_stride;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::traits::StreamingIterator;
 use crate::tensor::walker::fold_ref;
@@ -59,6 +59,7 @@ pub struct Iter<'a, T> {
     data: &'a [T],
     pos: usize,
     counter: [usize; MAX_DIMS],
+    adj_stride: [i32; MAX_DIMS],
     layout: &'a Layout,
     left_over: usize,
 }
@@ -75,31 +76,10 @@ impl<'a, T> Iter<'a, T> {
             pos: layout.offset(),
             layout,
             counter: [0; MAX_DIMS],
+            adj_stride: calculate_adjacent_dim_stride(layout.stride(), layout.shape()),
             left_over: layout.len(),
         }
     }
-}
-
-fn simplify_layout(layout: &Layout) -> (usize, [usize; MAX_DIMS], [i32; MAX_DIMS]) {
-    let rank: usize = layout.shape().len();
-    let mut shape = [0usize; MAX_DIMS];
-    let mut adj_stride = [0i32; MAX_DIMS];
-
-    let mut w: usize = 0;
-
-    shape[0] = layout.shape()[0];
-    adj_stride[0] = layout.adj_stride()[0];
-    for i in 1..rank {
-        if layout.adj_stride()[i] == layout.adj_stride()[i - 1] {
-            shape[w] *= layout.shape()[i];
-        } else {
-            w += 1;
-            shape[w] = layout.shape()[i];
-            adj_stride[w] = layout.adj_stride()[i];
-        }
-    }
-
-    (w + 1, shape, adj_stride)
 }
 
 impl<'a, T> Iterator for Iter<'a, T> {
@@ -132,7 +112,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
 
         self.pos = self
             .pos
-            .wrapping_add_signed(self.layout.adj_stride()[step_dim] as isize);
+            .wrapping_add_signed(self.adj_stride[step_dim] as isize);
 
         self.left_over -= 1;
 
@@ -162,20 +142,25 @@ impl<'a, T> FusedIterator for Iter<'a, T> {}
 pub struct MutSliceIter<'a, T> {
     data: &'a mut [T],
     pos: isize,
-    counter: Box<[usize]>,
+    counter: [usize; MAX_DIMS],
+    adj_stride: [i32; MAX_DIMS],
     layout: &'a Layout,
     left_over: usize,
 }
 
 impl<'a, T: Clone> MutSliceIter<'a, T> {
     pub fn new(data: &'a mut Vec<T>, data_len: usize, layout: &'a Layout) -> Self {
-        let counter = vec![0; layout.shape().len()].into_boxed_slice();
+        debug_assert!(
+            layout.shape().len() <= MAX_DIMS,
+            "dimensions higher than 8 are not support for iteration!"
+        );
 
         Self {
             data,
             pos: layout.offset() as isize,
             layout,
-            counter,
+            counter: [0; MAX_DIMS],
+            adj_stride: calculate_adjacent_dim_stride(layout.stride(), layout.shape()),
             left_over: data_len,
         }
     }
@@ -189,11 +174,11 @@ impl<'a, T: Clone> Iterator for MutSliceIter<'a, T> {
             return None;
         }
 
-        let last = self.counter.len() - 1;
+        let last = self.layout.shape().len() - 1;
         self.counter[last] += 1;
         let mut step_dim = last;
 
-        for dim in (1..self.counter.len()).rev() {
+        for dim in (1..self.layout.shape().len()).rev() {
             if self.counter[dim] == self.layout.shape()[dim] {
                 self.counter[dim] = 0;
                 self.counter[dim - 1] += 1;
@@ -208,7 +193,7 @@ impl<'a, T: Clone> Iterator for MutSliceIter<'a, T> {
 
         unsafe {
             let item = &mut self.data[pos] as *mut T;
-            self.pos += self.layout.adj_stride()[step_dim] as isize;
+            self.pos += self.adj_stride[step_dim] as isize;
             self.left_over -= 1;
 
             Some(&mut *item)
@@ -285,19 +270,24 @@ pub struct InformedIter<'a, T: Clone> {
     layout: &'a Layout,
     next_state: StepInfo<T>,
     pos: i64,
-    counter: Vec<usize>,
+    counter: [usize; MAX_DIMS],
+    adj_stride: [i32; MAX_DIMS],
 }
 
 impl<'a, T: Clone> InformedIter<'a, T> {
     pub fn new(data: &'a [T], layout: &'a Layout) -> Self {
-        let len = layout.shape().len();
+        debug_assert!(
+            layout.shape().len() <= MAX_DIMS,
+            "dimensions higher than 8 are not support for iteration!"
+        );
 
         Self {
             buffer: data,
             layout,
             next_state: StepInfo::<T>::EnterDimension(0),
             pos: layout.offset() as i64,
-            counter: vec![0; len],
+            counter: [0; MAX_DIMS],
+            adj_stride: calculate_adjacent_dim_stride(layout.stride(), layout.shape()),
         }
     }
 }
@@ -332,22 +322,22 @@ impl<'a, T: Copy> Iterator for InformedIter<'a, T> {
                     return Some(StepInfo::ExitDimension(dim));
                 }
 
-                self.pos += self.layout.adj_stride()[dim - 1] as i64;
+                self.pos += self.adj_stride[dim - 1] as i64;
                 self.next_state = StepInfo::EnterDimension(dim);
 
                 Some(StepInfo::ExitDimension(dim))
             }
             StepInfo::Value(v) => {
-                let counter_last = self.counter.len() - 1;
+                let counter_last = self.layout.shape().len() - 1;
 
-                if *self.counter.last().unwrap() == *self.layout.shape().last().unwrap() - 1 {
-                    self.next_state = StepInfo::ExitDimension(self.counter.len() - 1);
+                if self.counter[counter_last] == *self.layout.shape().last().unwrap() - 1 {
+                    self.next_state = StepInfo::ExitDimension(counter_last);
                     self.counter[counter_last] = 0;
 
                     return Some(StepInfo::Value(v));
                 }
 
-                self.pos += *self.layout.adj_stride().last().unwrap() as i64;
+                self.pos += self.adj_stride[counter_last] as i64;
                 self.counter[counter_last] += 1;
 
                 self.next_state = StepInfo::Value(self.buffer[self.pos as usize]);
@@ -357,15 +347,7 @@ impl<'a, T: Copy> Iterator for InformedIter<'a, T> {
             StepInfo::End => None,
         }
     }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = self.layout.len() - self.pos as usize;
-
-        (len, Some(len))
-    }
 }
-
-impl<'a, T: Copy> ExactSizeIterator for InformedIter<'a, T> {}
 
 impl<'a, T: Copy> FusedIterator for InformedIter<'a, T> {}
 

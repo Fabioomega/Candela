@@ -38,10 +38,6 @@ pub trait Dimension {
         self.layout().stride()
     }
 
-    fn adj_stride(&self) -> &'_ [i32] {
-        self.layout().adj_stride()
-    }
-
     fn len(&self) -> usize {
         self.layout().len()
     }
@@ -58,16 +54,8 @@ pub trait Dimension {
         self.layout().is_contiguous()
     }
 
-    fn is_contiguous_at_axis(&self, axis: usize) -> bool {
-        self.layout().is_contiguous_at_axis(axis)
-    }
-
     fn is_transposed(&self) -> bool {
         self.layout().is_transposed()
-    }
-
-    fn is_transposed_at_axis(&self, axis: usize) -> bool {
-        self.layout().is_transposed_at_axis(axis)
     }
 }
 

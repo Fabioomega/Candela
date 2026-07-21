@@ -64,6 +64,26 @@ static L3_BYTES: LazyLock<usize> =
 // Layout collapse - copied from the zip bench so the timed code sees the
 // exact same simplified geometry.
 
+/// Adjacent (rewind-baked) stride: `adj_stride[i]` is the buffer step to take
+/// when advancing axis `i` by one *and* rewinding all inner axes back to zero,
+/// which is exactly what an accumulating odometer walk needs. This used to live
+/// on `Layout`; now it's derived on demand from the raw stride and shape.
+fn calculate_adjacent_dim_stride(stride: &[i32], slice_shape: &[usize]) -> [i32; MAX_DIMS] {
+    let rank = stride.len();
+    debug_assert!(rank >= 1, "stride must have rank >= 1");
+
+    let mut v = [0i32; MAX_DIMS];
+    v[..rank].copy_from_slice(stride);
+
+    let mut accum: i32 = 0;
+    for i in (0..rank - 1).rev() {
+        accum += stride[i + 1] * (slice_shape[i + 1] as i32 - 1);
+        v[i] -= accum;
+    }
+
+    v
+}
+
 fn simplify_duo_layout(
     layout_a: &Layout,
     layout_b: &Layout,
@@ -73,21 +93,22 @@ fn simplify_duo_layout(
     let mut adj_stride_a = [0i32; MAX_DIMS];
     let mut adj_stride_b = [0i32; MAX_DIMS];
 
+    let src_adj_a = calculate_adjacent_dim_stride(layout_a.stride(), layout_a.shape());
+    let src_adj_b = calculate_adjacent_dim_stride(layout_b.stride(), layout_b.shape());
+
     let mut w: usize = 0;
 
     shape[0] = layout_a.shape()[0];
-    adj_stride_a[0] = layout_a.adj_stride()[0];
-    adj_stride_b[0] = layout_b.adj_stride()[0];
+    adj_stride_a[0] = src_adj_a[0];
+    adj_stride_b[0] = src_adj_b[0];
     for i in 1..rank {
-        if layout_a.adj_stride()[i] == layout_a.adj_stride()[i - 1]
-            && layout_b.adj_stride()[i] == layout_b.adj_stride()[i - 1]
-        {
+        if src_adj_a[i] == src_adj_a[i - 1] && src_adj_b[i] == src_adj_b[i - 1] {
             shape[w] *= layout_a.shape()[i];
         } else {
             w += 1;
             shape[w] = layout_a.shape()[i];
-            adj_stride_a[w] = layout_a.adj_stride()[i];
-            adj_stride_b[w] = layout_b.adj_stride()[i];
+            adj_stride_a[w] = src_adj_a[i];
+            adj_stride_b[w] = src_adj_b[i];
         }
     }
 
@@ -106,15 +127,16 @@ fn simplify_duo_layout_raw(
     let mut raw_a = [0i32; MAX_DIMS];
     let mut raw_b = [0i32; MAX_DIMS];
 
+    let src_adj_a = calculate_adjacent_dim_stride(layout_a.stride(), layout_a.shape());
+    let src_adj_b = calculate_adjacent_dim_stride(layout_b.stride(), layout_b.shape());
+
     let mut w: usize = 0;
 
     shape[0] = layout_a.shape()[0];
     raw_a[0] = layout_a.stride()[0];
     raw_b[0] = layout_b.stride()[0];
     for i in 1..rank {
-        if layout_a.adj_stride()[i] == layout_a.adj_stride()[i - 1]
-            && layout_b.adj_stride()[i] == layout_b.adj_stride()[i - 1]
-        {
+        if src_adj_a[i] == src_adj_a[i - 1] && src_adj_b[i] == src_adj_b[i - 1] {
             shape[w] *= layout_a.shape()[i];
             raw_a[w] = layout_a.stride()[i];
             raw_b[w] = layout_b.stride()[i];

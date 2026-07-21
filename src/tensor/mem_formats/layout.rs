@@ -40,10 +40,10 @@ use crate::tensor::{
 pub struct Layout {
     pub(crate) shape: [usize; MAX_DIMS],
     pub(crate) stride: [i32; MAX_DIMS],
-    pub(crate) adj_stride: [i32; MAX_DIMS],
     pub(crate) offset: usize,
     pub(crate) rank: usize,
     pub(crate) len: usize,
+    pub(crate) is_contiguous: bool,
 }
 
 #[inline]
@@ -52,6 +52,23 @@ pub(crate) fn validate_shape(shape: &[usize]) -> Result<(), OpError> {
         return Err(OpError::ZeroRankShape);
     }
     Ok(())
+}
+
+#[inline]
+fn calculate_is_contiguous(shape: &[usize], stride: &[i32]) -> bool {
+    let mut expected: i32 = 1;
+    for i in (0..shape.len()).rev() {
+        if shape[i] == 1 {
+            continue;
+        }
+
+        if stride[i] != expected {
+            return false;
+        }
+
+        expected *= shape[i] as i32;
+    }
+    true
 }
 
 impl Layout {
@@ -81,10 +98,10 @@ impl Layout {
         Self {
             shape,
             stride,
-            adj_stride: [1; MAX_DIMS],
             offset: 0,
             rank,
             len,
+            is_contiguous: true,
         }
     }
 
@@ -100,10 +117,10 @@ impl Layout {
         Self {
             shape: [0; MAX_DIMS],
             stride: [0; MAX_DIMS],
-            adj_stride: [0; MAX_DIMS],
             offset: 0,
             rank: 1,
             len: 0,
+            is_contiguous: true,
         }
     }
 
@@ -147,19 +164,17 @@ impl Layout {
 
         let mut shape_arr = [0usize; MAX_DIMS];
         let mut stride_arr = [0i32; MAX_DIMS];
-        let mut adj_stride_arr = [0i32; MAX_DIMS];
 
         shape_arr[..rank].copy_from_slice(shape);
         stride_arr[..rank].copy_from_slice(stride);
-        adj_stride_arr[..rank].copy_from_slice(adj_stride);
 
         Self {
             shape: shape_arr,
             stride: stride_arr,
-            adj_stride: adj_stride_arr,
             offset,
             rank,
             len,
+            is_contiguous: calculate_is_contiguous(shape, stride),
         }
     }
 
@@ -193,10 +208,10 @@ impl Layout {
         Self {
             shape: shape_arr,
             stride: stride_arr,
-            adj_stride: calculate_adjacent_dim_stride(stride, shape),
             offset,
             rank,
             len,
+            is_contiguous: calculate_is_contiguous(shape, stride),
         }
     }
 
@@ -269,13 +284,15 @@ impl Layout {
         let info = SliceInfo::from_range(self, range)?;
         let len: usize = info.shape[..self.rank].iter().product();
 
+        let is_contiguous = calculate_is_contiguous(&info.shape[..self.rank], self.stride());
+
         Ok(Self {
             shape: info.shape,
             stride: self.stride,
-            adj_stride: info.adj_stride,
             offset: info.offset,
             rank: self.rank,
             len,
+            is_contiguous,
         })
     }
 
@@ -302,15 +319,15 @@ impl Layout {
             shape.swap(i, last);
         }
 
-        let adj_stride = calculate_adjacent_dim_stride(&stride[..rank], &shape[..rank]);
+        let is_contiguous = calculate_is_contiguous(&shape[..self.rank], &stride[..self.rank]);
 
         Self {
             shape,
             stride,
-            adj_stride,
             offset: self.offset,
             rank,
             len: self.len,
+            is_contiguous,
         }
     }
 
@@ -364,15 +381,15 @@ impl Layout {
             shape[new_axis] = self.shape[axis];
         }
 
-        let adj_stride = calculate_adjacent_dim_stride(&stride[..rank], &shape[..rank]);
+        let is_contiguous = calculate_is_contiguous(&shape[..self.rank], &stride[..self.rank]);
 
         Ok(Self {
             shape,
             stride,
-            adj_stride,
             offset: self.offset,
             rank,
             len: self.len,
+            is_contiguous,
         })
     }
 
@@ -415,8 +432,6 @@ impl Layout {
             }
         }
 
-        // Right-align the source strides under the target shape: the extra leading
-        // axes keep their zero stride, the rest copy the source stride.
         let mut new_stride = [0i32; MAX_DIMS];
         let lead = rank - src_rank;
         new_stride[lead..rank].copy_from_slice(&self.stride[..src_rank]);
@@ -427,16 +442,21 @@ impl Layout {
             }
         }
 
-        let adj_stride = calculate_adjacent_dim_stride(&new_stride[..rank], &shape[..rank]);
         let len: usize = shape[..rank].iter().product();
+
+        let is_contiguous = if self.rank == rank && shape == self.shape {
+            self.is_contiguous
+        } else {
+            false
+        };
 
         Ok(Self {
             shape,
             stride: new_stride,
-            adj_stride,
             offset: self.offset,
             rank,
             len,
+            is_contiguous,
         })
     }
 
@@ -518,29 +538,7 @@ impl Layout {
     /// ```
     #[inline]
     pub fn is_contiguous(&self) -> bool {
-        self.is_contiguous_at_axis(0)
-    }
-
-    /// Like [`is_contiguous`](Self::is_contiguous), but only checks the axes from
-    /// `axis` inward, ignoring how the outer axes are arranged.
-    ///
-    /// An out-of-range `axis` returns `false`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use candela::Layout;
-    /// let l = Layout::new((2, 3));
-    /// assert!(l.is_contiguous_at_axis(0));
-    /// assert!(!l.is_contiguous_at_axis(9)); // out of range
-    /// ```
-    #[inline]
-    pub fn is_contiguous_at_axis(&self, axis: usize) -> bool {
-        if axis >= self.rank {
-            return false;
-        }
-
-        self.adj_stride[axis] == 1 && !self.stride[axis + 1..self.rank].contains(&0)
+        self.is_contiguous
     }
 
     /// Returns `true` if any axis runs backwards relative to a contiguous layout -
@@ -556,34 +554,18 @@ impl Layout {
     /// ```
     #[inline]
     pub fn is_transposed(&self) -> bool {
-        for (i, &adj_stride) in self.adj_stride[..self.rank].iter().enumerate() {
-            if adj_stride < 0 && self.stride[i] != 0 {
+        let shape = &self.shape[..self.rank];
+        let stride = &self.stride[..self.rank];
+
+        let mut inner_span: i64 = 0;
+        for i in (0..self.rank).rev() {
+            if stride[i] != 0 && (stride[i] as i64) < inner_span {
                 return true;
             }
+            inner_span += stride[i] as i64 * (shape[i] as i64 - 1);
         }
 
         false
-    }
-
-    /// Like [`is_transposed`](Self::is_transposed), but tests a single `axis`.
-    ///
-    /// An out-of-range `axis` returns `false`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use candela::Layout;
-    /// let l = Layout::new((3, 4)); // fresh: no axis is transposed
-    /// assert!(!l.is_transposed_at_axis(0));
-    /// assert!(!l.is_transposed_at_axis(9)); // out of range
-    /// ```
-    #[inline]
-    pub fn is_transposed_at_axis(&self, axis: usize) -> bool {
-        if axis >= self.rank {
-            return false;
-        }
-
-        self.adj_stride[axis] < 0 && self.stride[axis] != 0
     }
 
     /// Returns `true` for a 2-D layout whose two axes are transposed; always
@@ -643,21 +625,6 @@ impl Layout {
     #[inline]
     pub fn stride(&self) -> &'_ [i32] {
         &self.stride[..self.rank]
-    }
-
-    /// The adjacent stride: the per-axis step a flat iterator applies when it
-    /// rolls over into the next axis. See the [layout docs](crate::docs::layout).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use candela::Layout;
-    /// // All ones for a freshly built contiguous layout.
-    /// assert_eq!(Layout::new((2, 3)).adj_stride(), &[1, 1]);
-    /// ```
-    #[inline]
-    pub fn adj_stride(&self) -> &'_ [i32] {
-        &self.adj_stride[..self.rank]
     }
 
     /// The starting index into the backing buffer.

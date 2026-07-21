@@ -125,7 +125,6 @@ impl From<Range<i32>> for SliceRange {
 pub struct SliceInfo {
     pub(crate) offset: usize,
     pub(crate) shape: [usize; MAX_DIMS],
-    pub(crate) adj_stride: [i32; MAX_DIMS],
 }
 
 impl SliceInfo {
@@ -176,12 +175,9 @@ impl SliceInfo {
             return Err(OpError::InvalidSliceShape(layout.len(), len));
         }
 
-        let adj_stride = calculate_adjacent_dim_stride(layout.stride(), &new_shape[..rank]);
-
         Ok(Self {
             offset: offset as usize,
             shape: new_shape,
-            adj_stride,
         })
     }
 }
