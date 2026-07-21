@@ -16,6 +16,7 @@ pub mod shape;
 pub(crate) mod skeleton;
 mod storage;
 pub(crate) mod traits;
+pub(crate) mod walker;
 
 pub(crate) mod graph;
 pub(crate) mod ops;
@@ -23,7 +24,7 @@ pub mod promise;
 pub mod tensor_interface;
 pub use convenience::*;
 
-pub use iter::{InformedIter, Iter, MutIter, StepInfo};
+pub use iter::{InformedIter, Iter, StepInfo};
 pub use mem_formats::layout::Layout;
 pub use mem_formats::slice::SliceRange;
 pub use promise::{CachedTensorPromise, TensorPromise};
