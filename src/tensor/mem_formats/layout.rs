@@ -144,16 +144,10 @@ impl Layout {
     ///
     /// Panics (in debug builds) if `shape`, `stride`, and `adj_stride` do not all
     /// have the same length, or if that length exceeds the maximum supported rank.
-    pub fn from_raw_parts(
-        shape: &[usize],
-        stride: &[i32],
-        adj_stride: &[i32],
-        offset: usize,
-        len: usize,
-    ) -> Self {
+    pub fn from_raw_parts(shape: &[usize], stride: &[i32], offset: usize, len: usize) -> Self {
         let rank = shape.len();
         debug_assert!(
-            rank == stride.len() && rank == adj_stride.len(),
+            rank == stride.len(),
             "shape, stride, and adj_stride must share the same rank"
         );
         debug_assert!(

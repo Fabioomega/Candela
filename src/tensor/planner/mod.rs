@@ -9,6 +9,7 @@ pub(crate) use plan::ComputeKind;
 pub(crate) use plan::OutputKind;
 pub(crate) use plan::{core_plan_computation, plan_computation};
 
+use crate::Layout;
 use crate::tensor::backend::Backend;
 use crate::tensor::graph::NodeKind;
 
@@ -20,5 +21,16 @@ pub(crate) fn get_id<T, B: Backend>(node: &NodeKind<T, B>) -> usize {
         NodeKind::Node(node) => node.id,
         NodeKind::Cache(cache) => cache.get_node().id,
         NodeKind::Baked(baked) => baked.id,
+    }
+}
+
+#[inline]
+pub(crate) fn get_layout<T, B: Backend>(node: &NodeKind<T, B>) -> &Layout {
+    match node {
+        NodeKind::Edge(edge) => edge.layout(),
+        NodeKind::Slot(slot) => slot.layout(),
+        NodeKind::Node(node) => node.layout(),
+        NodeKind::Cache(cache) => cache.get_node().layout(),
+        NodeKind::Baked(baked) => baked.layout(),
     }
 }
