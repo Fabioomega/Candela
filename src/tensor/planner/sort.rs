@@ -3,7 +3,7 @@
 //! Yields graph nodes in post-order (inputs before the ops that consume them)
 //! so the planner and executor can process them in a safe dependency order.
 
-use std::collections::HashSet;
+use fx_hash::{FxHashSet, FxHashSetExt};
 
 use crate::tensor::backend::Backend;
 use crate::tensor::graph::{NodeKind, TensorGraphNode};
@@ -15,7 +15,7 @@ use crate::tensor::planner::get_id;
 /// graphs don't overflow the call stack.
 pub(crate) struct TopologicalSortIter<'a, T, B: Backend> {
     stack: Vec<(&'a NodeKind<T, B>, bool)>,
-    visited: HashSet<usize>,
+    visited: FxHashSet<usize>,
 }
 
 impl<'a, T, B: Backend> TopologicalSortIter<'a, T, B> {
@@ -24,7 +24,7 @@ impl<'a, T, B: Backend> TopologicalSortIter<'a, T, B> {
         stack.extend(base_node.inputs.iter().map(|i| (i, false)));
         Self {
             stack,
-            visited: HashSet::new(),
+            visited: FxHashSet::new(),
         }
     }
 }

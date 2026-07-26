@@ -910,8 +910,7 @@ macro_rules! impl_transpose_axes {
                 axes: impl IntoShape,
             ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
                 let (rank, axes) = axes.into_shape();
-                transpose_axes_impl(self, &axes[..rank])
-                    .map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
+                transpose_axes_impl(self, &axes[..rank]).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }
     };
@@ -992,8 +991,7 @@ macro_rules! impl_broadcast {
                 shape: impl IntoShape,
             ) -> Result<<$ty<T, B> as UnaryResult<T, B>>::Output, OpError> {
                 let (rank, shape) = shape.into_shape();
-                broadcast_impl(self, &shape[..rank])
-                    .map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
+                broadcast_impl(self, &shape[..rank]).map(<$ty<T, B> as UnaryResult<T, B>>::wrap)
             }
         }
     };

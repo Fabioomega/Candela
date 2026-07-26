@@ -4,9 +4,10 @@
 //! that tells the executor exactly what to run, which buffer to write into, what to
 //! free after each step, and which buffer holds the final result.
 
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
+
+use fx_hash::{FxHashMap, FxHashMapExt};
 
 use crate::tensor::backend::Backend;
 use crate::tensor::graph::{
@@ -102,7 +103,7 @@ fn resolve_inputs<'a, T, B: Backend>(
 fn track_lifetimes<T, B: Backend>(
     resolved: &[&NodeKind<T, B>],
     pos: usize,
-    id_op: &HashMap<usize, usize>,
+    id_op: &FxHashMap<usize, usize>,
     ops: &mut [OpPlan<'_, T, B>],
 ) {
     for inp in resolved {
@@ -120,17 +121,20 @@ fn track_lifetimes<T, B: Backend>(
 struct PlanState<'a, T, B: Backend> {
     plan: Vec<ComputeKind<'a, T, B>>,
     slots: Vec<Slot>,
-    id_slot_map: HashMap<usize, usize>,
+    id_slot_map: FxHashMap<usize, usize>,
     ref_deallocs: Vec<(usize, Option<usize>)>,
 }
 
 impl<'a, T, B: Backend> PlanState<'a, T, B> {
-    fn new() -> Self {
+    fn with_capacity(capacity: usize) -> Self {
+        let mut id_slot_map = FxHashMap::new();
+        id_slot_map.reserve(capacity);
+
         Self {
-            plan: Vec::with_capacity(32),
-            slots: Vec::with_capacity(32),
-            id_slot_map: HashMap::with_capacity(32),
-            ref_deallocs: Vec::with_capacity(8),
+            plan: Vec::with_capacity(capacity),
+            slots: Vec::with_capacity(capacity / 2),
+            id_slot_map,
+            ref_deallocs: Vec::with_capacity(capacity / 2),
         }
     }
 
@@ -368,7 +372,8 @@ fn pre_plan<'a, T: PartialEq + Clone, B: Backend>(
     base_node: &'a TensorGraphNode<T, B>,
 ) -> PrePlan<'a, T, B> {
     let dag_iter = topological_sort(base_node);
-    let mut id_op: HashMap<usize, usize> = HashMap::with_capacity(32);
+    let mut id_op: FxHashMap<usize, usize> = FxHashMap::new();
+    id_op.reserve(32);
     let mut ops: Vec<OpPlan<'_, T, B>> = Vec::with_capacity(32);
     let mut alias_map: AliasMap<'_, T, B> = AliasMap::new();
     let mut external_inputs: Vec<usize> = Vec::with_capacity(8);
@@ -566,12 +571,12 @@ pub(crate) struct CorePlan<'a, T, B: Backend> {
 pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
     base_node: &TensorGraphNode<T, B>,
 ) -> CorePlan<'_, T, B> {
-    let mut state: PlanState<'_, T, B> = PlanState::new();
     let PrePlan {
         pre_plan,
         root,
         external_inputs,
     } = pre_plan(base_node);
+    let mut state: PlanState<'_, T, B> = PlanState::with_capacity(pre_plan.len());
 
     let ops_len = pre_plan.len();
 

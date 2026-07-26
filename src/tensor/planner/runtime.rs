@@ -6,7 +6,7 @@
 //! [`Slot`] table. Alias and lifetime analysis are done earlier by the
 //! pre-planner; this stage only picks a buffer strategy.
 
-use std::collections::HashMap;
+use fx_hash::FxHashMap;
 
 use crate::Layout;
 use crate::tensor::backend::Backend;
@@ -85,7 +85,7 @@ pub(crate) fn classify<T, B: Backend>(
     output_layout: &Layout,
     op_location: usize,
     slots: &[Slot],
-    id_slot_map: &HashMap<usize, usize>,
+    id_slot_map: &FxHashMap<usize, usize>,
 ) -> ExecKind {
     match op {
         // References

@@ -14,7 +14,7 @@
 //! single-hop so later consumers of the claimed node resolve to the canonical
 //! producer.
 
-use std::collections::HashMap;
+use fx_hash::{FxHashMap, FxHashMapExt};
 
 use crate::tensor::backend::Backend;
 use crate::tensor::graph::NodeKind;
@@ -57,14 +57,14 @@ pub(crate) enum AliasKind<'a, T, B: Backend> {
 /// [`resolve`]: AliasMap::resolve
 /// [`takeover`]: AliasMap::takeover
 pub(crate) struct AliasMap<'a, T, B: Backend> {
-    map: HashMap<usize, (&'a NodeKind<T, B>, Tag)>,
+    map: FxHashMap<usize, (&'a NodeKind<T, B>, Tag)>,
 }
 
 impl<'a, T, B: Backend> AliasMap<'a, T, B> {
     pub fn new() -> Self {
-        Self {
-            map: HashMap::with_capacity(32),
-        }
+        let mut map = FxHashMap::new();
+        map.reserve(32);
+        Self { map }
     }
 
     /// Return the node `node` resolves to: its alias-map entry if present,
