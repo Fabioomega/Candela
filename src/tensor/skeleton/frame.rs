@@ -665,6 +665,11 @@ impl<T, B: Backend> Dimension for Skeleton<T, B> {
 /// caching or memory reuse by the system allocator, so the figures may differ
 /// from what actually happens at runtime.
 ///
+/// Candela also uses a handful of bookkeeping allocations that are not
+/// counted. For anything but the smallest tensors this is noise next to the
+/// buffers above; it only becomes comparable to the work when a step does very
+/// little of it.
+///
 /// # Examples
 ///
 /// ```
