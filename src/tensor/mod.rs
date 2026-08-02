@@ -9,7 +9,6 @@ pub mod errors;
 mod executor;
 mod internals;
 mod iter;
-mod macros;
 mod mem_formats;
 mod planner;
 pub mod shape;

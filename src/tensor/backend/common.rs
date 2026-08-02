@@ -1,12 +1,17 @@
-use crate::{branch_fast_iter, tensor::storage::TensorData};
+use crate::tensor::storage::TensorData;
+use crate::tensor::walker::map_chunk;
 
 #[inline]
 pub(crate) fn clone_to_buffer<T: Clone>(tensor: &TensorData<T>, buffer: &mut [T]) {
-    branch_fast_iter!(tensor.fast_iter() => iter, {
-        for (i, el) in iter.cloned().enumerate() {
-            buffer[i] = el;
-        }
-    })
+    map_chunk(
+        tensor.data(),
+        tensor.layout(),
+        buffer,
+        |src, dst| {
+            dst.clone_from_slice(src);
+        },
+        |x| x,
+    );
 }
 
 #[inline]

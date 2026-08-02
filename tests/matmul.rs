@@ -1,9 +1,12 @@
 mod common;
 
+use candela::backend::{Backend, CpuPure};
 use candela::skeleton::SkeletonSlot;
 use candela::{Dimension, FloatLikeTensorElement, Layout, Tensor, srange};
 use common::{assert_approx_eq, assert_approx_eq_by, cast, tensor_of};
 use rstest::rstest;
+
+use crate::common::init_tracing;
 
 // ── basic shape correctness ───────────────────────────────────────────────────
 
@@ -57,11 +60,50 @@ fn matmul_non_square<T: FloatLikeTensorElement>(#[case] _t: T) {
 #[case::f32(0.0f32)]
 fn matmul_transposed_rhs<T: FloatLikeTensorElement>(#[case] _t: T) {
     // A = [2,3], B^T means B is stored transposed in memory but matmul treats it as [3,4]
+    // A  = [[0,1,2],[3,4,5]]
+    // B  = [[0,1,2],[3,4,5],[6,7,8],[9,10,11]] stored as [4,3]
+    // B^T viewed as [3,4], so C[i][j] is the dot product of A's row i with B's row j.
     let a: Tensor<T> = srange!(6, &[2, 3]);
     let b: Tensor<T> = srange!(12, &[4, 3]); // will be transposed → [3,4]
     let bt = b.transpose();
     let c = a.matmul(&bt).unwrap().materialize();
     assert_eq!(c.shape(), &[2, 4]);
+    // The values matter as much as the shape here: k=3 and n=4 differ, so a GEMM
+    // handed the wrong extent for the transposed operand still fills a plausibly
+    // shaped output with wrong numbers.
+    assert_approx_eq(c.data(), &[5.0, 14.0, 23.0, 32.0, 14.0, 50.0, 86.0, 122.0]);
+}
+
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn matmul_transposed_lhs<T: FloatLikeTensorElement>(#[case] _t: T) {
+    // A is stored as [3,2] and viewed transposed as [2,3]: m=2, k=3, and both
+    // differ from each other and from n=4, so no swapped extent can pass by
+    // coincidence.
+    // A^T = [[1,3,5],[2,4,6]]
+    // B   = [[0,1,2,3],[4,5,6,7],[8,9,10,11]]
+    let a = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+    let b: Tensor<T> = srange!(12, &[3, 4]);
+    let c = a.transpose().matmul(&b).unwrap().materialize();
+    assert_eq!(c.shape(), &[2, 4]);
+    assert_approx_eq(c.data(), &[52.0, 61.0, 70.0, 79.0, 64.0, 76.0, 88.0, 100.0]);
+}
+
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn matmul_transposed_both<T: FloatLikeTensorElement>(#[case] _t: T) {
+    // Both operands transposed at once - a distinct combination, since a BLAS
+    // backend derives the right-hand leading dimension from the left-hand inner
+    // extent, so an error in one propagates into the other.
+    // A^T = [[1,3,5],[2,4,6]]
+    // B^T = [[0,3,6,9],[1,4,7,10],[2,5,8,11]]
+    let a = tensor_of::<T>(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
+    let b: Tensor<T> = srange!(12, &[4, 3]);
+    let c = a.transpose().matmul(&b.transpose()).unwrap().materialize();
+    assert_eq!(c.shape(), &[2, 4]);
+    assert_approx_eq(c.data(), &[13.0, 40.0, 67.0, 94.0, 16.0, 52.0, 88.0, 124.0]);
 }
 
 #[rstest]
@@ -333,16 +375,21 @@ fn matmul_noncontiguous_lhs_matches_materialized<T: FloatLikeTensorElement>(#[ca
 
 #[test]
 fn matmul_broadcast_allocations() {
-    // A backend taking arbitrary strides reaches the kernel with the stride-0 view
-    // intact. An inserted `AsContiguous` would compute identical values, so it is
-    // invisible to every other test in this group; it surfaces here as the extra
-    // buffer it would have to allocate for the widened [2,3] operand.
-    let a: SkeletonSlot<f64> = SkeletonSlot::new(Layout::new((1, 3)).broadcast((2, 3)).unwrap());
-    let b: SkeletonSlot<f64> = SkeletonSlot::new(Layout::new((3, 2)));
+    let a: SkeletonSlot<f64, CpuPure> =
+        SkeletonSlot::new(Layout::new((1, 3)).broadcast((2, 3)).unwrap());
+    let b: SkeletonSlot<f64, CpuPure> = SkeletonSlot::new(Layout::new((3, 2)));
     let skeleton = a.matmul(&b).unwrap().into_skeleton(&[a, b]).unwrap();
 
-    // The [2,2] f64 output, and nothing else.
-    assert_eq!(skeleton.memory_report().allocated_buffers_size, vec![32]);
+    // A backend taking arbitrary strides reaches the kernel with the stride-0
+    // view intact: the [2,2] f64 output and nothing else. A BLAS-only backend
+    // must first widen the [1,3] operand into a dense [2,3] buffer, and that
+    // copy is the only extra allocation permitted.
+    let expected = if CpuPure::SUPPORTS_NON_CONTIGUOUS_MATMUL {
+        vec![32]
+    } else {
+        vec![48, 32]
+    };
+    assert_eq!(skeleton.memory_report().allocated_buffers_size, expected);
 }
 
 // ── batch-dimension broadcasting ────────────────────────

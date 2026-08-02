@@ -1,9 +1,14 @@
+use std::fmt::Debug;
+
 use crate::tensor::errors::OpError;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::OpKind;
 
 #[cfg_attr(feature = "tracing", tracing::instrument(level = "trace", skip_all))]
-pub fn compute_layout<T: Copy>(op: &OpKind<T>, inputs: &[&Layout]) -> Result<Layout, OpError> {
+pub fn compute_layout<T: Copy + Debug>(
+    op: &OpKind<T>,
+    inputs: &[&Layout],
+) -> Result<Layout, OpError> {
     match op {
         OpKind::ScalarOp(_) | OpKind::FusedScalar(_) => Ok(Layout::new(inputs[0].shape())),
         OpKind::NoOp => Ok(Layout::new(inputs[0].shape())),
@@ -12,7 +17,10 @@ pub fn compute_layout<T: Copy>(op: &OpKind<T>, inputs: &[&Layout]) -> Result<Lay
         | OpKind::TransposeAxes
         | OpKind::Broadcast
         | OpKind::Transpose => {
-            unreachable!("use ::with_layout to create these instead of using ::new")
+            unreachable!(
+                ".use ::with_layout to create these instead of using ::new. called with {:?}",
+                op
+            )
         }
         OpKind::AsContiguous => Ok(Layout::new(inputs[0].shape())),
         OpKind::MatMul(_) => {
@@ -90,6 +98,7 @@ pub fn compute_layout<T: Copy>(op: &OpKind<T>, inputs: &[&Layout]) -> Result<Lay
             } as usize;
 
             if axis < inputs[0].shape().len() {
+                // TOOD: Add array logic instead of using a vector here
                 let mut shape = inputs[0].shape().to_vec();
 
                 if *keepdims {

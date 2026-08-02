@@ -1,22 +1,12 @@
-use std::fmt::Display;
 use std::iter::zip;
 use std::ops::Index;
 use std::sync::Arc;
 
-use crate::tensor::MutIter;
-use crate::tensor::definitions::ChunkedIter;
-use crate::tensor::iter::{
-    ChunkedContiguousIter, ChunkedSliceIter, ContiguousIter, InformedIter, Iter, MutSliceIter,
-    StepInfo,
-};
+use crate::tensor::iter::{InformedIter, Iter, StepInfo};
 use crate::tensor::mem_formats::layout::{Layout, validate_shape};
 use crate::tensor::traits::Dimension;
+use crate::tensor::walker::all2;
 use crate::{OpError, SliceRange};
-
-pub enum IterImpl<C, N> {
-    Contiguous(C),
-    NotContiguous(N),
-}
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -208,24 +198,6 @@ impl<T: Clone> TensorData<T> {
         Iter::new(&self.storage.buffer, self.layout())
     }
 
-    #[inline]
-    pub fn iter_slice_mut(&mut self) -> Option<MutSliceIter<'_, T>> {
-        if let Some(data) = Arc::get_mut(&mut self.storage.buffer) {
-            Some(MutSliceIter::new(data, self.layout.len, &self.layout))
-        } else {
-            None
-        }
-    }
-
-    #[inline]
-    pub fn iter_mut(&mut self) -> Option<MutIter<'_, T>> {
-        if let Some(data) = Arc::get_mut(&mut self.storage.buffer) {
-            Some(MutIter::new(data, &self.layout))
-        } else {
-            None
-        }
-    }
-
     /// Iterate over the backing buffer using `layout` instead of this storage's own
     /// layout. Useful for traversals more exotic than the safe interface exposes.
     ///
@@ -243,17 +215,6 @@ impl<T: Clone> TensorData<T> {
             self.layout().len() >= layout.len() && self.layout.offset() >= layout.offset()
         );
         Iter::new(&self.storage.buffer, layout)
-    }
-
-    #[inline]
-    pub fn fast_iter(&self) -> IterImpl<ContiguousIter<'_, T>, Iter<'_, T>> {
-        let buffer = &self.storage.buffer;
-
-        if self.is_contiguous() {
-            IterImpl::Contiguous(ContiguousIter::new(buffer, self.offset(), self.len()))
-        } else {
-            IterImpl::NotContiguous(Iter::new(buffer, self.layout()))
-        }
     }
 
     #[inline]
@@ -281,7 +242,10 @@ impl<T: Clone> TensorData<T> {
     #[inline]
     pub fn get(&self, index: &[usize]) -> Result<&T, OpError> {
         if self.layout.shape().len() != index.len() {
-            return Err(OpError::NotEnoughAxes(self.layout.shape().len(), index.len()));
+            return Err(OpError::NotEnoughAxes(
+                self.layout.shape().len(),
+                index.len(),
+            ));
         }
 
         let mut pos: i64 = 0;
@@ -317,32 +281,6 @@ impl<T: Clone> TensorData<T> {
     }
 }
 
-impl<T: Clone + Default> TensorData<T> {
-    #[inline]
-    pub fn packed_iter(&self, packing_buffer_size: usize) -> ChunkedIter<'_, T> {
-        ChunkedSliceIter::new(self.iter().cloned(), packing_buffer_size)
-    }
-
-    #[inline]
-    pub fn fast_packed_iter(
-        &self,
-        packing_buffer_size: usize,
-    ) -> IterImpl<ChunkedContiguousIter<'_, T>, ChunkedIter<'_, T>> {
-        if self.is_contiguous() {
-            let start = self.offset();
-            IterImpl::Contiguous(ChunkedContiguousIter::new(
-                &self.data()[start..start + self.len()],
-                packing_buffer_size,
-            ))
-        } else {
-            IterImpl::NotContiguous(ChunkedSliceIter::new(
-                self.iter().cloned(),
-                packing_buffer_size,
-            ))
-        }
-    }
-}
-
 impl<T: Clone> Clone for TensorData<T> {
     fn clone(&self) -> Self {
         Self {
@@ -361,20 +299,20 @@ impl<T> Dimension for TensorData<T> {
 
 impl<T> PartialEq for TensorData<T>
 where
-    T: Copy + PartialEq + Display,
+    T: Copy + PartialEq,
 {
     fn eq(&self, other: &Self) -> bool {
         if self.layout.len() != other.layout.len() {
             return false;
         }
 
-        for (el1, el2) in zip(self.iter(), other.iter()) {
-            if *el1 != *el2 {
-                return false;
-            }
-        }
-
-        true
+        all2(
+            self.data(),
+            self.layout(),
+            other.data(),
+            other.layout(),
+            |&el1, &el2| el1 == el2,
+        )
     }
 }
 

@@ -99,49 +99,7 @@ pub(crate) trait Operand<T, B: Backend>: Dimension {
 /// ```
 pub trait Composable<T, B: Backend>: Operand<T, B> {}
 
-pub trait StreamingIterator {
-    type Item<'a>
-    where
-        Self: 'a;
-
-    fn next_stream<'a>(&'a mut self) -> Option<Self::Item<'a>>;
-
-    #[allow(unused)]
-    fn zip<Other>(self, other: Other) -> StreamingZip<Self, Other>
-    where
-        Self: Sized,
-        Other: StreamingIterator,
-    {
-        StreamingZip {
-            left: self,
-            right: other,
-        }
-    }
-}
-
 #[allow(unused)]
-pub struct StreamingZip<A: StreamingIterator, B: StreamingIterator> {
-    left: A,
-    right: B,
-}
-
-impl<A, B> StreamingIterator for StreamingZip<A, B>
-where
-    A: StreamingIterator,
-    B: StreamingIterator,
-{
-    type Item<'a>
-        = (A::Item<'a>, B::Item<'a>)
-    where
-        Self: 'a;
-
-    fn next_stream<'a>(&'a mut self) -> Option<Self::Item<'a>> {
-        let l = self.left.next_stream()?;
-        let r = self.right.next_stream()?;
-        Some((l, r))
-    }
-}
-
 pub(crate) trait Numeric: crate::tensor::definitions::NumberLike {
     const MUL_NEUTRAL: Self;
     const SUM_NEUTRAL: Self;

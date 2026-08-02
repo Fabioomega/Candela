@@ -10,26 +10,6 @@ use std::ffi::{c_double, c_float, c_int};
 use cblas_sys::{CBLAS_LAYOUT, CBLAS_TRANSPOSE};
 
 unsafe extern "C" {
-    pub fn vdAddI(
-        n: c_int,
-        a: *const f64,
-        inca: c_int,
-        b: *const f64,
-        incb: c_int,
-        y: *mut f64,
-        incy: c_int,
-    );
-
-    pub fn vsAddI(
-        n: c_int,
-        a: *const f32,
-        inca: c_int,
-        b: *const f32,
-        incb: c_int,
-        y: *mut f32,
-        incy: c_int,
-    );
-
     pub fn cblas_dgemm_batch_strided(
         layout: CBLAS_LAYOUT,
         transa: CBLAS_TRANSPOSE,

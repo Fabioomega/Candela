@@ -1,11 +1,8 @@
 use std::iter::zip;
 
+use crate::Dimension;
 use crate::tensor::backend::common::clone_to_buffer;
-use crate::tensor::mem_formats::layout::Layout;
-use crate::tensor::ops::def_op::OpKindScalar;
 use crate::tensor::storage::TensorData;
-use crate::tensor::traits::{Numeric, StreamingIterator};
-use crate::{Dimension, PACKING_BUFFER_SIZE, branch_duo_fast_iter, branch_fast_iter};
 
 type MatMulFn<T> = unsafe fn(
     m: usize,
@@ -24,128 +21,14 @@ type MatMulFn<T> = unsafe fn(
     csc: isize,
 );
 
-pub(crate) struct CommonBLASOps<T> {
-    pub fma: fn(T, T, T) -> T,
-    pub exp: fn(T) -> T,
-    pub ln: fn(T) -> T,
-    pub log2: fn(T) -> T,
-    pub max: fn(T, T) -> T,
-    pub tanh: fn(T) -> T,
-    pub matmul: MatMulFn<T>,
-}
-
-pub fn compute_scalar<T: Numeric>(
-    ops: &[OpKindScalar<T>],
-    inputs: &[TensorData<T>],
-    output_buffer: &mut [T],
-    blas: CommonBLASOps<T>,
-) {
-    let input = &inputs[0];
-
-    branch_fast_iter!(input.fast_packed_iter(PACKING_BUFFER_SIZE) => it, {
-        let mut it = it;
-        while let Some(chunk) = it.next_stream() {
-        let start = chunk.absolute_buffer_position;
-        for (i_el, o_el) in zip(
-            chunk.packing_buffer.iter(),
-            output_buffer[start..].iter_mut(),
-        ) {
-
-            match ops[0] {
-                OpKindScalar::AxBy(a, b) => *o_el = (blas.fma)(*i_el, a, b),
-                OpKindScalar::Exp => *o_el = (blas.exp)(*i_el),
-                OpKindScalar::Ln => *o_el = (blas.ln)(*i_el),
-                OpKindScalar::Log2 => *o_el = (blas.log2)(*i_el),
-                OpKindScalar::Inv => *o_el = T::ONE / *i_el,
-                OpKindScalar::ReLU => *o_el = (blas.max)(*i_el, T::ZERO),
-                OpKindScalar::Tanh => *o_el = (blas.tanh)(*i_el),
-            }
-
-
-            for op in ops[1..].iter() {
-                match op {
-                    OpKindScalar::AxBy(a, b) => *o_el = (blas.fma)(*o_el, *a, *b),
-                    OpKindScalar::Exp => *o_el = (blas.exp)(*o_el),
-                    OpKindScalar::Ln => *o_el = (blas.ln)(*o_el),
-                    OpKindScalar::Log2 => *o_el = (blas.log2)(*o_el),
-                    OpKindScalar::Inv => *o_el = T::ONE / *o_el,
-                    OpKindScalar::ReLU => *o_el = (blas.max)(*o_el, T::ZERO),
-                    OpKindScalar::Tanh => *o_el = (blas.tanh)(*o_el),
-                }
-            }
-        }
-    }
-    });
-}
-
-pub fn compute_scalar_inplace<T: Numeric>(
-    ops: &[OpKindScalar<T>],
-    mut inputs: Vec<TensorData<T>>,
-    output_layout: &Layout,
-    blas: CommonBLASOps<T>,
-) -> TensorData<T> {
-    let mut input = inputs.pop().unwrap();
-    // The input must be contiguous
-    debug_assert!(input.is_contiguous());
-
-    for o_el in input.iter_slice_mut().unwrap() {
-        for op in ops {
-            match op {
-                OpKindScalar::AxBy(a, b) => *o_el = (blas.fma)(*o_el, *a, *b),
-                OpKindScalar::Exp => *o_el = (blas.exp)(*o_el),
-                OpKindScalar::Ln => *o_el = (blas.ln)(*o_el),
-                OpKindScalar::Log2 => *o_el = (blas.log2)(*o_el),
-                OpKindScalar::Inv => *o_el = T::ONE / *o_el,
-                OpKindScalar::ReLU => *o_el = (blas.max)(*o_el, T::ZERO),
-                OpKindScalar::Tanh => *o_el = (blas.tanh)(*o_el),
-            }
-        }
-    }
-
-    let lay = output_layout
-        .clone()
-        .with_offset(input.offset() + output_layout.offset());
-
-    input.into_layout(lay)
-}
-
-pub fn compute_elementwise_tensor_tensor<T: Numeric, F: Fn(T, T) -> T>(
-    inputs: &[TensorData<T>],
-    output_buffer: &mut [T],
-    op: F,
-) {
-    let a = &inputs[0];
-    let b = &inputs[1];
-
-    branch_duo_fast_iter!(a.fast_iter() => a_it, b.fast_iter() => b_it, {
-        for ((a_el, b_el), o_el) in zip(zip(a_it, b_it), output_buffer.iter_mut()) {
-            *o_el = op(*a_el, *b_el);
-        }
-    });
-}
-
-pub fn compute_elementwise_tensor_tensor_inplace<T: Numeric, F: Fn(T, T) -> T>(
-    mut output: TensorData<T>,
-    other: TensorData<T>,
-    op: F,
-) -> TensorData<T> {
-    // The output must be contiguous
-    debug_assert!(output.is_contiguous());
-
-    for (o_el, x_el) in zip(output.iter_slice_mut().unwrap(), other.iter()) {
-        *o_el = op(*o_el, *x_el);
-    }
-
-    output
-}
-
+#[inline]
 pub fn compute_matmul_sum<T: Clone>(
     inputs: &[TensorData<T>],
     alpha: T,
     beta: T,
     output_buffer: &mut [T],
     fill_output_with_c: bool,
-    blas: CommonBLASOps<T>,
+    f: MatMulFn<T>,
 ) {
     let a = &inputs[0];
     let b = &inputs[1];
@@ -209,7 +92,7 @@ pub fn compute_matmul_sum<T: Clone>(
     // TODO: Maybe add a contiguous variant of this iterator if profiling ask for it, but I doubt it will.
     for (batch_idx, (a_ref, b_ref)) in zip(a_iter, b_iter).take(batch_dimension_size).enumerate() {
         unsafe {
-            (blas.matmul)(
+            f(
                 m,
                 k,
                 n,

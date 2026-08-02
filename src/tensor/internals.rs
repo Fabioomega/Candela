@@ -11,7 +11,10 @@ pub(super) fn calculate_dim_stride(shape: &[usize]) -> [i32; MAX_DIMS] {
     v
 }
 
-pub(super) fn calculate_adjacent_dim_stride(stride: &[i32], slice_shape: &[usize]) -> [i32; MAX_DIMS] {
+pub(super) fn calculate_adjacent_dim_stride(
+    stride: &[i32],
+    slice_shape: &[usize],
+) -> [i32; MAX_DIMS] {
     let rank = stride.len();
     debug_assert!(rank >= 1, "stride must have rank >= 1");
 

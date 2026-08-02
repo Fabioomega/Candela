@@ -250,30 +250,8 @@ where
         | (OpKind::FusedScalar(_), OpKind::FusedScalar(_)) => {
             Some(fuse_scalar_ops(op1, inputs1, op2))
         }
-        (OpKind::View, OpKind::AsContiguous) => Some(Fusion {
-            op: op1.clone(),
-            inputs: inputs1.into(),
-        }),
         (OpKind::MatMul(_), _) | (OpKind::MatMulSum(_, _, _), _) => {
             try_fuse_matmul_ops(op1, inputs1, op2, inputs2, skip_input_idx)
-        }
-        (_, OpKind::AsContiguous) => {
-            let is_contiguous = match &inputs2[0] {
-                NodeKind::Node(node) => node.layout().is_contiguous(),
-                NodeKind::Edge(node) => node.layout().is_contiguous(),
-                NodeKind::Slot(node) => node.layout().is_contiguous(),
-                NodeKind::Cache(cache) => cache.get_node().layout.is_contiguous(),
-                NodeKind::Baked(baked) => baked.layout().is_contiguous(),
-            };
-
-            if is_contiguous {
-                Some(Fusion {
-                    op: op1.clone(),
-                    inputs: inputs1.into(),
-                })
-            } else {
-                None
-            }
         }
         _ => None,
     }

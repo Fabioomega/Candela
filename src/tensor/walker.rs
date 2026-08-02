@@ -1,4 +1,6 @@
+use std::convert::Infallible;
 use std::iter::zip;
+use std::ops::ControlFlow;
 
 use crate::{Layout, tensor::MAX_DIMS};
 
@@ -135,7 +137,15 @@ impl<'a, const N: usize> DimWalker<'a, N> {
         )
     }
 
-    fn fold<A>(&self, init: A, mut f: impl FnMut(A, [usize; N]) -> A) -> A {
+    pub fn is_fully_contiguous(&self) -> bool {
+        self.is_fully_contiguous
+    }
+
+    pub fn try_fold<A, B>(
+        &self,
+        init: A,
+        mut f: impl FnMut(A, [usize; N]) -> ControlFlow<B, A>,
+    ) -> ControlFlow<B, A> {
         debug_assert!(!self.is_fully_contiguous);
 
         let last = self.rank - 1;
@@ -150,20 +160,20 @@ impl<'a, const N: usize> DimWalker<'a, N> {
         if self.rank == 2 {
             let left_over = self.shape[0];
             for _ in 0..left_over {
-                acc = f(acc, offsets);
+                acc = f(acc, offsets)?;
 
                 for i in 0..N {
                     offsets[i] = offsets[i].wrapping_add_signed(chunk_stride[i]);
                 }
             }
-            return acc;
+            return ControlFlow::Continue(acc);
         }
 
         if self.rank == 3 {
             let chunks = self.shape[0] * n_chunks;
             let mut count = n_chunks;
             for _ in 0..chunks {
-                acc = f(acc, offsets);
+                acc = f(acc, offsets)?;
 
                 for i in 0..N {
                     offsets[i] = offsets[i].wrapping_add_signed(chunk_stride[i]);
@@ -177,13 +187,13 @@ impl<'a, const N: usize> DimWalker<'a, N> {
                     }
                 }
             }
-            return acc;
+            return ControlFlow::Continue(acc);
         }
 
         let chunks: usize = self.shape[0..last].iter().product();
         let mut count = n_chunks;
         for _ in 0..chunks {
-            acc = f(acc, offsets);
+            acc = f(acc, offsets)?;
 
             for i in 0..N {
                 offsets[i] = offsets[i].wrapping_add_signed(chunk_stride[i]);
@@ -212,10 +222,19 @@ impl<'a, const N: usize> DimWalker<'a, N> {
             }
         }
 
-        acc
+        ControlFlow::Continue(acc)
     }
 
-    fn for_each(&self, mut f: impl FnMut([usize; N])) {
+    pub fn fold<A>(&self, init: A, mut f: impl FnMut(A, [usize; N]) -> A) -> A {
+        match self.try_fold(init, |acc, offsets| {
+            ControlFlow::<Infallible, A>::Continue(f(acc, offsets))
+        }) {
+            ControlFlow::Continue(acc) => acc,
+            ControlFlow::Break(never) => match never {},
+        }
+    }
+
+    pub fn for_each(&self, mut f: impl FnMut([usize; N])) {
         self.fold((), |(), offsets| f(offsets));
     }
 }
@@ -310,11 +329,52 @@ where
 }
 
 #[inline]
-fn for_each<T: Clone, F>(inp: &[T], l: &Layout, mut f: F)
+pub fn fold_chunk<'a, 'b, T: Clone, B, R, E>(
+    inp: &'a [T],
+    l: &Layout,
+    init: B,
+    mut ch: R,
+    mut elem: E,
+) -> B
 where
-    F: FnMut(T),
+    R: FnMut(B, &'a [T]) -> B,
+    E: FnMut(B, T) -> B,
 {
-    fold(inp, l, (), |_, x| f(x))
+    let walker = DimWalker::new([l]);
+    let acc = init;
+
+    if walker.is_fully_contiguous {
+        let offset = l.offset();
+        return ch(acc, &inp[offset..offset + l.len()]);
+    }
+
+    let (len, strides) = walker.strides();
+    match strides {
+        [1] => walker.fold(acc, |acc, offsets| {
+            let offset = offsets[0];
+            ch(acc, &inp[offset..offset + len])
+        }),
+        [0] => walker.fold(acc, |mut acc, offsets| {
+            let temp = inp[offsets[0]].clone();
+            for _ in 0..len {
+                acc = elem(acc, temp.clone())
+            }
+
+            acc
+        }),
+        [s] => walker.fold(acc, |mut acc, offsets| {
+            let mut offset = offsets[0];
+            for _ in 0..len {
+                debug_assert!(offset < inp.len());
+                // SAFETY: a well-formed layout only ever visits in-bounds
+                // positions of its own buffer.
+                acc = elem(acc, unsafe { inp.get_unchecked(offset) }.clone());
+                offset = offset.wrapping_add_signed(s);
+            }
+
+            acc
+        }),
+    }
 }
 
 ///////////////////////////////////////////////////////////////
@@ -416,7 +476,7 @@ unsafe fn next_chunk<'a, T>(chunks: &mut std::slice::ChunksExactMut<'a, T>) -> &
     unsafe { chunk.unwrap_unchecked() }
 }
 
-pub fn zip2<T: Clone, F: Fn(T, T) -> T>(
+pub fn map2<T: Clone, F: Fn(T, T) -> T>(
     inp1: &[T],
     l1: &Layout,
     inp2: &[T],
@@ -507,6 +567,143 @@ pub fn zip2<T: Clone, F: Fn(T, T) -> T>(
             });
         }
     }
+}
+
+/// Assumes that the output is contiguous! Don't run on this otherwise!
+///
+/// Assumes the ordering (out, inp) for `f`
+#[inline]
+pub fn map2_inplace<'a, T: Clone, F>(out: &mut [T], inp: &[T], l: &Layout, f: F)
+where
+    F: Fn(T, T) -> T,
+{
+    let walker = DimWalker::new([l]);
+
+    if walker.is_fully_contiguous {
+        let o = l.offset();
+        let it = inp[o..o + l.len()].iter();
+
+        for (o, x) in out.iter_mut().zip(it) {
+            *o = f(o.clone(), x.clone());
+        }
+        return;
+    }
+
+    let (len, strides) = walker.strides();
+    let mut chunks = out.chunks_exact_mut(len);
+    match strides {
+        [1] => {
+            walker.for_each(|offsets| {
+                let chunk = unsafe { next_chunk(&mut chunks) };
+                let it = inp[offsets[0]..offsets[0] + len].iter();
+
+                for (o, x) in chunk.iter_mut().zip(it) {
+                    *o = f(o.clone(), x.clone());
+                }
+            });
+        }
+        [0] => {
+            walker.for_each(|offsets| {
+                let chunk = unsafe { next_chunk(&mut chunks) };
+                let x = inp[offsets[0]].clone();
+
+                chunk.iter_mut().for_each(|o| *o = f(o.clone(), x.clone()));
+            });
+        }
+        [s] => {
+            walker.for_each(|offsets| {
+                let chunk = unsafe { next_chunk(&mut chunks) };
+                let mut pos = offsets[0];
+
+                for o in chunk.iter_mut() {
+                    debug_assert!(pos < inp.len());
+                    // SAFETY: a well-formed layout only ever visits in-bounds
+                    // positions of its own buffer.
+                    *o = unsafe { f(o.clone(), inp.get_unchecked(pos).clone()) };
+                    pos = pos.wrapping_add_signed(s);
+                }
+            });
+        }
+    }
+}
+
+#[inline]
+pub fn all2<T, F>(inp1: &[T], l1: &Layout, inp2: &[T], l2: &Layout, mut f: F) -> bool
+where
+    F: FnMut(&T, &T) -> bool,
+{
+    let walker = DimWalker::new([l1, l2]);
+
+    if walker.is_fully_contiguous {
+        let (o1, o2) = (l1.offset(), l2.offset());
+        let len = l1.len();
+        let it1 = inp1[o1..o1 + len].iter();
+        let it2 = inp2[o2..o2 + len].iter();
+
+        return zip(it1, it2).all(|(x, y)| f(x, y));
+    }
+
+    let (len, strides) = walker.strides();
+    let walk = match strides {
+        [1, 1] => walker.try_fold((), |(), offsets| {
+            let it1 = inp1[offsets[0]..offsets[0] + len].iter();
+            let it2 = inp2[offsets[1]..offsets[1] + len].iter();
+
+            if zip(it1, it2).all(|(x, y)| f(x, y)) {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        }),
+        [0, 0] => walker.try_fold((), |(), offsets| {
+            if f(&inp1[offsets[0]], &inp2[offsets[1]]) {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        }),
+        [0, _] => walker.try_fold((), |(), offsets| {
+            let x = &inp1[offsets[0]];
+
+            if inp2[offsets[1]..offsets[1] + len].iter().all(|y| f(x, y)) {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        }),
+        [_, 0] => walker.try_fold((), |(), offsets| {
+            let y = &inp2[offsets[1]];
+
+            if inp1[offsets[0]..offsets[0] + len].iter().all(|x| f(x, y)) {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        }),
+        [s1, s2] => walker.try_fold((), |(), offsets| {
+            let mut pos1 = offsets[0];
+            let mut pos2 = offsets[1];
+
+            for _ in 0..len {
+                debug_assert!(pos1 < inp1.len());
+                debug_assert!(pos2 < inp2.len());
+                // SAFETY: a well-formed layout only ever visits in-bounds
+                // positions of its own buffer.
+                let (x, y) = unsafe { (inp1.get_unchecked(pos1), inp2.get_unchecked(pos2)) };
+
+                if !f(x, y) {
+                    return ControlFlow::Break(());
+                }
+
+                pos1 = pos1.wrapping_add_signed(s1);
+                pos2 = pos2.wrapping_add_signed(s2);
+            }
+
+            ControlFlow::Continue(())
+        }),
+    };
+
+    walk.is_continue()
 }
 
 ///////////////////////////////////////////////////////////////

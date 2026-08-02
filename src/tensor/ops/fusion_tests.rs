@@ -93,20 +93,6 @@ fn exp_then_axby() {
 }
 
 #[test]
-fn view_then_as_contiguous() {
-    let input = edge(1.0, &[12]);
-    let fusion = compute_fusion(
-        &OpKind::View,
-        std::slice::from_ref(&input),
-        &OpKind::AsContiguous,
-        std::slice::from_ref(&input),
-        0,
-    );
-    let result = fusion.unwrap();
-    assert!(matches!(result.op, OpKind::View));
-}
-
-#[test]
 fn non_scalar_no_fusion() {
     let input = edge(1.0, &[4]);
     let fusion = compute_fusion(

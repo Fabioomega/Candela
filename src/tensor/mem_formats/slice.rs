@@ -4,7 +4,6 @@ use crate::tensor::MAX_DIMS;
 use crate::tensor::mem_formats::layout::Layout;
 
 use crate::tensor::errors::OpError;
-use crate::tensor::internals::calculate_adjacent_dim_stride;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SliceBounds {

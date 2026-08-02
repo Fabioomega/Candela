@@ -117,7 +117,6 @@ pub mod skeleton {
         UnboundedPolicy,
     };
 }
-
 /// Design documentation.
 ///
 /// Start with [`overview`](crate::docs::overview) for the whole pipeline, then
@@ -148,8 +147,6 @@ use crate::tensor::definitions::NumberLike;
 use crate::tensor::ops::CanMatMul;
 use crate::tensor::ops::FloatLike;
 use crate::tensor::traits::Numeric;
-
-const PACKING_BUFFER_SIZE: usize = 2048;
 
 /// Sealed marker for floating-point tensor element types: `f32` and `f64`.
 ///

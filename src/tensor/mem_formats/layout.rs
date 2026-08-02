@@ -3,7 +3,7 @@ use std::{hash::Hash, iter::zip};
 use crate::tensor::{
     IntoShape, MAX_DIMS,
     errors::OpError,
-    internals::{calculate_adjacent_dim_stride, calculate_dim_stride},
+    internals::calculate_dim_stride,
     mem_formats::slice::{SliceInfo, SliceRange},
 };
 
@@ -135,14 +135,14 @@ impl Layout {
     /// ```
     /// use candela::Layout;
     /// // A hand-built 2x3 contiguous layout, equivalent to `Layout::new(&[2, 3])`.
-    /// let l = Layout::from_raw_parts(&[2, 3], &[3, 1], &[1, 1], 0, 6);
+    /// let l = Layout::from_raw_parts(&[2, 3], &[3, 1], 0, 6);
     /// assert_eq!(l.shape(), &[2, 3]);
     /// assert_eq!(l.len(), 6);
     /// ```
     ///
     /// # Panics
     ///
-    /// Panics (in debug builds) if `shape`, `stride`, and `adj_stride` do not all
+    /// Panics (in debug builds) if `shape` and `stride` do not all
     /// have the same length, or if that length exceeds the maximum supported rank.
     pub fn from_raw_parts(shape: &[usize], stride: &[i32], offset: usize, len: usize) -> Self {
         let rank = shape.len();
