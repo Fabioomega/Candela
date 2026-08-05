@@ -1,23 +1,12 @@
-use std::sync::Arc;
-
 use fx_hash::FxHashMap;
 
-use crate::Layout;
 use crate::tensor::backend::{Backend, ComputeFor};
 use crate::tensor::definitions::NumberLike;
 use crate::tensor::graph::{TensorGraphBaked, TensorGraphCacheNode, TensorGraphEdge};
 use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::planner::{ComputeKind, OutputKind, OwnedComputeKind};
-use crate::tensor::storage::TensorData;
-
-#[inline]
-fn strip_tensor<T: Copy>(tensor: TensorData<T>) -> Vec<T> {
-    if let Ok(v) = Arc::try_unwrap(tensor.storage.buffer) {
-        v
-    } else {
-        unreachable!("cannot strip a tensor that is being used!")
-    }
-}
+use crate::tensor::storage::{Storage, TensorData};
+use crate::{Dimension, Layout};
 
 #[inline]
 fn alloc_vec<T: Default + Clone>(len: usize) -> Vec<T> {
@@ -28,13 +17,16 @@ fn alloc_vec<T: Default + Clone>(len: usize) -> Vec<T> {
 }
 
 #[inline]
-fn build_inputs<T: Clone>(
+fn fill_inputs_scratch<T: Clone>(
+    inputs_scratch: &mut Vec<TensorData<T>>,
     computation_cache: &FxHashMap<usize, TensorData<T>>,
     ids: &[usize],
-) -> Vec<TensorData<T>> {
-    ids.iter()
-        .map(|&id| computation_cache.get(&id).unwrap().clone())
-        .collect()
+) {
+    inputs_scratch.clear();
+    inputs_scratch.extend(
+        ids.iter()
+            .map(|&id| computation_cache.get(&id).unwrap().clone()),
+    );
 }
 
 fn execute_output<T: NumberLike + ComputeFor<B>, B: Backend>(
@@ -42,44 +34,65 @@ fn execute_output<T: NumberLike + ComputeFor<B>, B: Backend>(
     layout: &Layout,
     output: &OutputKind,
     resolved_inputs: &[usize],
+    inputs_scratch: &mut Vec<TensorData<T>>,
     computation_cache: &mut FxHashMap<usize, TensorData<T>>,
 ) -> TensorData<T> {
     let result = match output {
         OutputKind::Allocate(len) => {
-            let output_buffer = alloc_vec(*len);
-            let inputs = build_inputs(computation_cache, resolved_inputs);
+            let mut output_buffer: Vec<T> = alloc_vec(*len);
+            fill_inputs_scratch(inputs_scratch, computation_cache, resolved_inputs);
 
-            B::compute(op, output_buffer, layout, &inputs)
+            B::compute(op, &mut output_buffer, layout, &inputs_scratch);
+
+            TensorData::new(Storage::from_vec(output_buffer), layout.clone())
         }
         OutputKind::Buffer(id) => {
             // TODO: The planner guarantees this id is present in the cache, so this is
             // always Some. Can use unwrap_unchecked once the planner/executor contract
             // is verified to be sound.
-            let reused = computation_cache.remove(id).unwrap();
-            let output_buffer = strip_tensor(reused);
-            let inputs = build_inputs(computation_cache, resolved_inputs);
+            let mut reused = computation_cache.remove(id).unwrap();
+            fill_inputs_scratch(inputs_scratch, computation_cache, resolved_inputs);
 
-            B::compute(op, output_buffer, layout, &inputs)
+            B::compute(op, reused.mut_data().unwrap(), layout, &inputs_scratch);
+
+            reused.into_layout(layout.clone())
         }
         OutputKind::InPlaceIdx(idx) => {
-            let inputs: Vec<TensorData<T>> = resolved_inputs
-                .iter()
-                .enumerate()
-                .map(|(i, id)| {
-                    if i == *idx {
-                        computation_cache.remove(id).unwrap()
-                    } else {
-                        computation_cache.get(id).unwrap().clone()
-                    }
-                })
-                .collect();
+            inputs_scratch.clear();
+            inputs_scratch.extend(
+                resolved_inputs
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != *idx)
+                    .map(|(_, id)| computation_cache.get(id).unwrap().clone()),
+            );
 
-            B::compute_inplace(op, layout, inputs, *idx)
+            let mut output = computation_cache.remove(&resolved_inputs[*idx]).unwrap();
+
+            debug_assert!(output.is_contiguous());
+
+            B::compute_inplace(
+                op,
+                output.mut_data().unwrap(),
+                layout,
+                &inputs_scratch,
+                *idx,
+            );
+
+            output.into_layout(layout.clone())
         }
         OutputKind::Reference(idx) => {
-            let inputs = build_inputs(computation_cache, resolved_inputs);
+            debug_assert!(
+                *idx == 0,
+                "References should only have a single input and alias that input!"
+            );
 
-            B::compute_inplace(op, layout, inputs, *idx)
+            let input = computation_cache.get(&resolved_inputs[*idx]).unwrap();
+
+            TensorData::new(
+                input.storage.clone(),
+                layout.clone().with_offset(layout.offset() + input.offset()),
+            )
         }
     };
 
@@ -226,6 +239,7 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
     external_inputs: Vec<(usize, TensorData<T>)>,
 ) -> TensorData<T> {
     let mut computation_cache: FxHashMap<usize, TensorData<T>> = FxHashMap::default();
+    let mut inputs_scratch: Vec<TensorData<T>> = Vec::with_capacity(3);
 
     for (id, input) in external_inputs.into_iter() {
         computation_cache.insert(id, input);
@@ -245,8 +259,14 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
                 dealloc_after,
                 ..
             } => {
-                let result =
-                    execute_output(op, layout, output, resolved_inputs, &mut computation_cache);
+                let result = execute_output(
+                    op,
+                    layout,
+                    output,
+                    resolved_inputs,
+                    &mut inputs_scratch,
+                    &mut computation_cache,
+                );
 
                 computation_cache.insert(id, result);
 
@@ -295,6 +315,7 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
                     &node.layout,
                     output,
                     resolved_inputs,
+                    &mut inputs_scratch,
                     &mut computation_cache,
                 );
                 let _ = cache.cache.set(result.clone());
