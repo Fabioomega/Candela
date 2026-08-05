@@ -22,6 +22,10 @@ tracing = ["dep:tracing"]
 # default so the pure-Rust build skips compiling/linking MKL entirely.
 mkl = ["dep:intel-mkl-src", "dep:intel-mkl-sys", "dep:cblas", "dep:cblas-sys"]
 
+[[bench]]
+name = "bench_main"
+harness = false
+
 [dev-dependencies]
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 criterion = { version = "0.8", features = ["html_reports"] }

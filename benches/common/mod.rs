@@ -166,6 +166,7 @@ const DEFAULT_VARIANT_SIZES: &[SizeSpec] = &[SizeSpec::L2, SizeSpec::Dram];
 
 /// Declares a fill-style sweep: n same-shaped inputs, sizes solved from byte
 /// budgets, layout variants applied uniformly.
+#[derive(Clone)]
 pub struct FillConfig {
     n_inputs: usize,
     /// One entry per case; each entry is one variant per input. A uniform
@@ -297,7 +298,11 @@ fn combo_label(combo: &[Variant]) -> String {
     if combo.iter().all(|&v| v == combo[0]) {
         combo[0].label().to_string()
     } else {
-        combo.iter().map(|v| v.label()).collect::<Vec<_>>().join("+")
+        combo
+            .iter()
+            .map(|v| v.label())
+            .collect::<Vec<_>>()
+            .join("+")
     }
 }
 
