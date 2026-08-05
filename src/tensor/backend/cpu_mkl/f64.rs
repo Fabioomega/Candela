@@ -72,7 +72,7 @@ fn compute_out(op: &OpKindScalar<f64>, src: &[f64], dst: &mut [f64]) {
         OpKindScalar::Log2 => {
             unsafe { vdLog2(dst.len() as i32, src.as_ptr(), dst.as_mut_ptr()) };
         }
-        OpKindScalar::Inv => {
+        OpKindScalar::Recip => {
             for (o, i) in dst.iter_mut().zip(src) {
                 *o = 1.0 / *i;
             }
@@ -110,7 +110,7 @@ fn compute_inplace(op: &OpKindScalar<f64>, dst: &mut [f64]) {
         OpKindScalar::Log2 => {
             unsafe { vdLog2(dst.len() as i32, dst.as_ptr(), dst.as_mut_ptr()) };
         }
-        OpKindScalar::Inv => {
+        OpKindScalar::Recip => {
             for o in dst {
                 *o = 1.0 / *o;
             }
@@ -137,7 +137,7 @@ fn compute_element(ops: &[OpKindScalar<f64>], el: f64) -> f64 {
             OpKindScalar::Exp => temp = temp.exp(),
             OpKindScalar::Ln => temp = temp.ln(),
             OpKindScalar::Log2 => temp = temp.log2(),
-            OpKindScalar::Inv => temp = 1.0 / temp,
+            OpKindScalar::Recip => temp = 1.0 / temp,
             OpKindScalar::ReLU => temp = if temp > 0.0 { temp } else { 0.0 },
             OpKindScalar::Tanh => temp = temp.tanh(),
         }

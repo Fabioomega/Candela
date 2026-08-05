@@ -370,6 +370,21 @@ where
     }
 }
 
+fn neg_impl<T, B, D>(source: &D) -> TensorPromise<T, B>
+where
+    T: Numeric + Neg<Output = T>,
+    B: Backend,
+    D: Operand<T, B>,
+{
+    unsafe {
+        TensorPromise::new(
+            OpKind::ScalarOp(OpKindScalar::AxBy(-T::MUL_NEUTRAL, T::SUM_NEUTRAL)),
+            Box::new([source.to_node()]),
+        )
+        .unwrap_unchecked()
+    }
+}
+
 fn exp_impl<T, B, D>(source: &D) -> TensorPromise<T, B>
 where
     T: Numeric,
@@ -401,6 +416,17 @@ where
     let input = Box::new([source.to_node()]);
 
     unsafe { TensorPromise::new(OpKind::ScalarOp(OpKindScalar::Log2), input).unwrap_unchecked() }
+}
+
+fn recip_impl<T, B, D>(source: &D) -> TensorPromise<T, B>
+where
+    T: Numeric,
+    B: Backend,
+    D: Operand<T, B>,
+{
+    let input = Box::new([source.to_node()]);
+
+    unsafe { TensorPromise::new(OpKind::ScalarOp(OpKindScalar::Recip), input).unwrap_unchecked() }
 }
 
 fn relu_impl<T, B, D>(source: &D) -> TensorPromise<T, B>
@@ -1069,6 +1095,46 @@ macro_rules! impl_sub_scalar {
     };
 }
 
+macro_rules! impl_neg {
+    ($ty:ident) => {
+        impl<T, B> Neg for &$ty<T, B>
+        where
+            T: NumericOp + Neg<Output = T>,
+            B: Backend,
+        {
+            type Output = <$ty<T, B> as UnaryResult<T, B>>::Output;
+
+            /// Negates every element.
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::Tensor;
+            ///
+            /// let t = Tensor::from_slice(&[1.0, -2.0], &[2]);
+            /// assert_eq!((-&t).materialize().data(), &[-1.0, 2.0]);
+            /// ```
+            #[inline]
+            fn neg(self) -> Self::Output {
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(neg_impl(self))
+            }
+        }
+
+        impl<T, B> Neg for $ty<T, B>
+        where
+            T: NumericOp + Neg<Output = T>,
+            B: Backend,
+        {
+            type Output = <$ty<T, B> as UnaryResult<T, B>>::Output;
+
+            #[inline]
+            fn neg(self) -> Self::Output {
+                (&self).neg()
+            }
+        }
+    };
+}
+
 macro_rules! impl_mul_scalar {
     ($ty:ident) => {
         impl<T, B> Mul<T> for &$ty<T, B>
@@ -1216,6 +1282,33 @@ macro_rules! impl_log2 {
     };
 }
 
+macro_rules! impl_recip {
+    ($ty:ident) => {
+        impl<T, B> $ty<T, B>
+        where
+            T: FloatLike,
+            B: Backend,
+        {
+            /// Computes the reciprocal `1 / x` of each element.
+            ///
+            /// Follows the platform's float division matching `f32::recip.
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use candela::Tensor;
+            ///
+            /// let t = Tensor::from_slice(&[1.0_f64, 2.0, 4.0], &[3]);
+            /// assert_eq!(t.recip().materialize().data(), &[1.0, 0.5, 0.25]);
+            /// ```
+            #[inline]
+            pub fn recip(&self) -> <$ty<T, B> as UnaryResult<T, B>>::Output {
+                <$ty<T, B> as UnaryResult<T, B>>::wrap(recip_impl(self))
+            }
+        }
+    };
+}
+
 macro_rules! impl_relu {
     ($ty:ident) => {
         impl<T, B> $ty<T, B>
@@ -1272,6 +1365,7 @@ macro_rules! impl_unary_scalar_ops {
         impl_exp!($ty);
         impl_ln!($ty);
         impl_log2!($ty);
+        impl_recip!($ty);
         impl_relu!($ty);
         impl_tanh!($ty);
     };
@@ -1283,6 +1377,7 @@ macro_rules! impl_op_scalar {
         impl_sub_scalar!($ty);
         impl_div_scalar!($ty);
         impl_mul_scalar!($ty);
+        impl_neg!($ty);
     };
 }
 

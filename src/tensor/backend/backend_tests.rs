@@ -133,6 +133,31 @@ fn scalar_op_log2<B: Backend, T: Case<B>>() {
     assert_eq!(output.data(), &vals(&[0.0, 1.0]));
 }
 
+fn scalar_op_inv<B: Backend, T: Case<B>>() {
+    let input = td(&[1.0, 2.0, 4.0], &[3]);
+    let output = B::compute(
+        &OpKind::ScalarOp(OpKindScalar::Recip),
+        vec![T::ZERO; 3],
+        &Layout::new(3),
+        &[input],
+    );
+    assert_eq!(output.data(), &vals(&[1.0, 0.5, 0.25]));
+}
+
+fn scalar_op_inv_non_contiguous<B: Backend, T: Case<B>>() {
+    // Column slice of [3,4] → shape [3,1], stride [4,1], non-contiguous, so this
+    // takes the per-element path rather than the contiguous-chunk one.
+    let base = TensorData::from_scalar(T::v(4.0), &[3, 4]);
+    let input = base.slice(s![.., 0..1]);
+    let output = B::compute(
+        &OpKind::ScalarOp(OpKindScalar::Recip),
+        vec![T::ZERO; 3],
+        &Layout::new((3, 1)),
+        &[input],
+    );
+    assert_eq!(output.data(), &vals(&[0.25, 0.25, 0.25]));
+}
+
 fn fused_scalar<B: Backend, T: Case<B>>() {
     // AxBy(2, 1): 2*3+1=7, then AxBy(3, 0): 3*7+0=21
     let input = td(&[3.0], &[1]);
@@ -264,6 +289,18 @@ fn scalar_log2_inplace<B: Backend, T: Case<B>>() {
         0,
     );
     assert_eq!(output.data(), &vals(&[0.0, 1.0]));
+}
+
+fn scalar_inv_inplace<B: Backend, T: Case<B>>() {
+    let input: TensorData<T> = td(&[1.0, 2.0, 4.0], &[3]);
+    let layout = Layout::new(3);
+    let output = B::compute_inplace(
+        &OpKind::ScalarOp(OpKindScalar::Recip),
+        &layout,
+        vec![input],
+        0,
+    );
+    assert_eq!(output.data(), &vals(&[1.0, 0.5, 0.25]));
 }
 
 fn fused_scalar_inplace<B: Backend, T: Case<B>>() {
@@ -710,6 +747,8 @@ backend_suite![
     scalar_op_exp,
     scalar_op_ln,
     scalar_op_log2,
+    scalar_op_inv,
+    scalar_op_inv_non_contiguous,
     fused_scalar,
     add_contiguous,
     add_lhs_non_contiguous,
@@ -723,6 +762,7 @@ backend_suite![
     scalar_exp_inplace,
     scalar_ln_inplace,
     scalar_log2_inplace,
+    scalar_inv_inplace,
     fused_scalar_inplace,
     add_inplace_reuse_lhs,
     add_inplace_reuse_rhs,

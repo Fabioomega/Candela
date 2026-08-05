@@ -1,7 +1,7 @@
 mod common;
 
 use candela::{FloatLikeTensorElement, Tensor, arange, ones};
-use common::{assert_approx_eq, tensor_of};
+use common::{assert_approx_eq, cast, tensor_of};
 use rstest::rstest;
 
 // ── scalar ops ────────────────────────────────────────────────────────────────
@@ -63,6 +63,45 @@ fn scalar_log2<T: FloatLikeTensorElement>(#[case] _t: T) {
     // log2(2) = 1
     let t = Tensor::from_scalar(T::from_f64(2.0), &[4]);
     assert_eq!(t.log2().materialize().data(), &vec![T::from_f64(1.0); 4]);
+}
+
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn scalar_recip<T: FloatLikeTensorElement>(#[case] _t: T) {
+    let t = tensor_of::<T>(&[1.0, 2.0, 4.0, 8.0], &[4]);
+    assert_eq!(
+        t.recip().materialize().data(),
+        &cast::<T>(&[1.0, 0.5, 0.25, 0.125])
+    );
+}
+
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn scalar_recip_non_contiguous<T: FloatLikeTensorElement>(#[case] _t: T) {
+    let t = tensor_of::<T>(&[1.0, 2.0, 4.0, 8.0], &[2, 2]);
+    assert_eq!(
+        t.transpose().recip().materialize().data(),
+        &cast::<T>(&[1.0, 0.25, 0.5, 0.125])
+    );
+}
+
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn scalar_neg<T: FloatLikeTensorElement>(#[case] _t: T) {
+    let t = tensor_of::<T>(&[1.0, -2.0, 3.0, -4.0], &[4]);
+    assert_approx_eq((-&t).materialize().data(), &[-1.0, 2.0, -3.0, 4.0]);
+    assert_approx_eq((-t).materialize().data(), &[-1.0, 2.0, -3.0, 4.0]);
+}
+
+#[rstest]
+#[case::f64(0.0f64)]
+#[case::f32(0.0f32)]
+fn scalar_neg_twice_is_identity<T: FloatLikeTensorElement>(#[case] _t: T) {
+    let t = tensor_of::<T>(&[1.0, -2.0, 3.0, -4.0], &[4]);
+    assert_approx_eq((-(-&t)).materialize().data(), &[1.0, -2.0, 3.0, -4.0]);
 }
 
 // ── scalar fusion chain ───────────────────────────────────────────────────────

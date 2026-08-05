@@ -13,7 +13,7 @@ pub enum OpKindScalar<T> {
     Exp,
     Ln,
     Log2,
-    Inv, // (1 / y)
+    Recip, // (1 / y)
     ReLU,
     Tanh,
     // TODO: Sigmoid,
