@@ -453,6 +453,59 @@ where
 
 //////////////////////////////////////////////////////////////
 
+fn radd_scalar_impl<T, B, D>(lhs: T, rhs: &D) -> TensorPromise<T, B>
+where
+    T: Numeric,
+    B: Backend,
+    D: Operand<T, B>,
+{
+    add_scalar_impl(rhs, lhs)
+}
+
+fn rmul_scalar_impl<T, B, D>(lhs: T, rhs: &D) -> TensorPromise<T, B>
+where
+    T: Numeric,
+    B: Backend,
+    D: Operand<T, B>,
+{
+    mul_scalar_impl(rhs, lhs)
+}
+
+fn rsub_scalar_impl<T, B, D>(lhs: T, rhs: &D) -> TensorPromise<T, B>
+where
+    T: Numeric + Neg<Output = T>,
+    B: Backend,
+    D: Operand<T, B>,
+{
+    unsafe {
+        TensorPromise::new(
+            OpKind::ScalarOp(OpKindScalar::AxBy(-T::MUL_NEUTRAL, lhs)),
+            Box::new([rhs.to_node()]),
+        )
+        .unwrap_unchecked()
+    }
+}
+
+fn rdiv_scalar_impl<T, B, D>(lhs: T, rhs: &D) -> TensorPromise<T, B>
+where
+    T: Numeric,
+    B: Backend,
+    D: Operand<T, B>,
+{
+    unsafe {
+        TensorPromise::new(
+            OpKind::FusedScalar(Box::new([
+                OpKindScalar::Recip,
+                OpKindScalar::AxBy(lhs, T::SUM_NEUTRAL),
+            ])),
+            Box::new([rhs.to_node()]),
+        )
+        .unwrap_unchecked()
+    }
+}
+
+//////////////////////////////////////////////////////////////
+
 fn add_tensor_impl<T, B, D1, D2>(lhs: &D1, rhs: &D2) -> TensorPromise<T, B>
 where
     T: Numeric,
@@ -1092,6 +1145,58 @@ macro_rules! impl_sub_scalar {
                 (&self).sub(rhs)
             }
         }
+    };
+}
+
+macro_rules! impl_scalar_lhs_binop {
+    ($scalar:ty, $ty:ident, $trait:ident, $method:ident, $impl_fn:ident) => {
+        impl<B> $trait<$ty<$scalar, B>> for $scalar
+        where
+            B: Backend,
+        {
+            type Output = <$ty<$scalar, B> as UnaryResult<$scalar, B>>::Output;
+
+            #[inline]
+            fn $method(self, rhs: $ty<$scalar, B>) -> Self::Output {
+                <$ty<$scalar, B> as UnaryResult<$scalar, B>>::wrap($impl_fn(self, &rhs))
+            }
+        }
+
+        impl<B> $trait<&$ty<$scalar, B>> for $scalar
+        where
+            B: Backend,
+        {
+            type Output = <$ty<$scalar, B> as UnaryResult<$scalar, B>>::Output;
+
+            #[inline]
+            fn $method(self, rhs: &$ty<$scalar, B>) -> Self::Output {
+                <$ty<$scalar, B> as UnaryResult<$scalar, B>>::wrap($impl_fn(self, rhs))
+            }
+        }
+    };
+}
+
+macro_rules! impl_scalar_lhs_for {
+    ($scalar:ty, $ty:ident) => {
+        impl_scalar_lhs_binop!($scalar, $ty, Add, add, radd_scalar_impl);
+        impl_scalar_lhs_binop!($scalar, $ty, Sub, sub, rsub_scalar_impl);
+        impl_scalar_lhs_binop!($scalar, $ty, Mul, mul, rmul_scalar_impl);
+        impl_scalar_lhs_binop!($scalar, $ty, Div, div, rdiv_scalar_impl);
+    };
+}
+
+/// Stamps out `scalar op tensor` for one dtype across every operand type.
+///
+/// Every dtype that implements [`NumericOp`] needs a row, or `2.0 * t` will
+/// quietly fail to compile for that dtype while `t * 2.0` keeps working.
+macro_rules! impl_scalar_lhs {
+    ($scalar:ty) => {
+        impl_scalar_lhs_for!($scalar, Tensor);
+        impl_scalar_lhs_for!($scalar, TensorPromise);
+        impl_scalar_lhs_for!($scalar, CachedTensorPromise);
+        impl_scalar_lhs_for!($scalar, BakedPromise);
+        impl_scalar_lhs_for!($scalar, SkeletonSlot);
+        impl_scalar_lhs_for!($scalar, SkeletonPromise);
     };
 }
 
@@ -1915,6 +2020,10 @@ impl_tensor_ops_cross!([
     SkeletonSlot,
     SkeletonPromise,
 ]);
+
+// One row per dtype because the orphan rule sucks ass
+impl_scalar_lhs!(f32);
+impl_scalar_lhs!(f64);
 
 impl_op_assign_scalar!(TensorPromise);
 

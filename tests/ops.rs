@@ -104,6 +104,59 @@ fn scalar_neg_twice_is_identity<T: FloatLikeTensorElement>(#[case] _t: T) {
     assert_approx_eq((-(-&t)).materialize().data(), &[1.0, -2.0, 3.0, -4.0]);
 }
 
+// ── scalar on the left ────────────────────────────────────────────────────────
+
+// These tests cannot be generic because the orphan rule sucks. f32 only.
+
+#[test]
+fn scalar_lhs_add() {
+    let t = tensor_of::<f32>(&[1.0, 2.0, 3.0], &[3]);
+    assert_approx_eq((2.0f32 + &t).materialize().data(), &[3.0, 4.0, 5.0]);
+    assert_approx_eq((2.0f32 + t).materialize().data(), &[3.0, 4.0, 5.0]);
+}
+
+#[test]
+fn scalar_lhs_sub() {
+    // 2 - [1,2,3] = [1,0,-1], the mirror of [1,2,3] - 2 = [-1,0,1].
+    let t = tensor_of::<f32>(&[1.0, 2.0, 3.0], &[3]);
+    assert_approx_eq((2.0f32 - &t).materialize().data(), &[1.0, 0.0, -1.0]);
+    assert_approx_eq((t - 2.0f32).materialize().data(), &[-1.0, 0.0, 1.0]);
+}
+
+#[test]
+fn scalar_lhs_mul() {
+    let t = tensor_of::<f32>(&[1.0, 2.0, 3.0], &[3]);
+    assert_approx_eq((3.0f32 * &t).materialize().data(), &[3.0, 6.0, 9.0]);
+    assert_approx_eq((3.0f32 * t).materialize().data(), &[3.0, 6.0, 9.0]);
+}
+
+#[test]
+fn scalar_lhs_div() {
+    // 8 / [1,2,4] = [8,4,2], the mirror of [1,2,4] / 8.
+    let t = tensor_of::<f32>(&[1.0, 2.0, 4.0], &[3]);
+    assert_approx_eq((8.0f32 / &t).materialize().data(), &[8.0, 4.0, 2.0]);
+    assert_approx_eq((t / 8.0f32).materialize().data(), &[0.125, 0.25, 0.5]);
+}
+
+#[test]
+fn scalar_lhs_div_matches_recip_then_scale() {
+    // `s / t` lowers to a reciprocal plus a scale; the sugar must not drift from
+    // the expression it replaces.
+    let t = tensor_of::<f32>(&[1.0, 2.0, 4.0], &[3]);
+    let sugar = (8.0f32 / &t).materialize();
+    let manual = (t.recip() * 8.0f32).materialize();
+    assert_eq!(sugar.data(), manual.data());
+}
+
+#[test]
+fn scalar_lhs_leads_a_promise_chain() {
+    // The impls cover promises, not just `Tensor`, so a scalar can lead an
+    // expression whose right-hand side is itself an operation.
+    let t = tensor_of::<f32>(&[1.0, 2.0, 3.0], &[3]);
+    let r = 1.0f32 - (t * 2.0f32);
+    assert_approx_eq(r.materialize().data(), &[-1.0, -3.0, -5.0]);
+}
+
 // ── scalar fusion chain ───────────────────────────────────────────────────────
 
 #[test]
