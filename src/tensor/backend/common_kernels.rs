@@ -95,34 +95,25 @@ fn compute_scalar_inplace_internal<
 #[inline]
 pub fn compute_scalar_inplace<const TILE: usize, T, E, R>(
     ops: &[OpKindScalar<T>],
-    mut inputs: Vec<TensorData<T>>,
+    output_buffer: &mut [T],
     output_layout: &Layout,
     op_element: E,
     op_inplace: R,
-) -> TensorData<T>
-where
+) where
     T: Clone,
     E: Fn(&[OpKindScalar<T>], T) -> T,
     R: Fn(&OpKindScalar<T>, &mut [T]),
 {
-    let mut input = inputs.pop().unwrap();
     // The output must be contiguous
-    debug_assert!(input.is_contiguous());
-    let layout = input.layout().clone();
+    debug_assert!(output_layout.is_contiguous());
 
     compute_scalar_inplace_internal::<TILE, T, E, R>(
-        input.storage.mut_data().unwrap(),
-        &layout,
+        output_buffer,
+        output_layout,
         ops,
         op_element,
         op_inplace,
     );
-
-    let lay = output_layout
-        .clone()
-        .with_offset(input.offset() + output_layout.offset());
-
-    input.into_layout(lay)
 }
 
 #[inline]
@@ -146,30 +137,27 @@ pub fn compute_elementwise<T: Numeric, F: Fn(T, T) -> T>(
 
 #[inline]
 fn compute_elementwise_inplace_internal<T: Numeric, F: Fn(T, T) -> T>(
-    mut output: TensorData<T>,
-    other: TensorData<T>,
+    output: &mut [T],
+    other: &TensorData<T>,
     op: F,
-) -> TensorData<T> {
-    // The output must be contiguous
-    debug_assert!(output.is_contiguous());
-    map2_inplace(output.mut_data().unwrap(), other.data(), other.layout(), op);
-
-    output
+) {
+    map2_inplace(output, other.data(), other.layout(), op);
 }
 
 #[inline]
 pub fn compute_elementwise_inplace<T: Numeric, F: Fn(T, T) -> T>(
-    mut inputs: Vec<TensorData<T>>,
+    inputs: &[TensorData<T>],
+    output_buffer: &mut [T],
     output_idx: usize,
     f: F,
-) -> TensorData<T> {
-    let b = inputs.pop().unwrap();
-    let a = inputs.pop().unwrap();
+) {
+    let input = &inputs[0];
+    let out = output_buffer;
 
     if output_idx == 0 {
-        compute_elementwise_inplace_internal(a, b, f)
+        compute_elementwise_inplace_internal(out, input, f)
     } else {
-        compute_elementwise_inplace_internal(b, a, |b, a| f(a, b))
+        compute_elementwise_inplace_internal(out, input, |b, a| f(a, b))
     }
 }
 

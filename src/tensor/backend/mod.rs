@@ -24,17 +24,18 @@ impl Dtype for f64 {}
 pub trait ComputeFor<B: Backend>: Dtype {
     fn compute(
         op: &OpKind<Self>,
-        output_buffer: Vec<Self>,
+        output_buffer: &mut [Self],
         output_layout: &Layout,
         inputs: &[TensorData<Self>],
-    ) -> TensorData<Self>;
+    );
 
     fn compute_inplace(
         op: &OpKind<Self>,
+        output_buffer: &mut [Self],
         output_layout: &Layout,
-        inputs: Vec<TensorData<Self>>,
+        inputs: &[TensorData<Self>],
         output_idx: usize,
-    ) -> TensorData<Self>;
+    );
 }
 
 /// Compute strategy used by [`Tensor`](crate::tensor::Tensor) and the planner
@@ -81,28 +82,29 @@ pub trait Backend: Sized + Debug {
     /// and inserts an `AsContiguous` on any input that fast path misses.
     const SUPPORTS_NON_CONTIGUOUS_MATMUL: bool;
 
-    /// Run `op` over `inputs` into a fresh allocation. `output_buffer` is the
-    /// destination `Vec<T>`; the returned `TensorData` wraps it with
-    /// `output_layout`.
+    /// Run `op` over `inputs` storing at `output_buffer`.
     fn compute<T>(
         op: &OpKind<T>,
-        output_buffer: Vec<T>,
+        output_buffer: &mut [T],
         output_layout: &Layout,
         inputs: &[TensorData<T>],
-    ) -> TensorData<T>
-    where
+    ) where
         T: Dtype + ComputeFor<Self>;
 
-    /// Run `op` reusing `inputs[output_idx]`'s buffer as the destination. The
-    /// planner guarantees that buffer is no longer referenced by any live
-    /// node at this point, so the in-place write is sound.
+    /// Run `op` over `inputs` storing at `output_buffer` considering
+    /// the output_buffer as it were at `inputs[output_idx]`.
+    ///
+    /// # Note
+    ///
+    /// The output_layout is the same as layout of the output_buffer.
+    /// This is true because only contiguous operations may be done inplace.
     fn compute_inplace<T>(
         op: &OpKind<T>,
+        output_buffer: &mut [T],
         output_layout: &Layout,
-        inputs: Vec<TensorData<T>>,
+        inputs: &[TensorData<T>],
         output_idx: usize,
-    ) -> TensorData<T>
-    where
+    ) where
         T: Dtype + ComputeFor<Self>;
 }
 

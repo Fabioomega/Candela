@@ -21,11 +21,10 @@ impl Backend for CpuMkl {
 
     fn compute<T>(
         op: &OpKind<T>,
-        output_buffer: Vec<T>,
+        output_buffer: &mut [T],
         output_layout: &Layout,
         inputs: &[TensorData<T>],
-    ) -> TensorData<T>
-    where
+    ) where
         T: Dtype + ComputeFor<CpuMkl>,
     {
         T::compute(op, output_buffer, output_layout, inputs)
@@ -33,53 +32,55 @@ impl Backend for CpuMkl {
 
     fn compute_inplace<T>(
         op: &OpKind<T>,
+        output_buffer: &mut [T],
         output_layout: &Layout,
-        inputs: Vec<TensorData<T>>,
+        inputs: &[TensorData<T>],
         output_idx: usize,
-    ) -> TensorData<T>
-    where
+    ) where
         T: Dtype + ComputeFor<Self>,
     {
-        T::compute_inplace(op, output_layout, inputs, output_idx)
+        T::compute_inplace(op, output_buffer, output_layout, inputs, output_idx)
     }
 }
 
 impl ComputeFor<CpuMkl> for f64 {
     fn compute(
-        op: &OpKind<f64>,
-        output_buffer: Vec<f64>,
+        op: &OpKind<Self>,
+        output_buffer: &mut [Self],
         output_layout: &Layout,
-        inputs: &[TensorData<f64>],
-    ) -> TensorData<f64> {
+        inputs: &[TensorData<Self>],
+    ) {
         f64::compute_op(op, output_buffer, output_layout, inputs)
     }
 
     fn compute_inplace(
         op: &OpKind<Self>,
+        output_buffer: &mut [Self],
         output_layout: &Layout,
-        inputs: Vec<TensorData<Self>>,
+        inputs: &[TensorData<Self>],
         output_idx: usize,
-    ) -> TensorData<Self> {
-        f64::compute_op_inplace(op, output_layout, inputs, output_idx)
+    ) {
+        f64::compute_op_inplace(op, output_buffer, output_layout, inputs, output_idx)
     }
 }
 
 impl ComputeFor<CpuMkl> for f32 {
     fn compute(
-        op: &OpKind<f32>,
-        output_buffer: Vec<f32>,
+        op: &OpKind<Self>,
+        output_buffer: &mut [Self],
         output_layout: &Layout,
-        inputs: &[TensorData<f32>],
-    ) -> TensorData<f32> {
+        inputs: &[TensorData<Self>],
+    ) {
         f32::compute_op(op, output_buffer, output_layout, inputs)
     }
 
     fn compute_inplace(
         op: &OpKind<Self>,
+        output_buffer: &mut [Self],
         output_layout: &Layout,
-        inputs: Vec<TensorData<Self>>,
+        inputs: &[TensorData<Self>],
         output_idx: usize,
-    ) -> TensorData<Self> {
-        f32::compute_op_inplace(op, output_layout, inputs, output_idx)
+    ) {
+        f32::compute_op_inplace(op, output_buffer, output_layout, inputs, output_idx)
     }
 }

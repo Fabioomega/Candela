@@ -13,7 +13,7 @@ use crate::tensor::backend::common_kernels::{
 use crate::tensor::backend::cpu_pure::kernels::compute_matmul_sum;
 use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::def_op::{OpKind, OpKindScalar, Sign};
-use crate::tensor::storage::{Storage, TensorData};
+use crate::tensor::storage::TensorData;
 
 const LANE_WIDTH: usize = 16;
 const TILE_SIZE: usize = 2048;
@@ -155,20 +155,16 @@ fn compute_element(ops: &[OpKindScalar<f32>], el: f32) -> f32 {
     feature = "tracing",
     tracing::instrument(
         level = "debug",
-        skip(inputs, _output_buffer, output_layout),
+        skip(inputs, output_buffer, output_layout),
         fields(op = op.as_str(), out_len = output_layout.len())
     )
 )]
 pub(crate) fn compute_op(
     op: &OpKind<f32>,
-    mut _output_buffer: Vec<f32>,
+    output_buffer: &mut [f32],
     output_layout: &Layout,
     inputs: &[TensorData<f32>],
-) -> TensorData<f32> {
-    let output_buffer = &mut _output_buffer;
-
-    let layout = output_layout.clone();
-
+) {
     match op {
         OpKind::ScalarOp(s) => compute_scalar::<TILE_SIZE, f32, _, _, _>(
             inputs[0].data(),
@@ -199,14 +195,6 @@ pub(crate) fn compute_op(
         OpKind::MatMulSum(a, b, sign) => {
             let beta = if *sign == Sign::Minus { -*b } else { *b };
             compute_matmul_sum(inputs, *a, beta, output_buffer, true, matrixmultiply::sgemm)
-        }
-        OpKind::Slice
-        | OpKind::View
-        | OpKind::TransposeAxes
-        | OpKind::Broadcast
-        | OpKind::Transpose
-        | OpKind::NoOp => {
-            unreachable!("a reference should never appear here");
         }
         OpKind::Sum => compute_reduction(inputs, output_buffer, 0.0, |x, y| x + y),
         OpKind::SumAxis(axis, _) => {
@@ -242,9 +230,15 @@ pub(crate) fn compute_op(
 
             compute_mean_axis(inputs, axis, output_buffer, output_layout);
         }
+        OpKind::Slice
+        | OpKind::View
+        | OpKind::TransposeAxes
+        | OpKind::Broadcast
+        | OpKind::Transpose
+        | OpKind::NoOp => {
+            unreachable!("a reference should never appear here");
+        }
     };
-
-    TensorData::new(Storage::from_vec(_output_buffer), layout)
 }
 
 #[cfg_attr(
@@ -257,44 +251,39 @@ pub(crate) fn compute_op(
 )]
 pub(crate) fn compute_op_inplace(
     op: &OpKind<f32>,
+    output_buffer: &mut [f32],
     output_layout: &Layout,
-    mut inputs: Vec<TensorData<f32>>,
+    inputs: &[TensorData<f32>],
     output_idx: usize,
-) -> TensorData<f32> {
+) {
     match op {
         OpKind::ScalarOp(s) => compute_scalar_inplace::<TILE_SIZE, f32, _, _>(
             std::slice::from_ref(s),
-            inputs,
+            output_buffer,
             output_layout,
             compute_element,
             compute_inplace,
         ),
         OpKind::FusedScalar(ss) => compute_scalar_inplace::<TILE_SIZE, f32, _, _>(
             ss,
-            inputs,
+            output_buffer,
             output_layout,
             compute_element,
             compute_inplace,
         ),
-        OpKind::Add => compute_elementwise_inplace(inputs, output_idx, |x, y| x + y),
-        OpKind::Sub => compute_elementwise_inplace(inputs, output_idx, |x, y| x - y),
-        OpKind::Mul => compute_elementwise_inplace(inputs, output_idx, |x, y| x * y),
-        OpKind::Div => compute_elementwise_inplace(inputs, output_idx, |x, y| x / y),
+        OpKind::Add => compute_elementwise_inplace(inputs, output_buffer, output_idx, |x, y| x + y),
+        OpKind::Sub => compute_elementwise_inplace(inputs, output_buffer, output_idx, |x, y| x - y),
+        OpKind::Mul => compute_elementwise_inplace(inputs, output_buffer, output_idx, |x, y| x * y),
+        OpKind::Div => compute_elementwise_inplace(inputs, output_buffer, output_idx, |x, y| x / y),
         OpKind::Slice
         | OpKind::View
         | OpKind::TransposeAxes
         | OpKind::Broadcast
-        | OpKind::Transpose => {
-            let input = unsafe { inputs.pop().unwrap_unchecked() };
-            let offset = input.offset();
-
-            input.into_layout(
-                output_layout
-                    .clone()
-                    .with_offset(offset + output_layout.offset()),
-            )
+        | OpKind::Transpose
+        | OpKind::NoOp
+        | OpKind::AsContiguous => {
+            unreachable!("a reference should never appear here");
         }
-        OpKind::NoOp | OpKind::AsContiguous => unsafe { inputs.pop().unwrap_unchecked() },
         _ => todo!("not implemented {}", op.as_str()),
     }
 }
