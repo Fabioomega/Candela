@@ -22,23 +22,36 @@ fn calculate_adjacent_dim_stride(stride: &[i32], slice_shape: &[usize]) -> [i32;
 
 fn simplify_layout<const N: usize>(
     layouts: [&Layout; N],
-    l_adj_strides: [[i32; MAX_DIMS]; N],
 ) -> (usize, [usize; MAX_DIMS], [[i32; MAX_DIMS]; N]) {
     let rank: usize = layouts[0].shape().len();
     let mut shape = [0usize; MAX_DIMS];
-    let mut adj_strides = [[0i32; MAX_DIMS]; N];
+    let mut strides = [[0i32; MAX_DIMS]; N];
 
     let mut w: usize = 0;
 
     shape[0] = layouts[0].shape()[0];
     for i in 0..N {
-        adj_strides[i][0] = l_adj_strides[i][0];
+        strides[i][0] = layouts[i].stride()[0];
     }
 
     for i in 1..rank {
+        // Chop leading ones
+        if shape[w] == 1 {
+            shape[w] = layouts[0].shape()[i];
+            for n in 0..N {
+                strides[n][w] = layouts[n].stride()[i];
+            }
+            continue;
+        }
+
+        // Skip ones / chop traling ones
+        if layouts[0].shape()[i] == 1 {
+            continue;
+        }
+
         let mut mergeable = true;
         for n in 0..N {
-            if l_adj_strides[n][i] != l_adj_strides[n][i - 1] {
+            if strides[n][w] != layouts[n].stride()[i] * (layouts[n].shape()[i] as i32) {
                 mergeable = false;
                 break;
             }
@@ -49,13 +62,14 @@ fn simplify_layout<const N: usize>(
         } else {
             w += 1;
             shape[w] = layouts[0].shape()[i];
-            for x in 0..N {
-                adj_strides[x][w] = l_adj_strides[x][i];
-            }
+        }
+
+        for n in 0..N {
+            strides[n][w] = layouts[n].stride()[i];
         }
     }
 
-    (w + 1, shape, adj_strides)
+    (w + 1, shape, strides)
 }
 
 pub struct DimWalker<'a, const N: usize> {
@@ -83,20 +97,21 @@ impl<'a, const N: usize> DimWalker<'a, N> {
             };
         }
 
-        let l_adj_strides = layouts.map(|l| calculate_adjacent_dim_stride(l.stride(), l.shape()));
-
-        let (mut rank, mut shape, mut adj_strides) = simplify_layout(layouts, l_adj_strides);
+        let (mut rank, mut shape, mut strides) = simplify_layout(layouts);
 
         if rank == 1 {
             shape[1] = shape[0];
             shape[0] = 1;
 
             for i in 0..N {
-                adj_strides[i][1] = adj_strides[i][0];
+                strides[i][1] = strides[i][0];
             }
 
             rank += 1;
         }
+
+        let adj_strides =
+            strides.map(|stride| calculate_adjacent_dim_stride(&stride[..rank], &shape[..rank]));
 
         let last = rank - 1;
 
@@ -104,6 +119,8 @@ impl<'a, const N: usize> DimWalker<'a, N> {
             adj_strides.map(|adj_stride| adj_stride[last] as isize * (shape[last] - 1) as isize);
 
         let mut i: usize = 0;
+        // TODO: Add an explanation for this.
+        // See the regular iterator `Iter` for a un-magicked version of this.
         let baked_stride: [[isize; MAX_DIMS]; N] = adj_strides.map(|adj_stride| {
             let mut temp = [0isize; MAX_DIMS];
             let step = steps[i];
@@ -180,6 +197,8 @@ impl<'a, const N: usize> DimWalker<'a, N> {
                 }
 
                 count -= 1;
+                // TODO: This should be a for loop, but it had worse performance on L1-sized
+                // shapes. Does that even matter? Maybe change this to a for loop to look prettier.
                 if count == 0 {
                     count = n_chunks;
                     for i in 0..N {
@@ -200,6 +219,8 @@ impl<'a, const N: usize> DimWalker<'a, N> {
             }
 
             count -= 1;
+            // TODO: This should be a for loop, but it had worse performance on L1-sized
+            // shapes. Does that even matter? Maybe change this to a for loop to look prettier.
             if count == 0 {
                 count = n_chunks;
 
