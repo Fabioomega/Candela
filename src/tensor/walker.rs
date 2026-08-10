@@ -1,8 +1,18 @@
+use rayon::prelude::*;
 use std::convert::Infallible;
 use std::iter::zip;
 use std::ops::ControlFlow;
 
 use crate::{Layout, tensor::MAX_DIMS};
+
+pub struct Cursor<const N: usize> {
+    counter: [usize; MAX_DIMS],
+    chunks_remaining: usize,
+    batches_remaining: usize,
+    inner_start: usize,
+    inner_end: usize,
+    offsets: [usize; N],
+}
 
 fn calculate_adjacent_dim_stride(stride: &[i32], slice_shape: &[usize]) -> [i32; MAX_DIMS] {
     let rank = stride.len();
@@ -76,12 +86,14 @@ pub struct DimWalker<'a, const N: usize> {
     rank: usize,
     layouts: [&'a Layout; N],
     shape: [usize; MAX_DIMS],
+    strides: [[i32; MAX_DIMS]; N],
     baked_stride: [[isize; MAX_DIMS]; N],
     chunk_len: usize,
     is_fully_contiguous: bool,
 }
 
 impl<'a, const N: usize> DimWalker<'a, N> {
+    #[inline]
     pub fn new(layouts: [&'a Layout; N]) -> Self {
         if layouts.iter().all(|l| l.is_contiguous()) {
             let rank = layouts[0].shape().len();
@@ -91,6 +103,7 @@ impl<'a, const N: usize> DimWalker<'a, N> {
                 rank,
                 layouts,
                 shape: [0; MAX_DIMS],
+                strides: [[0; MAX_DIMS]; N],
                 baked_stride,
                 chunk_len: layouts[0].len(),
                 is_fully_contiguous: true,
@@ -140,12 +153,64 @@ impl<'a, const N: usize> DimWalker<'a, N> {
             rank,
             layouts,
             shape,
+            strides,
             baked_stride,
             chunk_len: shape[rank - 1],
             is_fully_contiguous: false,
         }
     }
 
+    #[inline]
+    pub fn start(&self) -> Cursor<N> {
+        let counter: [usize; MAX_DIMS] = [0; MAX_DIMS];
+        let offsets: [usize; N] = self.layouts.map(|l| l.offset());
+
+        let last = self.rank - 1;
+        let n_chunks: usize = self.shape[0..last].iter().product();
+
+        Cursor {
+            counter,
+            chunks_remaining: n_chunks,
+            batches_remaining: self.shape[last - 1],
+            inner_start: 0,
+            inner_end: self.shape[last],
+            offsets,
+        }
+    }
+
+    #[inline]
+    pub fn seek(&self, pos: usize, max_inner: usize, max_chunks: usize) -> Cursor<N> {
+        let mut counter: [usize; MAX_DIMS] = [0; MAX_DIMS];
+        let mut offsets: [usize; N] = self.layouts.map(|l| l.offset());
+
+        let last = self.rank - 1;
+
+        let walked_chunks = pos / self.chunk_len;
+
+        let mut acc = walked_chunks;
+        for i in (0..last).rev() {
+            counter[i] = acc % self.shape[i];
+            acc /= self.shape[i];
+
+            for n in 0..N {
+                offsets[n] = offsets[n]
+                    .wrapping_add_signed(counter[i] as isize * self.strides[n][i] as isize);
+            }
+        }
+
+        let n_chunks: usize = self.shape[0..last].iter().product();
+
+        Cursor {
+            counter,
+            chunks_remaining: (n_chunks - walked_chunks).min(max_chunks),
+            batches_remaining: self.shape[last - 1] - counter[last - 1],
+            inner_start: acc % self.shape[last],
+            inner_end: self.shape[last].min(max_inner),
+            offsets,
+        }
+    }
+
+    #[inline]
     pub fn strides(&self) -> (usize, [isize; N]) {
         (
             self.chunk_len,
@@ -154,29 +219,30 @@ impl<'a, const N: usize> DimWalker<'a, N> {
         )
     }
 
+    #[inline]
     pub fn is_fully_contiguous(&self) -> bool {
         self.is_fully_contiguous
     }
 
-    pub fn try_fold<A, B>(
+    #[inline]
+    pub fn try_fold_cursed<A, B>(
         &self,
+        cursor: Cursor<N>,
         init: A,
         mut f: impl FnMut(A, [usize; N]) -> ControlFlow<B, A>,
     ) -> ControlFlow<B, A> {
         debug_assert!(!self.is_fully_contiguous);
 
         let last = self.rank - 1;
-        let mut counter: [usize; MAX_DIMS] = [0; MAX_DIMS];
 
-        let n_chunks = self.shape[last - 1];
         let chunk_stride: [isize; N] = self.baked_stride.map(|s| s[last - 1]);
 
-        let mut offsets: [usize; N] = self.layouts.map(|l| l.offset());
+        let mut offsets: [usize; N] = cursor.offsets;
         let mut acc = init;
 
         if self.rank == 2 {
-            let left_over = self.shape[0];
-            for _ in 0..left_over {
+            let n_chunks = cursor.chunks_remaining;
+            for _ in 0..n_chunks {
                 acc = f(acc, offsets)?;
 
                 for i in 0..N {
@@ -187,20 +253,20 @@ impl<'a, const N: usize> DimWalker<'a, N> {
         }
 
         if self.rank == 3 {
-            let chunks = self.shape[0] * n_chunks;
-            let mut count = n_chunks;
-            for _ in 0..chunks {
+            let n_chunks = cursor.chunks_remaining;
+            let mut chunk_batch = cursor.batches_remaining;
+            for _ in 0..n_chunks {
                 acc = f(acc, offsets)?;
 
                 for i in 0..N {
                     offsets[i] = offsets[i].wrapping_add_signed(chunk_stride[i]);
                 }
 
-                count -= 1;
+                chunk_batch -= 1;
                 // TODO: This should be a for loop, but it had worse performance on L1-sized
                 // shapes. Does that even matter? Maybe change this to a for loop to look prettier.
-                if count == 0 {
-                    count = n_chunks;
+                if chunk_batch == 0 {
+                    chunk_batch = self.shape[1];
                     for i in 0..N {
                         offsets[i] = offsets[i].wrapping_add_signed(self.baked_stride[i][0]);
                     }
@@ -209,20 +275,22 @@ impl<'a, const N: usize> DimWalker<'a, N> {
             return ControlFlow::Continue(acc);
         }
 
-        let chunks: usize = self.shape[0..last].iter().product();
-        let mut count = n_chunks;
-        for _ in 0..chunks {
+        let mut counter: [usize; MAX_DIMS] = cursor.counter;
+
+        let n_chunks: usize = cursor.chunks_remaining;
+        let mut chunk_batch = cursor.batches_remaining;
+        for _ in 0..n_chunks {
             acc = f(acc, offsets)?;
 
             for i in 0..N {
                 offsets[i] = offsets[i].wrapping_add_signed(chunk_stride[i]);
             }
 
-            count -= 1;
+            chunk_batch -= 1;
             // TODO: This should be a for loop, but it had worse performance on L1-sized
             // shapes. Does that even matter? Maybe change this to a for loop to look prettier.
-            if count == 0 {
-                count = n_chunks;
+            if chunk_batch == 0 {
+                chunk_batch = self.shape[last - 1];
 
                 let last_counter = last - 2;
                 counter[last_counter] += 1;
@@ -246,8 +314,24 @@ impl<'a, const N: usize> DimWalker<'a, N> {
         ControlFlow::Continue(acc)
     }
 
-    pub fn fold<A>(&self, init: A, mut f: impl FnMut(A, [usize; N]) -> A) -> A {
-        match self.try_fold(init, |acc, offsets| {
+    #[inline]
+    pub fn try_fold<A, B>(
+        &self,
+        init: A,
+        f: impl FnMut(A, [usize; N]) -> ControlFlow<B, A>,
+    ) -> ControlFlow<B, A> {
+        let cursor = self.start();
+        self.try_fold_cursed(cursor, init, f)
+    }
+
+    #[inline]
+    pub fn fold_cursed<A>(
+        &self,
+        cursor: Cursor<N>,
+        init: A,
+        mut f: impl FnMut(A, [usize; N]) -> A,
+    ) -> A {
+        match self.try_fold_cursed(cursor, init, |acc, offsets| {
             ControlFlow::<Infallible, A>::Continue(f(acc, offsets))
         }) {
             ControlFlow::Continue(acc) => acc,
@@ -255,8 +339,21 @@ impl<'a, const N: usize> DimWalker<'a, N> {
         }
     }
 
-    pub fn for_each(&self, mut f: impl FnMut([usize; N])) {
-        self.fold((), |(), offsets| f(offsets));
+    #[inline]
+    pub fn fold<A>(&self, init: A, f: impl FnMut(A, [usize; N]) -> A) -> A {
+        let cursor = self.start();
+        self.fold_cursed(cursor, init, f)
+    }
+
+    #[inline]
+    pub fn for_each_cursed(&self, cursor: Cursor<N>, mut f: impl FnMut([usize; N])) {
+        self.fold_cursed(cursor, (), |(), offsets| f(offsets));
+    }
+
+    #[inline]
+    pub fn for_each(&self, f: impl FnMut([usize; N])) {
+        let cursor = self.start();
+        self.for_each_cursed(cursor, f);
     }
 }
 
@@ -586,6 +683,153 @@ pub fn map2<T: Clone, F: Fn(T, T) -> T>(
                     pos2 = pos2.wrapping_add_signed(s2);
                 }
             });
+        }
+    }
+}
+
+pub fn map2_rayon<T, F>(
+    inp1: &[T],
+    l1: &Layout,
+    inp2: &[T],
+    l2: &Layout,
+    out: &mut [T],
+    scalar_min: usize,
+    chunk_multiple: usize,
+    f: F,
+) where
+    T: Clone + Send + Sync,
+    F: Fn(T, T) -> T + Send + Sync,
+{
+    if out.len() < scalar_min {
+        map2(inp1, l1, inp2, l2, out, f);
+        return;
+    }
+
+    let walker = DimWalker::new([l1, l2]);
+
+    if walker.is_fully_contiguous {
+        let (o1, o2) = (l1.offset(), l2.offset());
+        let len = l1.len();
+        let it1 = &inp1[o1..o1 + len];
+        let it2 = &inp2[o2..o2 + len];
+
+        let chunk_size = 128 * chunk_multiple;
+
+        out.par_iter_mut()
+            .with_min_len(chunk_size)
+            .zip(it1)
+            .zip(it2)
+            .for_each(|((o, x), y)| {
+                *o = f(x.clone(), y.clone());
+            });
+        return;
+    }
+
+    let (len, strides) = walker.strides();
+    // TODO: Instead of a chunk_multiple, we should make the chunk_size a constant
+    // and round that to the nearest multiple of len and use that instead.
+    let chunk_size = len * chunk_multiple;
+
+    match strides {
+        [1, 1] => {
+            out.par_chunks_mut(chunk_size)
+                .enumerate()
+                .for_each(|(i, chunk)| {
+                    let cursor = walker.seek(i * chunk_size, len, chunk_multiple);
+
+                    let mut chunks = chunk.chunks_exact_mut(len);
+                    walker.for_each_cursed(cursor, |offsets| {
+                        let chunk = unsafe { next_chunk(&mut chunks) };
+                        let it1 = inp1[offsets[0]..offsets[0] + len].iter();
+                        let it2 = inp2[offsets[1]..offsets[1] + len].iter();
+
+                        for (o, (x, y)) in chunk.iter_mut().zip(zip(it1, it2)) {
+                            *o = f(x.clone(), y.clone());
+                        }
+                    });
+                });
+        }
+        [0, 0] => {
+            out.par_chunks_mut(chunk_size)
+                .enumerate()
+                .for_each(|(i, chunk)| {
+                    let cursor = walker.seek(i * chunk_size, len, chunk_multiple);
+
+                    let mut chunks = chunk.chunks_exact_mut(len);
+                    walker.for_each_cursed(cursor, |offsets| {
+                        let chunk = unsafe { next_chunk(&mut chunks) };
+                        chunk.fill(f(inp1[offsets[0]].clone(), inp2[offsets[1]].clone()));
+                    });
+                });
+        }
+        [0, _] => {
+            out.par_chunks_mut(chunk_size)
+                .enumerate()
+                .for_each(|(i, chunk)| {
+                    let cursor = walker.seek(i * chunk_size, len, chunk_multiple);
+
+                    let mut chunks = chunk.chunks_exact_mut(len);
+                    walker.for_each_cursed(cursor, |offsets| {
+                        let chunk = unsafe { next_chunk(&mut chunks) };
+                        let x = inp1[offsets[0]].clone();
+
+                        for (o, y) in chunk
+                            .iter_mut()
+                            .zip(inp2[offsets[1]..offsets[1] + len].iter())
+                        {
+                            *o = f(x.clone(), y.clone());
+                        }
+                    });
+                });
+        }
+        [_, 0] => {
+            out.par_chunks_mut(chunk_size)
+                .enumerate()
+                .for_each(|(i, chunk)| {
+                    let cursor = walker.seek(i * chunk_size, len, chunk_multiple);
+
+                    let mut chunks = chunk.chunks_exact_mut(len);
+                    walker.for_each_cursed(cursor, |offsets| {
+                        let chunk = unsafe { next_chunk(&mut chunks) };
+                        let y = inp2[offsets[1]].clone();
+
+                        for (o, x) in chunk
+                            .iter_mut()
+                            .zip(inp1[offsets[0]..offsets[0] + len].iter())
+                        {
+                            *o = f(x.clone(), y.clone());
+                        }
+                    });
+                });
+        }
+        [s1, s2] => {
+            out.par_chunks_mut(chunk_size)
+                .enumerate()
+                .for_each(|(i, chunk)| {
+                    let cursor = walker.seek(i * chunk_size, len, chunk_multiple);
+
+                    let mut chunks = chunk.chunks_exact_mut(len);
+                    walker.for_each_cursed(cursor, |offsets| {
+                        let chunk = unsafe { next_chunk(&mut chunks) };
+                        let mut pos1 = offsets[0];
+                        let mut pos2 = offsets[1];
+
+                        for o in chunk.iter_mut() {
+                            debug_assert!(pos1 < inp1.len());
+                            debug_assert!(pos2 < inp2.len());
+                            // SAFETY: a well-formed layout only ever visits in-bounds
+                            // positions of its own buffer.
+                            *o = unsafe {
+                                f(
+                                    inp1.get_unchecked(pos1).clone(),
+                                    inp2.get_unchecked(pos2).clone(),
+                                )
+                            };
+                            pos1 = pos1.wrapping_add_signed(s1);
+                            pos2 = pos2.wrapping_add_signed(s2);
+                        }
+                    });
+                });
         }
     }
 }
