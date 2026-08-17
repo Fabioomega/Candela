@@ -10,28 +10,40 @@ use crate::{OpError, SliceRange};
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
+// TODO: When handling type casting we need to change this
+// to account for alignment.
+#[derive(Debug)]
+enum StorageKind<T> {
+    Global(Arc<Vec<T>>),
+    Arena { base: *mut T, len: usize },
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug)]
 pub struct Storage<T> {
-    pub(crate) buffer: Arc<Vec<T>>,
+    storage: StorageKind<T>,
 }
 
 impl<T: Clone> Storage<T> {
     #[inline]
     pub fn from_scalar(scalar: T, len: usize) -> Self {
         Self {
-            buffer: Arc::new(vec![scalar; len]),
+            storage: StorageKind::Global(Arc::new(vec![scalar; len])),
         }
     }
 
     #[inline]
     pub fn from_arc(buffer: Arc<Vec<T>>) -> Self {
-        Self { buffer }
+        Self {
+            storage: StorageKind::Global(buffer),
+        }
     }
 
     #[inline]
     pub fn from_vec(vector: Vec<T>) -> Self {
         Self {
-            buffer: Arc::new(vector),
+            storage: StorageKind::Global(Arc::new(vector)),
         }
     }
 
@@ -45,35 +57,57 @@ impl<T: Clone> Storage<T> {
     }
 
     #[inline]
+    pub(crate) unsafe fn from_raw_parts(base: *mut T, len: usize) -> Self {
+        Self {
+            storage: StorageKind::Arena { base, len },
+        }
+    }
+
+    #[inline]
     pub fn data(&self) -> &[T] {
-        &self.buffer
+        match &self.storage {
+            StorageKind::Global(buffer) => buffer,
+            StorageKind::Arena { base, len } => unsafe { std::slice::from_raw_parts(*base, *len) },
+        }
     }
 
     #[inline]
     pub fn mut_data(&mut self) -> Option<&mut [T]> {
-        Arc::get_mut(&mut self.buffer).map(|buffer| buffer.as_mut_slice())
+        match &mut self.storage {
+            StorageKind::Global(buffer) => Arc::get_mut(buffer).map(|buffer| buffer.as_mut()),
+            StorageKind::Arena { base, len } => unsafe {
+                Some(std::slice::from_raw_parts_mut(*base, *len))
+            },
+        }
     }
 
     #[inline]
     pub fn as_ptr(&self) -> *const T {
-        self.buffer.as_ptr()
+        self.data().as_ptr()
     }
 
     #[inline]
     pub fn as_mut_ptr(&mut self) -> Option<*mut T> {
-        Arc::get_mut(&mut self.buffer).map(|buffer| buffer.as_mut_ptr())
+        self.mut_data().map(|data| data.as_mut_ptr())
     }
 
     #[inline]
     pub fn deep_clone(&self) -> Self {
-        let buffer = self.buffer.to_vec();
-        Storage::from_vec(buffer)
+        if let StorageKind::Global(buffer) = &self.storage {
+            let b = buffer.to_vec();
+            Storage::from_vec(b)
+        } else {
+            unreachable!("this function can only be called when the buffer is not arena-based");
+        }
     }
 }
 
 impl<T: Clone> Clone for Storage<T> {
     fn clone(&self) -> Self {
-        Storage::from_arc(self.buffer.clone())
+        match &self.storage {
+            StorageKind::Global(buffer) => Storage::from_arc(buffer.clone()),
+            StorageKind::Arena { base, len } => unsafe { Storage::from_raw_parts(*base, *len) },
+        }
     }
 }
 
@@ -195,7 +229,7 @@ impl<T: Clone> TensorData<T> {
 
     #[inline]
     pub fn iter(&self) -> Iter<'_, T> {
-        Iter::new(&self.storage.buffer, self.layout())
+        Iter::new(self.storage.data(), self.layout())
     }
 
     /// Iterate over the backing buffer using `layout` instead of this storage's own
@@ -214,12 +248,12 @@ impl<T: Clone> TensorData<T> {
         debug_assert!(
             self.layout().len() >= layout.len() && self.layout.offset() >= layout.offset()
         );
-        Iter::new(&self.storage.buffer, layout)
+        Iter::new(self.storage.data(), layout)
     }
 
     #[inline]
     pub fn informed_iter(&self) -> InformedIter<'_, T> {
-        InformedIter::new(&self.storage.buffer, &self.layout)
+        InformedIter::new(self.storage.data(), &self.layout)
     }
 
     #[inline]

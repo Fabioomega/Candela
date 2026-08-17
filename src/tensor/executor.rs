@@ -9,14 +9,6 @@ use crate::tensor::storage::{Storage, TensorData};
 use crate::{Dimension, Layout};
 
 #[inline]
-fn alloc_vec<T: Default + Clone>(len: usize) -> Vec<T> {
-    let mut output_buffer = Vec::with_capacity(len);
-    unsafe { output_buffer.set_len(len) };
-
-    output_buffer
-}
-
-#[inline]
 fn fill_inputs_scratch<T: Clone>(
     inputs_scratch: &mut Vec<TensorData<T>>,
     computation_cache: &FxHashMap<usize, TensorData<T>>,
@@ -39,12 +31,20 @@ fn execute_output<T: NumberLike + ComputeFor<B>, B: Backend>(
 ) -> TensorData<T> {
     let result = match output {
         OutputKind::Allocate(len) => {
-            let mut output_buffer: Vec<T> = alloc_vec(*len);
             fill_inputs_scratch(inputs_scratch, computation_cache, resolved_inputs);
 
-            B::compute(op, &mut output_buffer, layout, &inputs_scratch);
+            let mut output: Vec<T> = Vec::with_capacity(*len);
+            let output_to_set = unsafe {
+                let s = output.spare_capacity_mut();
+                std::mem::transmute::<&mut [std::mem::MaybeUninit<T>], &mut [T]>(s)
+            };
 
-            TensorData::new(Storage::from_vec(output_buffer), layout.clone())
+            B::compute(op, output_to_set, layout, inputs_scratch);
+
+            // SAFETY: Compute always fills up the whole output buffer
+            unsafe { output.set_len(*len) };
+
+            TensorData::new(Storage::from_vec(output), layout.clone())
         }
         OutputKind::Buffer(id) => {
             // TODO: The planner guarantees this id is present in the cache, so this is
