@@ -14,6 +14,7 @@ use crate::tensor::graph::{
     NodeKind, TensorGraphBaked, TensorGraphCacheNode, TensorGraphEdge, TensorGraphNode,
 };
 use crate::tensor::planner::alias::{self, AliasKind, AliasMap};
+use crate::tensor::planner::packing::greedy_offset_pack_slots;
 use crate::tensor::planner::runtime::{ExecKind, Slot};
 use crate::tensor::planner::sort::topological_sort;
 use crate::tensor::planner::{get_id, runtime};
@@ -171,6 +172,7 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                 self.slots.push(Slot {
                     id: node.id,
                     len: node.layout.len(),
+                    start: op_start,
                     end: op_end,
                 });
 
@@ -181,20 +183,6 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                     resolved_inputs,
                     dealloc_after: Vec::new(),
                 });
-            }
-            ExecKind::UseSlot { slot_idx } => {
-                self.id_slot_map.insert(node.id, slot_idx);
-                self.slots[slot_idx].end = op_end;
-
-                let resolved_inputs = build_resolved_inputs(resolved_inputs);
-                self.plan.push(ComputeKind::Op {
-                    node,
-                    output: OutputKind::Buffer(self.slots[slot_idx].id),
-                    resolved_inputs,
-                    dealloc_after: Vec::new(),
-                });
-
-                self.slots[slot_idx].id = node.id;
             }
             ExecKind::InPlace {
                 slot_idx,
@@ -291,17 +279,6 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                 self.plan.push(ComputeKind::CachedOp {
                     cache,
                     output: OutputKind::Allocate(node.layout.len()),
-                    resolved_inputs,
-                    dealloc_after: Vec::new(),
-                });
-            }
-            ExecKind::UseSlot { slot_idx } => {
-                self.slots[slot_idx].end = None;
-
-                let resolved_inputs = build_resolved_inputs(resolved_inputs);
-                self.plan.push(ComputeKind::CachedOp {
-                    cache,
-                    output: OutputKind::Buffer(self.slots[slot_idx].id),
                     resolved_inputs,
                     dealloc_after: Vec::new(),
                 });
@@ -631,15 +608,15 @@ pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
         }
     }
 
-    for slot in slots.into_iter() {
-        let Some(end) = slot.end else { continue };
+    let packed_slots = greedy_offset_pack_slots(slots);
 
-        match &mut plan[end] {
-            ComputeKind::Op { dealloc_after, .. }
-            | ComputeKind::CachedOp { dealloc_after, .. }
-            | ComputeKind::Baked { dealloc_after, .. } => dealloc_after.push(slot.id),
-            ComputeKind::Leaf { .. } => unreachable!(),
-        }
+    // TODO: This is will be a toggle for the arena
+    let separate_objects = false;
+
+    if separate_objects {
+        todo!("separate objects is not implemented");
+    } else {
+        todo!("arena is not implemented yet");
     }
 
     #[cfg(feature = "tracing")]

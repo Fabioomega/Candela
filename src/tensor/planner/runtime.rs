@@ -22,18 +22,8 @@ use crate::tensor::planner::{get_id, get_layout};
 pub(crate) struct Slot {
     pub(crate) id: usize,
     pub(crate) len: usize,
+    pub(crate) start: usize,
     pub(crate) end: Option<usize>,
-}
-
-#[inline]
-fn find_slot(slots: &[Slot], op_start: usize, len: usize) -> Option<usize> {
-    for (i, slot) in slots.iter().enumerate() {
-        if slot.len == len && slot.end.is_some_and(|e| e < op_start) {
-            return Some(i);
-        }
-    }
-
-    None
 }
 
 /// Whether the op at `op_location` is the last reader of `slot`.
@@ -44,21 +34,10 @@ fn slot_is_last_read(slot: &Slot, op_location: usize, required_len: usize) -> bo
     slot.end == Some(op_location) && slot.len == required_len
 }
 
-#[inline]
-fn assign_slot(slots: &[Slot], op_location: usize, output_layout: &Layout) -> ExecKind {
-    let slot = find_slot(slots, op_location, output_layout.len());
-    slot.map_or(ExecKind::Allocate, |slot| ExecKind::UseSlot {
-        slot_idx: slot,
-    })
-}
-
 /// How a node's output buffer is produced at execution time.
 pub(crate) enum ExecKind {
     /// Allocate a fresh buffer.
     Allocate,
-    /// Reclaim a previously freed, same-size buffer - the one currently owned by
-    /// `slots[slot_idx]`.
-    UseSlot { slot_idx: usize },
     /// Overwrite the input at `input_idx` in place: this op is the last reader of
     /// its buffer (`slots[slot_idx]`), which is the right size.
     InPlace { slot_idx: usize, input_idx: usize },
@@ -130,7 +109,7 @@ pub(crate) fn classify<T, B: Backend>(
                         None => ExecKind::ReferenceEternal { input_idx: 0 },
                     }
                 } else {
-                    assign_slot(slots, op_location, output_layout)
+                    ExecKind::Allocate
                 }
             }
             NodeKind::Cache(c) => {
@@ -144,7 +123,7 @@ pub(crate) fn classify<T, B: Backend>(
                         None => ExecKind::ReferenceEternal { input_idx: 0 },
                     }
                 } else {
-                    assign_slot(slots, op_location, output_layout)
+                    ExecKind::Allocate
                 }
             }
             NodeKind::Baked(c) => {
@@ -157,21 +136,21 @@ pub(crate) fn classify<T, B: Backend>(
                         None => ExecKind::ReferenceEternal { input_idx: 0 },
                     }
                 } else {
-                    assign_slot(slots, op_location, output_layout)
+                    ExecKind::Allocate
                 }
             }
             NodeKind::Edge(e) => {
                 if e.layout().is_contiguous() {
                     ExecKind::ReferenceEternal { input_idx: 0 }
                 } else {
-                    assign_slot(slots, op_location, output_layout)
+                    ExecKind::Allocate
                 }
             }
             NodeKind::Slot(s) => {
                 if s.layout().is_contiguous() {
                     ExecKind::ReferenceEternal { input_idx: 0 }
                 } else {
-                    assign_slot(slots, op_location, output_layout)
+                    ExecKind::Allocate
                 }
             }
         },
@@ -183,11 +162,9 @@ pub(crate) fn classify<T, B: Backend>(
                 .get(&id)
                 .filter(|&&s| slot_is_last_read(&slots[s], op_location, output_layout.len()))
                 .copied()
-                .map_or(assign_slot(slots, op_location, output_layout), |slot_idx| {
-                    ExecKind::InPlace {
-                        slot_idx,
-                        input_idx: 0,
-                    }
+                .map_or(ExecKind::Allocate, |slot_idx| ExecKind::InPlace {
+                    slot_idx,
+                    input_idx: 0,
                 })
         }
         OpKind::FusedScalar(_) => {
@@ -200,11 +177,9 @@ pub(crate) fn classify<T, B: Backend>(
                         && get_layout(inputs[0]).is_contiguous()
                 })
                 .copied()
-                .map_or(assign_slot(slots, op_location, output_layout), |slot_idx| {
-                    ExecKind::InPlace {
-                        slot_idx,
-                        input_idx: 0,
-                    }
+                .map_or(ExecKind::Allocate, |slot_idx| ExecKind::InPlace {
+                    slot_idx,
+                    input_idx: 0,
                 })
         }
         OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Div => {
@@ -238,8 +213,8 @@ pub(crate) fn classify<T, B: Backend>(
                 }
             }
 
-            assign_slot(slots, op_location, output_layout)
+            ExecKind::Allocate
         }
-        _ => assign_slot(slots, op_location, output_layout),
+        _ => ExecKind::Allocate,
     }
 }

@@ -209,7 +209,7 @@ impl Layout {
         }
     }
 
-    /// Return this layout with its `offset` into the backing buffer replaced.
+    /// Return this layout with its `offset` replaced.
     ///
     /// Builder-style, usually chained onto [`new`](Self::new).
     ///
@@ -222,6 +222,23 @@ impl Layout {
     /// ```
     pub fn with_offset(mut self, offset: usize) -> Self {
         self.offset = offset;
+
+        self
+    }
+
+    /// Return this layout with its `offset` added to the current `offset`.
+    ///
+    /// Builder-style, usually chained onto [`new`](Self::new).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use candela::Layout;
+    /// let l = Layout::new(4).with_offset(3).with_added_offset(3);
+    /// assert_eq!(l.offset(), 6);
+    /// ```
+    pub fn with_added_offset(mut self, offset: usize) -> Self {
+        self.offset += offset;
 
         self
     }

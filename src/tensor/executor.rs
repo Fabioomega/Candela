@@ -53,7 +53,12 @@ fn execute_output<T: NumberLike + ComputeFor<B>, B: Backend>(
             let mut reused = computation_cache.remove(id).unwrap();
             fill_inputs_scratch(inputs_scratch, computation_cache, resolved_inputs);
 
-            B::compute(op, reused.mut_data().unwrap(), layout, &inputs_scratch);
+            B::compute(
+                op,
+                &mut reused.mut_data().unwrap()[..layout.len()],
+                layout,
+                &inputs_scratch,
+            );
 
             reused.into_layout(layout.clone())
         }
@@ -259,7 +264,7 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
                 dealloc_after,
                 ..
             } => {
-                let result = execute_output(
+                let result: TensorData<T> = execute_output(
                     op,
                     layout,
                     output,
