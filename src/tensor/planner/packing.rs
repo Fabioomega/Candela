@@ -2,6 +2,26 @@ use std::cmp::Reverse;
 
 use crate::tensor::planner::runtime::Slot;
 
+const ALIGNMENT_BYTES: usize = 128;
+
+const fn gcd(mut a: usize, mut b: usize) -> usize {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}
+
+pub const fn alignment_of<T>() -> usize {
+    match size_of::<T>() {
+        0 => 1,
+        size => ALIGNMENT_BYTES / gcd(ALIGNMENT_BYTES, size),
+    }
+}
+
+////////////////////////////////////////////////////////////////
+
 pub struct PackedSlot {
     pub start: usize,
     pub end: usize,
@@ -9,18 +29,25 @@ pub struct PackedSlot {
     pub len: usize,
 }
 
-fn fit_len(slots: &[PackedSlot], start: usize, end: usize, len: usize) -> usize {
+// Black magic to get alignment for powers of 2
+const fn align_up(offset: usize, align: usize) -> usize {
+    (offset + align - 1) & !(align - 1)
+}
+
+fn fit_len(slots: &[PackedSlot], start: usize, end: usize, len: usize, alignment: usize) -> usize {
     let mut last_offset: usize = 0;
     let mut best_offset: Option<usize> = None;
     let mut best_gap: usize = usize::MAX;
 
     for s in slots {
         if s.start <= end && start <= s.end {
-            if s.offset > last_offset {
-                let gap = s.offset - last_offset;
+            let aligned_offset = align_up(last_offset, alignment);
+
+            if s.offset > aligned_offset {
+                let gap = s.offset - aligned_offset;
 
                 if gap >= len && gap - len < best_gap {
-                    best_offset = Some(last_offset);
+                    best_offset = Some(aligned_offset);
                     best_gap = gap - len;
                 }
             }
@@ -29,10 +56,15 @@ fn fit_len(slots: &[PackedSlot], start: usize, end: usize, len: usize) -> usize 
         }
     }
 
-    best_offset.unwrap_or(last_offset)
+    best_offset.unwrap_or_else(|| align_up(last_offset, alignment))
 }
 
-pub fn greedy_offset_pack_slots(mut slots: Vec<Slot>) -> Vec<PackedSlot> {
+pub fn greedy_offset_pack_slots(mut slots: Vec<Slot>, alignment: usize) -> Vec<PackedSlot> {
+    debug_assert!(
+        alignment.is_power_of_two(),
+        "alignment must be a power of two"
+    );
+
     slots.sort_unstable_by_key(|s| (Reverse(s.len), s.start));
 
     let mut packed_slots: Vec<PackedSlot> = Vec::with_capacity(slots.len());
@@ -44,7 +76,7 @@ pub fn greedy_offset_pack_slots(mut slots: Vec<Slot>) -> Vec<PackedSlot> {
             continue;
         }
 
-        let fit = fit_len(&packed_slots, s.start, s.end.unwrap(), s.len);
+        let fit = fit_len(&packed_slots, s.start, s.end.unwrap(), s.len, alignment);
         let packed = PackedSlot {
             start: s.start,
             end: s.end.unwrap(),
@@ -60,7 +92,7 @@ pub fn greedy_offset_pack_slots(mut slots: Vec<Slot>) -> Vec<PackedSlot> {
     packed_slots
 }
 
-////////////////////////////////
+////////////////////////////////////////////////////////////////
 
 fn cost_heuristic() -> usize {
     0
