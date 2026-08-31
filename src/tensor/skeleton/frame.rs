@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::iter::zip;
 use std::sync::Arc;
 
+use crate::tensor::allocate::AlignedBuf;
 use crate::tensor::backend::{Backend, ComputeFor, DefaultBackend};
 use crate::tensor::executor::{owned_step, run_plan};
 use crate::tensor::graph::{NodeKind, TensorGraphBaked, TensorGraphNode, TensorGraphSlot};
 use crate::tensor::planner::{
-    OutputKind, OwnedComputeKind, OwnedCorePlan, core_plan_computation, from_borrowed_core_to_owned,
+    ALIGNMENT_BYTES, OutputKind, OwnedComputeKind, OwnedPlan, from_borrowed_core_to_owned,
+    plan_computation,
 };
 use crate::tensor::storage::TensorData;
 use crate::tensor::traits::{Composable, Numeric, Operand, Promising};
@@ -176,7 +178,7 @@ impl<T: std::fmt::Debug, B: Backend> std::fmt::Debug for BakedPromise<T, B> {
 
 impl<T: Clone + PartialEq, B: Backend> BakedPromise<T, B> {
     fn from_node(
-        plan: &Arc<OwnedCorePlan<T, B>>,
+        plan: &Arc<OwnedPlan<T, B>>,
         inputs: Box<[NodeKind<T, B>]>,
         inputs_idx: Box<[usize]>,
         layout: &Layout,
@@ -472,7 +474,7 @@ where
 /// assert!(output_b.is_err());
 /// ```
 pub struct Skeleton<T, B: Backend = DefaultBackend> {
-    plan: Arc<OwnedCorePlan<T, B>>,
+    plan: Arc<OwnedPlan<T, B>>,
     declared_slots: Vec<(usize, Layout)>,
     layout: Layout,
 }
@@ -491,7 +493,7 @@ impl<T: Clone + PartialEq + ComputeFor<B>, B: Backend> Skeleton<T, B> {
         node: &TensorGraphNode<T, B>,
         declared_slots: Vec<(usize, Layout)>,
     ) -> Result<Self, OpError> {
-        let plan = core_plan_computation(node);
+        let plan = plan_computation(node);
 
         if plan.external_inputs.len() != declared_slots.len() {
             return Err(OpError::IncorrectSlotAmount(
@@ -569,10 +571,13 @@ impl<T: Clone + PartialEq + ComputeFor<B>, B: Backend> Skeleton<T, B> {
             .map(|(t, (id, _))| (*id, t.graph.compute()))
             .collect();
 
+        let allocated_arena: AlignedBuf<T> = AlignedBuf::new(self.plan.arena_size, ALIGNMENT_BYTES);
+
         let output = run_plan(
             &mut self.plan.plan.iter().map(owned_step),
             self.plan.root_id,
             external,
+            allocated_arena.as_ptr(),
         );
 
         Ok(Tensor::from_data(output))
@@ -686,28 +691,12 @@ impl<T, B: Backend> Dimension for Skeleton<T, B> {
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryMetrics {
-    /// peak memory usage in bytes
-    pub peak_memory_usage: usize,
-    /// number of allocations performed
-    pub total_number_of_allocations: usize,
-    /// the sizes, in bytes, of all allocated buffers
-    pub allocated_buffers_size: Vec<usize>,
-    /// total memory allocated in bytes
-    pub total_memory_allocated: usize,
-    /// the size, in bytes, of the output node
-    pub output_memory_usage: usize,
+    /// the size of the allocated (in bytes)
+    arena_size: usize,
 }
 
 impl<T, B: Backend> Skeleton<T, B> {
     fn memory_report_plan(&self, root_id: usize, plan: &[OwnedComputeKind<T, B>]) -> MemoryMetrics {
-        let mut allocated_slots: HashMap<usize, usize> = HashMap::new();
-        let mut allocated_buffers_size: Vec<usize> = Vec::new();
-        let mut total_memory_allocated: usize = 0;
-        let mut total_number_of_allocations: usize = 0;
-        let mut current_memory_usage: usize = 0;
-        let mut peak_memory_usage: usize = 0;
-        let mut output_memory_usage: usize = 0;
-
         for compute_kind in plan.iter() {
             match compute_kind {
                 OwnedComputeKind::Op {
@@ -716,33 +705,11 @@ impl<T, B: Backend> Skeleton<T, B> {
                     resolved_inputs,
                     dealloc_after,
                 } => match output {
-                    OutputKind::Allocate(size) => {
-                        let mem: usize = *size * size_of::<T>();
-                        allocated_slots.insert(node.id, mem);
-                        allocated_buffers_size.push(mem);
-                        total_memory_allocated += mem;
-                        total_number_of_allocations += 1;
-                        current_memory_usage += mem;
-                        peak_memory_usage = peak_memory_usage.max(current_memory_usage);
-
-                        for id in dealloc_after.iter() {
-                            if let Some(mem) = allocated_slots.remove(id) {
-                                current_memory_usage -= mem;
-                            }
-                        }
+                    OutputKind::Allocate(size) => {}
+                    OutputKind::Region { offset, len } => {
+                        todo!();
                     }
-                    OutputKind::Buffer(id) => {
-                        if let Some(mem) = allocated_slots.remove(id) {
-                            allocated_slots.insert(node.id, mem);
-                        }
-                    }
-                    OutputKind::InPlaceIdx(idx) => {
-                        let id = resolved_inputs[*idx];
-
-                        if let Some(mem) = allocated_slots.remove(&id) {
-                            allocated_slots.insert(node.id, mem);
-                        }
-                    }
+                    OutputKind::InPlaceIdx { idx, .. } => {}
                     OutputKind::Reference(_) => {}
                 },
                 OwnedComputeKind::CachedOp {
@@ -757,40 +724,12 @@ impl<T, B: Backend> Skeleton<T, B> {
                         // the planner saw an unfilled cache. Then, it emits something that is not an Allocate.
                         // In that case, the executor removes the allocation made for the cache.
                         match output {
-                            OutputKind::Buffer(id) => {
-                                if let Some(mem) = allocated_slots.remove(id) {
-                                    current_memory_usage -= mem;
-                                }
-                            }
-                            OutputKind::InPlaceIdx(idx) => {
-                                if let Some(mem) = allocated_slots.remove(&resolved_inputs[*idx]) {
-                                    current_memory_usage -= mem;
-                                }
-                            }
+                            OutputKind::InPlaceIdx { idx, .. } => {}
+                            OutputKind::Region { offset, len } => {}
                             _ => {}
                         }
-
-                        for id in dealloc_after.iter() {
-                            if let Some(mem) = allocated_slots.remove(id) {
-                                current_memory_usage -= mem;
-                            }
-                        }
                     } else {
-                        if let OutputKind::Allocate(size) = output {
-                            let mem = *size * size_of::<T>();
-                            allocated_slots.insert(cache.get_node().id, mem);
-                            allocated_buffers_size.push(mem);
-                            total_memory_allocated += mem;
-                            total_number_of_allocations += 1;
-                            current_memory_usage += mem;
-                            peak_memory_usage = peak_memory_usage.max(current_memory_usage);
-
-                            for id in dealloc_after.iter() {
-                                if let Some(mem) = allocated_slots.remove(id) {
-                                    current_memory_usage -= mem;
-                                }
-                            }
-                        }
+                        if let OutputKind::Allocate(size) = output {}
                     }
                 }
                 OwnedComputeKind::Baked {
@@ -799,36 +738,12 @@ impl<T, B: Backend> Skeleton<T, B> {
                     ..
                 } => {
                     let report = self.memory_report_plan(baked.plan.root_id, &baked.plan.plan);
-
-                    allocated_slots.insert(baked.id, report.output_memory_usage);
-                    allocated_buffers_size.extend(report.allocated_buffers_size.iter());
-                    total_memory_allocated += report.total_memory_allocated;
-                    total_number_of_allocations += report.total_number_of_allocations;
-                    peak_memory_usage =
-                        peak_memory_usage.max(current_memory_usage + report.peak_memory_usage);
-                    current_memory_usage += report.output_memory_usage;
-
-                    for id in dealloc_after.iter() {
-                        if let Some(mem) = allocated_slots.remove(id) {
-                            current_memory_usage -= mem;
-                        }
-                    }
                 }
                 OwnedComputeKind::Leaf { .. } => {}
             }
         }
 
-        if let Some(size) = allocated_slots.remove(&root_id) {
-            output_memory_usage = size;
-        }
-
-        MemoryMetrics {
-            peak_memory_usage,
-            total_number_of_allocations,
-            allocated_buffers_size,
-            total_memory_allocated,
-            output_memory_usage,
-        }
+        MemoryMetrics { arena_size: 0 }
     }
 
     /// Reports memory allocations
