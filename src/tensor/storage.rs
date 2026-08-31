@@ -18,6 +18,11 @@ enum StorageKind<T> {
     Arena { base: *mut T, len: usize },
 }
 
+// SAFETY: The `StorageKind::Arena` never scapes run-plan so any user-observable storage
+// is `StorageKind::Global`.
+unsafe impl<T: Send> Send for StorageKind<T> {}
+unsafe impl<T: Sync> Sync for StorageKind<T> {}
+
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
@@ -98,6 +103,14 @@ impl<T: Clone> Storage<T> {
             Storage::from_vec(b)
         } else {
             unreachable!("this function can only be called when the buffer is not arena-based");
+        }
+    }
+
+    #[inline]
+    pub fn is_arena_backed(&self) -> bool {
+        match self.storage {
+            StorageKind::Arena { .. } => true,
+            _ => false,
         }
     }
 }

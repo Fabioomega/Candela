@@ -160,7 +160,10 @@ pub(crate) fn classify<T, B: Backend>(
 
             id_slot_map
                 .get(&id)
-                .filter(|&&s| slot_is_last_read(&slots[s], op_location, output_layout.len()))
+                .filter(|&&s| {
+                    slot_is_last_read(&slots[s], op_location, output_layout.len())
+                        && get_layout(inputs[0]).is_contiguous()
+                })
                 .copied()
                 .map_or(ExecKind::Allocate, |slot_idx| ExecKind::InPlace {
                     slot_idx,
@@ -189,19 +192,26 @@ pub(crate) fn classify<T, B: Backend>(
                 }
 
                 let id = get_id(inp);
+                let slot_idx = id_slot_map.get(&id);
 
                 // Guards against same node in 2 inputs (i. e. t + t).
-                // In that case InPlaceIdx cannot happen as the backends needs
-                // the storage Arc to be unique to be able to reuse a buffer in-place.
-                if inputs
-                    .iter()
-                    .enumerate()
-                    .any(|(j, other)| j != i && get_id(other) == id)
-                {
+                // In that case InPlaceIdx cannot happen because the compute_inplace at backend
+                // only support inplacing on a single operand and not 2. Forcing the issue would
+                // break rust aliasing rules.
+                if inputs.iter().enumerate().any(|(j, other)| {
+                    j != i && {
+                        let other_slot_id = id_slot_map.get(&get_id(other));
+                        match (slot_idx, other_slot_id) {
+                            // (None, None) result does not matter, it's here just for exhaustiveness.
+                            (None, None) => true,
+                            (None, Some(_)) => false,
+                            (Some(_), None) => false,
+                            (Some(self_idx), Some(other_idx)) => *self_idx == *other_idx,
+                        }
+                    }
+                }) {
                     continue;
                 }
-
-                let slot_idx = id_slot_map.get(&id);
 
                 if let Some(idx) = slot_idx
                     && slot_is_last_read(&slots[*idx], op_location, output_layout.len())

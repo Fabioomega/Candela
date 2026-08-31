@@ -25,6 +25,7 @@ fn execute_output<T: NumberLike + ComputeFor<B>, B: Backend>(
     op: &OpKind<T>,
     layout: &Layout,
     output: &OutputKind,
+    arena_ptr: *mut T,
     resolved_inputs: &[usize],
     inputs_scratch: &mut Vec<TensorData<T>>,
     computation_cache: &mut FxHashMap<usize, TensorData<T>>,
@@ -46,23 +47,20 @@ fn execute_output<T: NumberLike + ComputeFor<B>, B: Backend>(
 
             TensorData::new(Storage::from_vec(output), layout.clone())
         }
-        OutputKind::Buffer(id) => {
-            // TODO: The planner guarantees this id is present in the cache, so this is
-            // always Some. Can use unwrap_unchecked once the planner/executor contract
-            // is verified to be sound.
-            let mut reused = computation_cache.remove(id).unwrap();
+        OutputKind::Region { offset, len } => {
             fill_inputs_scratch(inputs_scratch, computation_cache, resolved_inputs);
 
-            B::compute(
-                op,
-                &mut reused.mut_data().unwrap()[..layout.len()],
-                layout,
-                &inputs_scratch,
-            );
+            let output_ptr = arena_ptr.wrapping_add(*offset);
+            let output = unsafe { std::slice::from_raw_parts_mut(output_ptr, *len) };
 
-            reused.into_layout(layout.clone())
+            B::compute(op, output, layout, inputs_scratch);
+
+            TensorData::new(
+                unsafe { Storage::from_raw_parts(output_ptr, *len) },
+                layout.clone(),
+            )
         }
-        OutputKind::InPlaceIdx(idx) => {
+        OutputKind::InPlaceIdx { idx, parent_id } => {
             inputs_scratch.clear();
             inputs_scratch.extend(
                 resolved_inputs
@@ -73,6 +71,10 @@ fn execute_output<T: NumberLike + ComputeFor<B>, B: Backend>(
             );
 
             let mut output = computation_cache.remove(&resolved_inputs[*idx]).unwrap();
+
+            if *parent_id != usize::MAX {
+                computation_cache.remove(parent_id);
+            }
 
             debug_assert!(output.is_contiguous());
 
@@ -144,6 +146,7 @@ pub(crate) enum StepRef<'a, T, B: Backend> {
     },
     Baked {
         baked: &'a TensorGraphBaked<T, B>,
+        arena_offset: usize,
         resolved_inputs: &'a Vec<usize>,
         dealloc_after: &'a Vec<usize>,
     },
@@ -181,10 +184,12 @@ pub(crate) fn borrowed_step<'a, T, B: Backend>(
         },
         ComputeKind::Baked {
             baked,
+            arena_offset,
             resolved_inputs,
             dealloc_after,
         } => StepRef::Baked {
             baked,
+            arena_offset: *arena_offset,
             resolved_inputs,
             dealloc_after,
         },
@@ -221,10 +226,12 @@ pub(crate) fn owned_step<T, B: Backend>(step: &OwnedComputeKind<T, B>) -> StepRe
         },
         OwnedComputeKind::Baked {
             baked,
+            arena_offset,
             resolved_inputs,
             dealloc_after,
         } => StepRef::Baked {
             baked,
+            arena_offset: *arena_offset,
             resolved_inputs,
             dealloc_after,
         },
@@ -242,6 +249,7 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
     steps: &mut (dyn Iterator<Item = StepRef<'a, T, B>> + 'a),
     root_id: usize,
     external_inputs: Vec<(usize, TensorData<T>)>,
+    arena_ptr: *mut T,
 ) -> TensorData<T> {
     let mut computation_cache: FxHashMap<usize, TensorData<T>> = FxHashMap::default();
     let mut inputs_scratch: Vec<TensorData<T>> = Vec::with_capacity(3);
@@ -268,6 +276,7 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
                     op,
                     layout,
                     output,
+                    arena_ptr,
                     resolved_inputs,
                     &mut inputs_scratch,
                     &mut computation_cache,
@@ -299,11 +308,17 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
 
                     match output {
                         OutputKind::Allocate(_) | OutputKind::Reference(_) => {}
-                        OutputKind::Buffer(id) => {
-                            computation_cache.remove(id);
+                        OutputKind::InPlaceIdx {
+                            idx: donor_idx,
+                            parent_id: original_id,
+                        } => {
+                            computation_cache.remove(&resolved_inputs[*donor_idx]);
+                            if *original_id != usize::MAX {
+                                computation_cache.remove(original_id);
+                            }
                         }
-                        OutputKind::InPlaceIdx(idx) => {
-                            computation_cache.remove(&resolved_inputs[*idx]);
+                        OutputKind::Region { .. } => {
+                            unreachable!("a cache cannot be handled an arena region")
                         }
                     }
 
@@ -319,6 +334,7 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
                     &node.op,
                     &node.layout,
                     output,
+                    arena_ptr,
                     resolved_inputs,
                     &mut inputs_scratch,
                     &mut computation_cache,
@@ -332,6 +348,7 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
             }
             StepRef::Baked {
                 baked,
+                arena_offset,
                 resolved_inputs,
                 dealloc_after,
             } => {
@@ -353,6 +370,7 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
                     &mut baked.plan.plan.iter().map(owned_step),
                     baked.plan.root_id,
                     inputs,
+                    arena_ptr.wrapping_add(arena_offset),
                 );
 
                 computation_cache.insert(baked.id, result);
@@ -367,6 +385,8 @@ pub(crate) fn run_plan<'a, T: NumberLike + ComputeFor<B> + 'a, B: Backend + 'a>(
     // TODO: The plan always ends with the root computed and inserted into the cache, so
     // this is always Some. Can use unwrap_unchecked once the executor contract is verified.
     let root = computation_cache.remove(&root_id).unwrap();
+
+    debug_assert!(!root.storage.is_arena_backed());
 
     #[cfg(feature = "tracing")]
     tracing::debug!(

@@ -4,7 +4,7 @@ use crate::Layout;
 use crate::tensor::backend::Backend;
 use crate::tensor::graph::{TensorGraphBaked, TensorGraphCacheNode, TensorGraphEdge};
 use crate::tensor::ops::def_op::OpKind;
-use crate::tensor::planner::plan::CorePlan;
+use crate::tensor::planner::plan::Plan;
 use crate::tensor::planner::{ComputeKind, OutputKind};
 
 /// The owned, graph-detached payload of an [`OwnedComputeKind::Op`] step: the node's
@@ -34,14 +34,16 @@ pub(crate) enum OwnedComputeKind<T, B: Backend> {
     },
     Baked {
         baked: Arc<TensorGraphBaked<T, B>>,
+        arena_offset: usize,
         resolved_inputs: Vec<usize>,
         dealloc_after: Vec<usize>,
     },
 }
 
-pub(crate) struct OwnedCorePlan<T, B: Backend> {
+pub(crate) struct OwnedPlan<T, B: Backend> {
     pub(crate) plan: Vec<OwnedComputeKind<T, B>>,
     pub(crate) root_id: usize,
+    pub(crate) arena_size: usize,
 }
 
 #[inline]
@@ -80,10 +82,12 @@ fn from_borrowed_compute_kind_to_owned<T: Clone, B: Backend>(
             },
             ComputeKind::Baked {
                 baked,
+                arena_offset,
                 resolved_inputs,
                 dealloc_after,
             } => OwnedComputeKind::Baked {
                 baked: baked.clone(),
+                arena_offset,
                 resolved_inputs,
                 dealloc_after,
             },
@@ -93,10 +97,11 @@ fn from_borrowed_compute_kind_to_owned<T: Clone, B: Backend>(
 
 #[inline]
 pub(crate) fn from_borrowed_core_to_owned<T: Clone, B: Backend>(
-    core: CorePlan<'_, T, B>,
-) -> OwnedCorePlan<T, B> {
-    OwnedCorePlan {
+    core: Plan<'_, T, B>,
+) -> OwnedPlan<T, B> {
+    OwnedPlan {
         plan: from_borrowed_compute_kind_to_owned(core.plan),
         root_id: core.root_id,
+        arena_size: core.arena_size,
     }
 }

@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::Dimension;
+use crate::tensor::allocate::AlignedBuf;
 use crate::tensor::backend::{Backend, ComputeFor};
 use crate::tensor::definitions::NumberLike;
 use crate::tensor::errors::OpError;
@@ -24,7 +25,7 @@ use crate::tensor::mem_formats::layout::Layout;
 use crate::tensor::ops::compute_layout;
 use crate::tensor::ops::def_op::OpKind;
 use crate::tensor::ops::fusion::try_fuse;
-use crate::tensor::planner::{OwnedCorePlan, plan_computation};
+use crate::tensor::planner::{ALIGNMENT_BYTES, OwnedPlan, plan_computation};
 use crate::tensor::storage::TensorData;
 use crate::tensor::traits::{Numeric, Promising};
 
@@ -230,11 +231,16 @@ impl<T: NumberLike + ComputeFor<B>, B: Backend> Promising for TensorGraphNode<T,
         let plan = plan_computation(self);
         debug_assert!(plan.external_inputs.is_empty());
 
-        run_plan(
+        let allocated_arena: AlignedBuf<T> = AlignedBuf::new(plan.arena_size, ALIGNMENT_BYTES);
+
+        let output = run_plan(
             &mut plan.plan.iter().map(borrowed_step),
             plan.root_id,
             Vec::new(),
-        )
+            allocated_arena.as_ptr(),
+        );
+
+        output
     }
 }
 
@@ -357,13 +363,13 @@ pub struct TensorGraphBaked<T, B: Backend> {
     pub(crate) id: usize,
     pub(crate) inputs: Box<[NodeKind<T, B>]>,
     pub(crate) inputs_ids: Box<[usize]>,
-    pub(crate) plan: Arc<OwnedCorePlan<T, B>>,
+    pub(crate) plan: Arc<OwnedPlan<T, B>>,
     layout: Layout,
 }
 
 impl<T: PartialEq + Clone, B: Backend> TensorGraphBaked<T, B> {
     pub(crate) fn from_node(
-        plan: &Arc<OwnedCorePlan<T, B>>,
+        plan: &Arc<OwnedPlan<T, B>>,
         inputs: Box<[NodeKind<T, B>]>,
         inputs_ids: Box<[usize]>,
         layout: &Layout,

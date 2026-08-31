@@ -1,8 +1,7 @@
 use std::cmp::Reverse;
 
+use crate::tensor::planner::ALIGNMENT_BYTES;
 use crate::tensor::planner::runtime::Slot;
-
-const ALIGNMENT_BYTES: usize = 128;
 
 const fn gcd(mut a: usize, mut b: usize) -> usize {
     while b != 0 {
@@ -23,6 +22,7 @@ pub const fn alignment_of<T>() -> usize {
 ////////////////////////////////////////////////////////////////
 
 pub struct PackedSlot {
+    pub id: usize,
     pub start: usize,
     pub end: usize,
     pub offset: usize,
@@ -59,7 +59,12 @@ fn fit_len(slots: &[PackedSlot], start: usize, end: usize, len: usize, alignment
     best_offset.unwrap_or_else(|| align_up(last_offset, alignment))
 }
 
-pub fn greedy_offset_pack_slots(mut slots: Vec<Slot>, alignment: usize) -> Vec<PackedSlot> {
+pub struct PackedSlots {
+    pub arena_size: usize,
+    pub slots: Vec<PackedSlot>,
+}
+
+pub fn greedy_offset_pack_slots(mut slots: Vec<Slot>, alignment: usize) -> PackedSlots {
     debug_assert!(
         alignment.is_power_of_two(),
         "alignment must be a power of two"
@@ -78,6 +83,7 @@ pub fn greedy_offset_pack_slots(mut slots: Vec<Slot>, alignment: usize) -> Vec<P
 
         let fit = fit_len(&packed_slots, s.start, s.end.unwrap(), s.len, alignment);
         let packed = PackedSlot {
+            id: s.id,
             start: s.start,
             end: s.end.unwrap(),
             offset: fit,
@@ -89,17 +95,12 @@ pub fn greedy_offset_pack_slots(mut slots: Vec<Slot>, alignment: usize) -> Vec<P
         packed_slots.insert(pos, packed);
     }
 
-    packed_slots
+    PackedSlots {
+        arena_size: last_offset,
+        slots: packed_slots,
+    }
 }
 
-////////////////////////////////////////////////////////////////
-
-fn cost_heuristic() -> usize {
-    0
-}
-
-pub fn greedy_multi_pack_slots(mut slots: Vec<Slot>) -> Vec<PackedSlot> {
-    slots.sort_unstable_by_key(|s| (Reverse(s.len), s.start));
-
-    Vec::new()
-}
+#[cfg(test)]
+#[path = "packing_tests.rs"]
+mod tests;

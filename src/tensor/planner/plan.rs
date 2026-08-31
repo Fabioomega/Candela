@@ -14,7 +14,7 @@ use crate::tensor::graph::{
     NodeKind, TensorGraphBaked, TensorGraphCacheNode, TensorGraphEdge, TensorGraphNode,
 };
 use crate::tensor::planner::alias::{self, AliasKind, AliasMap};
-use crate::tensor::planner::packing::greedy_offset_pack_slots;
+use crate::tensor::planner::packing::{PackedSlots, alignment_of, greedy_offset_pack_slots};
 use crate::tensor::planner::runtime::{ExecKind, Slot};
 use crate::tensor::planner::sort::topological_sort;
 use crate::tensor::planner::{get_id, runtime};
@@ -22,12 +22,12 @@ use crate::tensor::planner::{get_id, runtime};
 /// How the executor should produce the output buffer for a single operation.
 #[derive(Debug, Clone)]
 pub(crate) enum OutputKind {
-    /// Re-use the buffer previously owned by node `id`. The planner guarantees
-    /// that buffer is no longer referenced by any live node at this point.
-    Buffer(usize),
-    /// Overwrite input at position `idx` in-place. The planner guarantees the
-    /// input's buffer is not aliased by any other live node.
-    InPlaceIdx(usize),
+    /// A region on an arena with start at `offset` of length `len`.
+    Region { offset: usize, len: usize },
+    /// Overwrite input at position `idx` in-place and, if `idx` is a reference,
+    /// also removes the parent with `parent_id`. The planner guarantees the input's buffer is not
+    /// aliased by any other live node.
+    InPlaceIdx { idx: usize, parent_id: usize },
     /// Alias the input at position `idx` at this node's layout, copying no
     /// elements. The executor clones the input's handle and re-points its layout;
     /// the input keeps its buffer ownership and stays in the live-buffer cache, so
@@ -65,6 +65,7 @@ pub(crate) enum ComputeKind<'a, T, B: Backend> {
     },
     Baked {
         baked: &'a Arc<TensorGraphBaked<T, B>>,
+        arena_offset: usize,
         resolved_inputs: Vec<usize>,
         dealloc_after: Vec<usize>,
     },
@@ -123,7 +124,7 @@ struct PlanState<'a, T, B: Backend> {
     plan: Vec<ComputeKind<'a, T, B>>,
     slots: Vec<Slot>,
     id_slot_map: FxHashMap<usize, usize>,
-    ref_deallocs: Vec<(usize, Option<usize>)>,
+    dealloc_after: Vec<(usize, Option<usize>)>,
 }
 
 impl<'a, T, B: Backend> PlanState<'a, T, B> {
@@ -135,7 +136,7 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
             plan: Vec::with_capacity(capacity),
             slots: Vec::with_capacity(capacity / 2),
             id_slot_map,
-            ref_deallocs: Vec::with_capacity(capacity / 2),
+            dealloc_after: Vec::with_capacity(capacity / 2),
         }
     }
 
@@ -194,7 +195,16 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                 let resolved_inputs = build_resolved_inputs(resolved_inputs);
                 self.plan.push(ComputeKind::Op {
                     node,
-                    output: OutputKind::InPlaceIdx(input_idx),
+                    output: OutputKind::InPlaceIdx {
+                        idx: input_idx,
+                        parent_id: {
+                            if self.slots[slot_idx].id == resolved_inputs[input_idx] {
+                                usize::MAX
+                            } else {
+                                self.slots[slot_idx].id
+                            }
+                        },
+                    },
                     resolved_inputs,
                     dealloc_after: Vec::new(),
                 });
@@ -217,7 +227,7 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                 let extended_end = extend_slot_life(self.slots[slot_idx].end, op_end);
                 self.slots[slot_idx].end = extended_end;
                 self.id_slot_map.insert(node.id, slot_idx);
-                self.ref_deallocs.push((node.id, extended_end));
+                self.dealloc_after.push((node.id, extended_end));
 
                 let resolved_inputs = build_resolved_inputs(resolved_inputs);
                 self.plan.push(ComputeKind::Op {
@@ -292,10 +302,23 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                 let resolved_inputs = build_resolved_inputs(resolved_inputs);
                 self.plan.push(ComputeKind::CachedOp {
                     cache,
-                    output: OutputKind::InPlaceIdx(input_idx),
+                    output: OutputKind::InPlaceIdx {
+                        idx: input_idx,
+                        parent_id: {
+                            if self.slots[slot_idx].id == resolved_inputs[input_idx] {
+                                usize::MAX
+                            } else {
+                                self.slots[slot_idx].id
+                            }
+                        },
+                    },
                     resolved_inputs,
                     dealloc_after: Vec::new(),
                 });
+
+                // We don't need to change the id because it will never be read as it's an eternal
+                // so it cannot be changed from this point onwards.
+                // self.slots[slot_idx].id = node.id;
             }
             ExecKind::ReferenceEternal { input_idx } => {
                 let resolved_inputs = build_resolved_inputs(resolved_inputs);
@@ -311,7 +334,7 @@ impl<'a, T, B: Backend> PlanState<'a, T, B> {
                 input_idx,
             } => {
                 self.slots[slot_idx].end = None;
-                self.ref_deallocs.push((node.id, None));
+                self.dealloc_after.push((node.id, None));
 
                 let resolved_inputs = build_resolved_inputs(resolved_inputs);
                 self.plan.push(ComputeKind::CachedOp {
@@ -495,17 +518,8 @@ pub(crate) struct Plan<'a, T, B: Backend> {
     pub(crate) root_id: usize,
     /// Inputs that need to be added by an external source for the plan to run
     pub(crate) external_inputs: Vec<usize>,
-}
-
-pub(crate) struct CorePlan<'a, T, B: Backend> {
-    /// Steps in dependency order. Each carries its [`OutputKind`], pre-resolved
-    /// input IDs, and the list of buffer IDs to drop once the step completes.
-    pub(crate) plan: Vec<ComputeKind<'a, T, B>>,
-    /// `computation_cache` key holding the root result - the root node's id, or the
-    /// resolved target when the root is a pure alias and emits no step of its own.
-    pub(crate) root_id: usize,
-    /// Inputs that need to be added by an external source for the plan to run
-    pub(crate) external_inputs: Vec<usize>,
+    /// The size of the arena necessary to hold this plan
+    pub(crate) arena_size: usize,
 }
 
 /// Build a static execution plan for the subgraph rooted at `base_node`.
@@ -545,9 +559,9 @@ pub(crate) struct CorePlan<'a, T, B: Backend> {
     )
 )]
 #[inline]
-pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
+pub(crate) fn plan_computation<T: PartialEq + Clone, B: Backend>(
     base_node: &TensorGraphNode<T, B>,
-) -> CorePlan<'_, T, B> {
+) -> Plan<'_, T, B> {
     let PrePlan {
         pre_plan,
         root,
@@ -569,9 +583,22 @@ pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
                 state.plan_cache_node(i, cache, &op.resolved_inputs);
             }
             NodeKind::Baked(baked) => {
+                // Ask the packer for some memory, this does not count the root node which lives "forever".
+                state.slots.push(Slot {
+                    id: baked.id,
+                    len: baked.plan.arena_size,
+                    start: i,
+                    end: Some(i),
+                });
+
+                // This dealloc the output of a baked plan not the slot itself which is free after 1 step.
+                state.dealloc_after.push((baked.id, op.end));
+
+                // TODO: Maybe we can find a way to make baked inject it's root into the parent arena
                 state.plan.push(ComputeKind::Baked {
                     baked,
                     resolved_inputs: op.resolved_inputs.iter().map(|n| get_id(*n)).collect(),
+                    arena_offset: 0,
                     dealloc_after: Vec::new(),
                 });
             }
@@ -586,7 +613,7 @@ pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
     let PlanState {
         mut plan,
         slots,
-        ref_deallocs,
+        dealloc_after,
         ..
     } = state;
 
@@ -595,11 +622,16 @@ pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
         let span = tracing::Span::current();
         span.record("ops_count", ops_len);
         span.record("slots_count", slots.len());
-        span.record("ref_deallocs_count", ref_deallocs.len());
+        span.record("deallocs_after_count", dealloc_after.len());
     }
 
-    for (node_id, dealloc_at) in &ref_deallocs {
+    for (node_id, dealloc_at) in &dealloc_after {
         let Some(end) = dealloc_at else { continue };
+
+        // TODO: This is unnecessary because we guarantee that a slot is dead before using a region
+        // and guarantees that the slot is "free" and there's nothing using the memory region.
+        // It can be removed but is maintained to guarantee borrow-checking rules at runtime and
+        // future-proof in case it becomes necessary again.
         match &mut plan[*end] {
             ComputeKind::Op { dealloc_after, .. }
             | ComputeKind::CachedOp { dealloc_after, .. }
@@ -608,24 +640,41 @@ pub(crate) fn core_plan_computation<T: PartialEq + Clone, B: Backend>(
         }
     }
 
-    let packed_slots = greedy_offset_pack_slots(slots);
+    let PackedSlots { arena_size, slots } = greedy_offset_pack_slots(slots, alignment_of::<T>());
 
-    // TODO: This is will be a toggle for the arena
-    let separate_objects = false;
+    for packed in slots {
+        if let ComputeKind::Op { output, .. } = &mut plan[packed.start] {
+            *output = OutputKind::Region {
+                offset: packed.offset,
+                len: packed.len,
+            };
+        } else if let ComputeKind::Baked { arena_offset, .. } = &mut plan[packed.start] {
+            *arena_offset = packed.offset;
 
-    if separate_objects {
-        todo!("separate objects is not implemented");
-    } else {
-        todo!("arena is not implemented yet");
+            // nothing to evict
+            continue;
+        }
+
+        // TODO: This is unnecessary because we guarantee that a slot is dead before using a region
+        // and guarantees that the allocated values "die" after they are used.
+        // It can be removed but is maintained to guarantee borrow-checking rules at runtime and
+        // future-proof in case it becomes necessary again.
+        match &mut plan[packed.end] {
+            ComputeKind::Op { dealloc_after, .. }
+            | ComputeKind::CachedOp { dealloc_after, .. }
+            | ComputeKind::Baked { dealloc_after, .. } => dealloc_after.push(packed.id),
+            ComputeKind::Leaf { .. } => unreachable!(),
+        }
     }
 
     #[cfg(feature = "tracing")]
     trace_plan(&plan, root.id);
 
-    CorePlan {
+    Plan {
         plan,
         root_id: root.id,
         external_inputs,
+        arena_size,
     }
 }
 
@@ -681,6 +730,7 @@ fn trace_plan<T, B: Backend>(plan: &[ComputeKind<'_, T, B>], root_id: usize) {
             }
             ComputeKind::Baked {
                 baked,
+                arena_offset,
                 resolved_inputs,
                 dealloc_after,
             } => {
@@ -688,27 +738,11 @@ fn trace_plan<T, B: Backend>(plan: &[ComputeKind<'_, T, B>], root_id: usize) {
                     step = i,
                     kind = "Baked",
                     id = baked.id,
+                    arena_offset = *arena_offset,
                     inputs = ?resolved_inputs,
                     dealloc = ?dealloc_after,
                 );
             }
         }
-    }
-}
-
-pub(crate) fn plan_computation<T: PartialEq + Clone, B: Backend>(
-    base_node: &TensorGraphNode<T, B>,
-) -> Plan<'_, T, B> {
-    let CorePlan {
-        plan,
-        root_id,
-        external_inputs,
-        ..
-    } = core_plan_computation(base_node);
-
-    Plan {
-        plan,
-        root_id,
-        external_inputs,
     }
 }

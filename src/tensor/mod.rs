@@ -3,6 +3,7 @@ mod convenience;
 
 pub(crate) const MAX_DIMS: usize = 8;
 
+pub(crate) mod allocate;
 pub(crate) mod backend;
 pub(crate) mod definitions;
 pub mod errors;
